@@ -216,6 +216,73 @@ QUEBEC_MARKERS = frozenset(
   {"qc", "quebec", "franco", "francophone", "cafr", "frca"}
 )
 
+CA_METRO_MARKERS: dict[str, frozenset[str]] = {
+  "montreal": MONTREAL_MARKERS,
+  "toronto": frozenset({"toronto", "gta", "cfto", "cblt", "ciii", "cp24"}),
+  "ottawa": frozenset({"ottawa", "cjoh", "cbco", "cbot", "chot"}),
+  "vancouver": frozenset({"vancouver", "cbut", "chan", "civt"}),
+  "calgary": frozenset({"calgary", "cfcn", "cbrt", "cict"}),
+  "edmonton": frozenset({"edmonton", "cfrn", "cbxt", "citv"}),
+  "winnipeg": frozenset({"winnipeg", "cbwt", "cknd", "cjay"}),
+  "halifax": frozenset({"halifax", "cjch", "cbht"}),
+}
+
+US_METRO_MARKERS: dict[str, frozenset[str]] = {
+  "newyork": frozenset(
+    {"newyork", "nyc", "manhattan", "wnbc", "wcbs", "wabc", "wnyw", "wpix"}
+  ),
+  "losangeles": frozenset(
+    {"losangeles", "knbc", "kcbs", "kabc", "kttv", "ktla"}
+  ),
+  "chicago": frozenset({"chicago", "wmaq", "wbbm", "wls", "wgn", "wfld"}),
+}
+
+CA_PROVINCE_MARKERS: dict[str, frozenset[str]] = {
+  "qc": QUEBEC_MARKERS,
+  "on": frozenset({"ontario"}),
+  "bc": frozenset({"bc", "britishcolumbia"}),
+  "ab": frozenset({"alberta"}),
+  "mb": frozenset({"manitoba"}),
+  "sk": frozenset({"saskatchewan"}),
+  "atlantic": frozenset({"atlantic", "maritimes", "novascotia"}),
+}
+
+US_STATE_MARKERS: dict[str, frozenset[str]] = {
+  "ny": frozenset({"ny", "newyork"}),
+  "us_ca": frozenset({"california", "socal", "norcal"}),
+  "il": frozenset({"illinois"}),
+}
+
+# Target-region keys mapped to benign qualifier tokens allowed in stream names
+TARGET_REGION_QUALIFIER_TOKENS: dict[str, frozenset[str]] = {
+  "montreal": frozenset({"montreal", "mtl"}),
+  "qc": frozenset({"qc", "quebec"}),
+  "toronto": frozenset({"toronto", "gta", "ontario", "on"}),
+  "ottawa": frozenset({"ottawa", "ontario", "on"}),
+  "on": frozenset({"ontario", "on"}),
+  "vancouver": frozenset({"vancouver", "bc", "west", "pacific"}),
+  "bc": frozenset({"bc", "west", "pacific"}),
+  "calgary": frozenset({"calgary", "alberta", "ab", "west"}),
+  "edmonton": frozenset({"edmonton", "alberta", "ab", "west"}),
+  "ab": frozenset({"alberta", "ab", "west"}),
+  "winnipeg": frozenset({"winnipeg", "manitoba", "mb"}),
+  "halifax": frozenset({"halifax", "atlantic"}),
+  "atlantic": frozenset({"atlantic"}),
+  "newyork": frozenset({"new", "york", "nyc", "ny"}),
+  "ny": frozenset({"ny", "new", "york"}),
+  "losangeles": frozenset({"los", "angeles", "la", "west", "pacific"}),
+  "us_ca": frozenset({"california", "west", "pacific"}),
+  "chicago": frozenset({"chicago", "il", "illinois", "central"}),
+  "west": frozenset({"west", "pacific"}),
+}
+
+CANADA_PRIMARY_REGIONS = (
+  frozenset(CA_METRO_MARKERS) | frozenset(CA_PROVINCE_MARKERS) | {"ca"}
+)
+US_PRIMARY_REGIONS = (
+  frozenset(US_METRO_MARKERS) | frozenset(US_STATE_MARKERS) | {"us"}
+)
+
 CANADA_MARKERS = frozenset({"ca", "can", "canada", "canadian"})
 US_MARKERS = frozenset(
   {
@@ -563,6 +630,26 @@ def _prepare_stream(stream: XtreamStream) -> _PreparedStream | None:
     regions.add("montreal")
     regions.add("qc")
     regions.add("ca")
+  for metro, markers in CA_METRO_MARKERS.items():
+    if metro != "montreal" and (full_tokens & markers):
+      regions.add(metro)
+      regions.add("ca")
+  for prov, markers in CA_PROVINCE_MARKERS.items():
+    if prov != "qc" and (full_tokens & markers):
+      regions.add(prov)
+      regions.add("ca")
+  for metro, markers in US_METRO_MARKERS.items():
+    if (
+      (full_tokens & markers)
+      or (metro == "newyork" and "new york" in full_str)
+      or (metro == "losangeles" and "los angeles" in full_str)
+    ):
+      regions.add(metro)
+      regions.add("us")
+  for st_code, markers in US_STATE_MARKERS.items():
+    if full_tokens & markers:
+      regions.add(st_code)
+      regions.add("us")
   if (
     (full_tokens & QUEBEC_MARKERS)
     or (
@@ -800,8 +887,11 @@ class ChannelMatcher:
     best_alias_score = 0.0
     best_alias_reason = ""
     allowed_extra = set(BENIGN_QUALIFIER_TOKENS)
+    for reg_key in target_regions:
+      allowed_extra.update(TARGET_REGION_QUALIFIER_TOKENS.get(reg_key, ()))
     if callsign_tok:
       allowed_extra.add(callsign_tok)
+    effective_spinoff_tokens = SPINOFF_MODIFIER_TOKENS - allowed_extra
 
     for rank_idx, alias_raw, a_toks in alias_specs:
       specificity_bonus = max(0.0, 4.0 - rank_idx * 0.75)
@@ -818,12 +908,12 @@ class ChannelMatcher:
           alias_set = set(a_toks)
           extra_tokens = [t for t in candidate_core if t not in alias_set]
           spinoff_hits = [
-            t for t in extra_tokens if t in SPINOFF_MODIFIER_TOKENS
+            t for t in extra_tokens if t in effective_spinoff_tokens
           ]
           unknown_extras = [
             t
             for t in extra_tokens
-            if t not in allowed_extra and t not in SPINOFF_MODIFIER_TOKENS
+            if t not in allowed_extra and t not in effective_spinoff_tokens
           ]
 
           if spinoff_hits:
@@ -881,24 +971,29 @@ class ChannelMatcher:
     if score < 40.0:
       return 0.0, [], False
 
-    # Signal D: Regional & Market Alignment (Montreal > Quebec > Canada > US)
-    if "montreal" in target_regions and "montreal" in prep.regions:
-      score += 24.0
-      reasons.append("region:montreal")
-    if "qc" in target_regions and "qc" in prep.regions:
-      score += 16.0
-      reasons.append("region:qc")
+    # Signal D: Regional & Market Alignment (Metro > Province/State > Country)
+    for metro in tuple(CA_METRO_MARKERS) + tuple(US_METRO_MARKERS):
+      if metro in target_regions and metro in prep.regions:
+        score += 24.0
+        reasons.append(f"region:{metro}")
+    for sub in tuple(CA_PROVINCE_MARKERS) + tuple(US_STATE_MARKERS):
+      if sub in target_regions and sub in prep.regions:
+        score += 16.0
+        reasons.append(f"region:{sub}")
     if "ca" in target_regions and "ca" in prep.regions:
-      # Higher boost if Canada is primary region vs secondary
       ca_boost = (
         12.0
-        if channel.regions and channel.regions[0] in {"montreal", "qc", "ca"}
+        if channel.regions and channel.regions[0] in CANADA_PRIMARY_REGIONS
         else 6.0
       )
       score += ca_boost
       reasons.append("region:ca")
     elif "us" in target_regions and "us" in prep.regions:
-      us_boost = 12.0 if channel.regions and channel.regions[0] == "us" else 5.0
+      us_boost = (
+        12.0
+        if channel.regions and channel.regions[0] in US_PRIMARY_REGIONS
+        else 5.0
+      )
       score += us_boost
       reasons.append("region:us")
     elif "uk" in target_regions and "uk" in prep.regions:
@@ -929,15 +1024,27 @@ class ChannelMatcher:
       score -= 18.0
       reasons.append("penalty:us_feed_for_ca_only")
 
-    # East vs West time-zone preference for Montreal (Eastern Time)
-    if {"east", "est", "eastern"} & prep.full_tokens:
-      score += 5.0
-      reasons.append("tz:east")
-    if {"west", "pacific"} & prep.full_tokens and not any(
-      w in (" ".join(channel.aliases).lower()) for w in ("west", "pacific")
-    ):
-      score -= 22.0
-      reasons.append("penalty:west_feed")
+    # East vs West time-zone alignment derived from channel/market regions
+    alias_text_low = " ".join(channel.aliases).lower()
+    prefers_west = "west" in target_regions or any(
+      w in alias_text_low for w in ("west", "pacific")
+    )
+    if prefers_west:
+      if {"west", "pacific"} & prep.full_tokens:
+        score += 8.0
+        reasons.append("tz:west")
+      if {"east", "est", "eastern"} & prep.full_tokens and not any(
+        w in alias_text_low for w in ("east", "eastern")
+      ):
+        score -= 12.0
+        reasons.append("penalty:east_feed")
+    else:
+      if {"east", "est", "eastern"} & prep.full_tokens:
+        score += 5.0
+        reasons.append("tz:east")
+      if {"west", "pacific"} & prep.full_tokens:
+        score -= 22.0
+        reasons.append("penalty:west_feed")
 
     # Timeshift penalty (+1 / +2)
     if prep.is_timeshift:

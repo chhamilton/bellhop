@@ -6,7 +6,10 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
-from bellhop.lineup_loader import _load_official_logo_index
+from bellhop.lineup_loader import (
+  _load_official_logo_index,
+  is_bell_fibe_lineup,
+)
 from bellhop.models import LineupChannel
 
 PAREN_GROUP_RE = re.compile(r"\(([^()]+)\)")
@@ -463,30 +466,178 @@ def _infer_group(display_name: str, callsign: str | None, language: str) -> str:
   return "Local & Networks"
 
 
+_EXPLICIT_NAME_METROS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+  ("montreal", "montreal", ("montreal", "qc")),
+  ("quebec city", "quebeccity", ("qc",)),
+  ("toronto", "toronto", ("toronto", "on")),
+  ("ottawa", "ottawa", ("ottawa", "on")),
+  ("vancouver", "vancouver", ("vancouver", "bc", "west")),
+  ("calgary", "calgary", ("calgary", "ab", "west")),
+  ("edmonton", "edmonton", ("edmonton", "ab", "west")),
+  ("winnipeg", "winnipeg", ("winnipeg", "mb")),
+  ("halifax", "halifax", ("halifax", "atlantic")),
+  ("new york", "newyork", ("newyork", "ny")),
+  ("los angeles", "losangeles", ("losangeles", "us_ca", "west")),
+  ("chicago", "chicago", ("chicago", "il")),
+)
+
+_CA_FSA_REGION_MAP: dict[str, tuple[str, ...]] = {
+  "A": ("atlantic",),
+  "B": ("halifax", "atlantic"),
+  "C": ("atlantic",),
+  "E": ("atlantic",),
+  "G": ("qc",),
+  "H": ("montreal", "qc"),
+  "J": ("qc",),
+  "K": ("on",),
+  "L": ("on",),
+  "M": ("toronto", "on"),
+  "N": ("on",),
+  "P": ("on",),
+  "R": ("winnipeg", "mb"),
+  "S": ("sk",),
+  "T": ("ab", "west"),
+  "V": ("vancouver", "bc", "west"),
+  "X": ("west",),
+  "Y": ("west",),
+}
+
+_US_WEST_STATE_CODES = frozenset(
+  {
+    "AK",
+    "AZ",
+    "CA",
+    "CO",
+    "HI",
+    "ID",
+    "MT",
+    "NM",
+    "NV",
+    "OR",
+    "UT",
+    "WA",
+    "WY",
+  }
+)
+
+
+def _append_unique(items: list[str], *values: str) -> None:
+  for val in values:
+    if val and val not in items:
+      items.append(val)
+
+
 def _infer_regions(
-  display_name: str, country: str, postal_code: str, language: str
+  display_name: str,
+  country: str,
+  postal_code: str,
+  language: str,
+  market: str = "",
 ) -> list[str]:
   regions: list[str] = []
   hay = _strip_accents(display_name).lower()
-  postal_up = postal_code.strip().upper()
+  market_norm = _strip_accents(market).lower()
+  postal_clean = re.sub(r"\s+", "", postal_code.strip().upper())
+  country_up = country.strip().upper()
+  is_canada = country_up in {"CAN", "CA"}
+  is_usa = country_up in {"USA", "US"}
 
-  if ("montreal" in hay or postal_up.startswith("H")) and (
-    language == "fr" or "montreal" in hay
-  ):
-    regions.append("montreal")
-  if (
-    (language == "fr" or postal_up[:1] in {"G", "H", "J"} or "quebec" in hay)
-    and "qc" not in regions
-    and country.upper() in {"CAN", "CA"}
-  ):
-    regions.append("qc")
-  if country.upper() in {"CAN", "CA"}:
-    regions.append("ca")
-    regions.append("us")
-  elif country.upper() in {"USA", "US"}:
-    regions.append("us")
+  # 1. Explicit metro/timezone qualifiers in the channel's own display name
+  explicit_metro = False
+  for needle, _metro_id, implied in _EXPLICIT_NAME_METROS:
+    if needle in hay:
+      explicit_metro = True
+      _append_unique(regions, *implied)
+  if re.search(r"\b(?:west|pacific)\b", hay):
+    explicit_metro = True
+    _append_unique(regions, "west")
+  elif re.search(r"\b(?:east|eastern)\b", hay):
+    explicit_metro = True
+
+  # 2. Headend postal-code & market inference (when channel isn't an out-of-market feed)
+  if not explicit_metro:
+    if is_canada:
+      fsa_first = (
+        postal_clean[:1] if postal_clean and postal_clean[0].isalpha() else ""
+      )
+      if fsa_first in _CA_FSA_REGION_MAP:
+        _append_unique(regions, *_CA_FSA_REGION_MAP[fsa_first])
+      if postal_clean[:2] in {"K1", "K2"} or "ottawa" in market_norm:
+        _append_unique(regions, "ottawa", "on")
+      if "montreal" in market_norm:
+        _append_unique(regions, "montreal", "qc")
+      elif "toronto" in market_norm:
+        _append_unique(regions, "toronto", "on")
+      elif "vancouver" in market_norm:
+        _append_unique(regions, "vancouver", "bc", "west")
+      elif "calgary" in market_norm:
+        _append_unique(regions, "calgary", "ab", "west")
+      elif "edmonton" in market_norm:
+        _append_unique(regions, "edmonton", "ab", "west")
+      elif "winnipeg" in market_norm:
+        _append_unique(regions, "winnipeg", "mb")
+      elif "halifax" in market_norm:
+        _append_unique(regions, "halifax", "atlantic")
+
+      state_token = (
+        market_norm.rsplit(",", 1)[-1].strip().upper()
+        if "," in market_norm
+        else ""
+      )
+      if state_token == "QC":
+        _append_unique(regions, "qc")
+      elif state_token == "ON":
+        _append_unique(regions, "on")
+      elif state_token == "BC":
+        _append_unique(regions, "bc", "west")
+      elif state_token == "AB":
+        _append_unique(regions, "ab", "west")
+    elif is_usa:
+      zip3 = (
+        postal_clean[:3]
+        if len(postal_clean) >= 5 and postal_clean[:5].isdigit()
+        else ""
+      )
+      state_token = (
+        market_norm.rsplit(",", 1)[-1].strip().upper()
+        if "," in market_norm
+        else ""
+      )
+      if (
+        "new york" in market_norm
+        or "manhattan" in market_norm
+        or zip3 in {"100", "101", "102", "103", "104", "110", "111", "112"}
+      ):
+        _append_unique(regions, "newyork", "ny")
+      elif "los angeles" in market_norm or (
+        zip3.isdigit() and 900 <= int(zip3) <= 918
+      ):
+        _append_unique(regions, "losangeles", "us_ca", "west")
+      elif "chicago" in market_norm or zip3 in {"606", "607", "608"}:
+        _append_unique(regions, "chicago", "il")
+
+      if state_token == "NY":
+        _append_unique(regions, "ny")
+      elif state_token == "CA":
+        _append_unique(regions, "us_ca", "west")
+      elif state_token == "IL":
+        _append_unique(regions, "il")
+
+      if state_token in _US_WEST_STATE_CODES or (
+        zip3.isdigit() and int(zip3) >= 800
+      ):
+        _append_unique(regions, "west")
+
+  # French-Canadian networks carry Quebec affinity even when market metadata is minimal
+  if is_canada and (language == "fr" or "quebec" in hay):
+    _append_unique(regions, "qc")
+
+  if is_canada:
+    _append_unique(regions, "ca", "us")
+  elif is_usa:
+    _append_unique(regions, "us")
   else:
-    regions.append(country.lower()[:2])
+    _append_unique(regions, country.lower()[:2])
   return regions
 
 
@@ -494,12 +645,19 @@ def normalize_provider_slots(
   raw_slots: list[RawProviderSlot],
   *,
   postal_code: str = "",
+  market: str = "",
+  provider_name: str = "",
+  lineup_id: str = "",
   excluded_channels: set[int] | None = None,
   pair_sd_hd: bool = True,
 ) -> list[LineupChannel]:
   """Convert raw provider slots into deduplicated/paired `LineupChannel` objects."""
   excluded = excluded_channels or set()
-  official_logos_by_chno = _load_official_logo_index()
+  official_logos_by_chno = (
+    _load_official_logo_index()
+    if is_bell_fibe_lineup(lineup_id=lineup_id, provider=provider_name)
+    else {}
+  )
 
   parsed_list: list[_ParsedSlot] = []
   for rs in raw_slots:
@@ -523,7 +681,7 @@ def normalize_provider_slots(
     base_id = _norm_key(cs_base) if len(cs_base) >= 3 else _norm_key(display)
     lang = _infer_language(display, rs.callsign, rs.language)
     grp = _infer_group(display, rs.callsign, lang)
-    regs = _infer_regions(display, rs.country, postal_code, lang)
+    regs = _infer_regions(display, rs.country, postal_code, lang, market=market)
 
     parsed_list.append(
       _ParsedSlot(
@@ -658,8 +816,21 @@ def _populate_sibling_exclusions(channels: list[LineupChannel]) -> None:
     "ca",
     "us",
     "east",
+    "west",
+    "pacific",
     "montreal",
     "quebec",
+    "toronto",
+    "ontario",
+    "ottawa",
+    "vancouver",
+    "bc",
+    "calgary",
+    "edmonton",
+    "alberta",
+    "winnipeg",
+    "halifax",
+    "atlantic",
     "canada",
     "tv",
     "channel",

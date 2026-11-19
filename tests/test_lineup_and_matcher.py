@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from bellhop.lineup_loader import load_lineup
+from bellhop.lineup_loader import CableLineup, load_lineup
 from bellhop.matcher import ChannelMatcher
 from bellhop.models import XtreamStream
+from bellhop.providers.normalizer import (
+  RawProviderSlot,
+  normalize_provider_slots,
+)
 
 LINEUP_PATH = (
   Path(__file__).resolve().parents[1]
@@ -165,3 +169,167 @@ def test_every_bell_fibe_channel_matches_canonical_xtream_stream() -> None:
     if m.candidates[0].stream.stream_id != 10000 + m.channel.chno
   ]
   assert wrong_top == [], f"Channels matched wrong sibling stream: {wrong_top}"
+
+
+def test_non_montreal_lineup_regional_and_timezone_generalization() -> None:
+  """Verify Toronto, Vancouver, New York, and LA lineups infer local feeds & logos."""
+  streams = [
+    XtreamStream(
+      stream_id=101,
+      name="CA | CTV Montreal (CFCF) FHD",
+      category_name="Canada EN",
+    ),
+    XtreamStream(
+      stream_id=102,
+      name="CA | CTV Toronto (CFTO) FHD",
+      category_name="Canada EN",
+    ),
+    XtreamStream(
+      stream_id=103,
+      name="CA | CTV Vancouver (CIVT) FHD",
+      category_name="Canada EN",
+    ),
+    XtreamStream(
+      stream_id=201,
+      name="CA | CBC Toronto (CBLT) FHD",
+      category_name="Canada EN",
+    ),
+    XtreamStream(
+      stream_id=202,
+      name="CA | CBC Vancouver (CBUT) FHD",
+      category_name="Canada EN",
+    ),
+    XtreamStream(
+      stream_id=301,
+      name="CA | TSN East FHD",
+      category_name="Canada Sports",
+    ),
+    XtreamStream(
+      stream_id=302,
+      name="CA | TSN West FHD",
+      category_name="Canada Sports",
+    ),
+    XtreamStream(
+      stream_id=401,
+      name="US | NBC New York (WNBC) FHD",
+      category_name="USA Locals",
+    ),
+    XtreamStream(
+      stream_id=402,
+      name="US | NBC Los Angeles (KNBC) FHD",
+      category_name="USA Locals",
+    ),
+    XtreamStream(
+      stream_id=501,
+      name="US | HBO East FHD",
+      category_name="USA Movies",
+    ),
+    XtreamStream(
+      stream_id=502,
+      name="US | HBO West FHD",
+      category_name="USA Movies",
+    ),
+  ]
+  matcher = ChannelMatcher(streams)
+
+  # 1. Rogers Toronto (M5V): chno 1101 keeps its CFTO logo (not Bell Fibe CBFT)
+  #    and prioritizes CTV Toronto (#102), while out-of-market CTV Vancouver (#1250)
+  #    picks #103.
+  toronto_channels = normalize_provider_slots(
+    [
+      RawProviderSlot(
+        chno=1101,
+        raw_name="CTV HD",
+        callsign="CFTO-HD",
+        logo_url="https://logos.example/cfto.png",
+        country="CAN",
+      ),
+      RawProviderSlot(
+        chno=1250,
+        raw_name="CTV Vancouver HD",
+        callsign="CIVT-HD",
+        country="CAN",
+      ),
+    ],
+    postal_code="M5V 2T6",
+    market="Toronto, ON",
+    provider_name="Rogers - Toronto (Digital)",
+    lineup_id="TVG-9100009999",
+  )
+  tor_by_chno = {c.chno: c for c in toronto_channels}
+  assert tor_by_chno[1101].logo == "https://logos.example/cfto.png"
+  assert "toronto" in tor_by_chno[1101].regions
+  assert "vancouver" in tor_by_chno[1250].regions
+  assert "toronto" not in tor_by_chno[1250].regions
+  assert matcher.find_candidates(tor_by_chno[1101])[0].stream.stream_id == 102
+  assert matcher.find_candidates(tor_by_chno[1250])[0].stream.stream_id == 103
+
+  # Snapshot round-trip of non-Bell-Fibe lineup also avoids Bell Fibe chno logo bleed
+  reloaded_tor = CableLineup.from_dict(
+    {
+      "lineup_id": "TVG-9100009999",
+      "provider": "Rogers - Toronto (Digital)",
+      "market": "Toronto, ON",
+      "postal_prefix": "M5V",
+      "channels": [{"chno": 1101, "name": "CTV", "group": "Local", "logo": ""}],
+    }
+  )
+  assert reloaded_tor.channels[0].logo is None
+
+  # 2. Telus Vancouver (V6B): CBC picks Vancouver (#202) and TSN prefers West (#302)
+  van_channels = normalize_provider_slots(
+    [
+      RawProviderSlot(
+        chno=101,
+        raw_name="CBC HD",
+        callsign="CBUT-DT",
+        country="CAN",
+      ),
+      RawProviderSlot(
+        chno=400,
+        raw_name="TSN HD",
+        callsign="TSN",
+        country="CAN",
+      ),
+    ],
+    postal_code="V6B 1A1",
+    market="Vancouver, BC",
+    provider_name="Telus Optik TV - Vancouver",
+    lineup_id="CAN-TELUS-VAN",
+  )
+  van_by_chno = {c.chno: c for c in van_channels}
+  assert "vancouver" in van_by_chno[101].regions
+  assert "west" in van_by_chno[400].regions
+  assert matcher.find_candidates(van_by_chno[101])[0].stream.stream_id == 202
+  tsn_west = matcher.find_candidates(van_by_chno[400])[0]
+  assert tsn_west.stream.stream_id == 302
+  assert "tz:west" in tsn_west.reasons
+
+  # 3. New York (10001) vs Los Angeles (90001): local NBC + East/West HBO feeds
+  ny_channels = normalize_provider_slots(
+    [
+      RawProviderSlot(chno=4, raw_name="NBC", callsign="WNBC", country="USA"),
+      RawProviderSlot(chno=501, raw_name="HBO", callsign="HBO", country="USA"),
+    ],
+    postal_code="10001",
+    market="New York, NY",
+    provider_name="Astound - Manhattan",
+    lineup_id="TVG-9133001919",
+  )
+  ny_by_chno = {c.chno: c for c in ny_channels}
+  assert matcher.find_candidates(ny_by_chno[4])[0].stream.stream_id == 401
+  assert matcher.find_candidates(ny_by_chno[501])[0].stream.stream_id == 501
+
+  la_channels = normalize_provider_slots(
+    [
+      RawProviderSlot(chno=4, raw_name="NBC", callsign="KNBC", country="USA"),
+      RawProviderSlot(chno=501, raw_name="HBO", callsign="HBO", country="USA"),
+    ],
+    postal_code="90001",
+    market="Los Angeles, CA",
+    provider_name="Spectrum - Los Angeles",
+    lineup_id="USA-LA-X",
+  )
+  la_by_chno = {c.chno: c for c in la_channels}
+  assert matcher.find_candidates(la_by_chno[4])[0].stream.stream_id == 402
+  assert matcher.find_candidates(la_by_chno[501])[0].stream.stream_id == 502
