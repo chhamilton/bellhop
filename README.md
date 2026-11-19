@@ -159,7 +159,7 @@ docker compose exec bellhop bellhop run --skip validate
 
 Run `./.agents/scripts/bootstrap.sh` to create `.venv`, install all Python runtime + dev dependencies, install the TypeScript compiler, build frontend JS, and run the full test suite:
 
-- **Python Runtime (`pyproject.toml`):** Python `>=3.10`, `aiohttp`, `pyyaml`, `python-dotenv`, `rich` (plus optional system `ffmpeg`/`ffprobe` for Phase 4 codec probing).
+- **Python Runtime (`pyproject.toml`):** Python `>=3.10`, `aiohttp`, `pyyaml`, `ruamel.yaml`, `python-dotenv`, `rich` (plus optional system `ffmpeg`/`ffprobe` for Phase 4 codec probing).
 - **Python Dev (`pip install -e ".[dev]"`):** `mypy`, `types-PyYAML`, `ruff`, `pytest`, `pytest-asyncio`, `nodejs-wheel` (provides self-contained `node` + `npm` inside `.venv`).
 - **Frontend Dev (`package.json`):** `typescript` (compiles `src/bellhop_web/frontend/*.ts` → `src/bellhop_web/static/*.js`).
 
