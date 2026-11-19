@@ -35,6 +35,7 @@ import re
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
@@ -266,9 +267,11 @@ class EpgRefreshService:
     config: EpgRefreshConfig,
     *,
     session_factory: ClientSessionFactory | None = None,
+    clock: Callable[[], float] = time.time,
   ) -> None:
     self.store = store
     self.config = config
+    self._clock = clock
     self._session_factory: ClientSessionFactory = (
       session_factory or default_session_factory
     )
@@ -314,7 +317,7 @@ class EpgRefreshService:
       if not isinstance(channels_map, dict):
         return 0
 
-      ref_now = int(time.time()) if now_ts is None else now_ts
+      ref_now = int(self._clock()) if now_ts is None else now_ts
       stale_cutoff = ref_now - STALE_ENTRY_GRACE_SEC
       programs_by_id: dict[str, list[ProgramItem]] = {}
       evicted_count = 0
@@ -424,6 +427,7 @@ class EpgRefreshService:
     tmp_path.replace(cache_path)
 
   def status_dict(self, *, now_ts: int | None = None) -> EpgStatusDict:
+    effective_now = int(self._clock()) if now_ts is None else now_ts
     total_progs = 0
     active_progs = 0
     max_stop_ts = 0
@@ -431,7 +435,7 @@ class EpgRefreshService:
     try:
       snap = self.store.get_snapshot()
       total_progs, active_progs, max_stop_ts = snap.epg_coverage_stats(
-        now_ts=now_ts
+        now_ts=effective_now
       )
       channels_with_epg = sum(1 for v in snap.programs_by_epg_id.values() if v)
     except Exception:
@@ -459,7 +463,7 @@ class EpgRefreshService:
     if not self.is_configured:
       return False, "unconfigured"
 
-    now = int(time.time()) if now_ts is None else now_ts
+    now = int(self._clock()) if now_ts is None else now_ts
     try:
       snap = self.store.get_snapshot()
     except Exception:
@@ -488,7 +492,7 @@ class EpgRefreshService:
       return True, "low_coverage"
     if self._last_updated is None:
       return True, "cache_missing"
-    if (time.time() - self._last_updated) >= ttl_sec:
+    if (now - self._last_updated) >= ttl_sec:
       return True, "ttl_expired"
     return False, "fresh"
 
@@ -505,7 +509,7 @@ class EpgRefreshService:
       return False
     if (
       self._last_attempt is not None
-      and (time.time() - self._last_attempt) < self.config.min_retry_sec
+      and (self._clock() - self._last_attempt) < self.config.min_retry_sec
     ):
       return False
 

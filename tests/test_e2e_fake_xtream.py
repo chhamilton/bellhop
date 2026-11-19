@@ -75,6 +75,7 @@ async def _read_first_ts_chunk(
   return await asyncio.wait_for(_collect(), timeout=timeout)
 
 
+@pytest.mark.slow
 @pytest.mark.asyncio
 async def test_e2e_pipeline_to_web_guide_passthrough_epg_and_single_tuner(
   tmp_path: Path,
@@ -273,6 +274,7 @@ pipeline:
       await app.shutdown()
 
 
+@pytest.mark.slow
 @pytest.mark.asyncio
 async def test_e2e_reload_channel_deep_link_race_placeholder_failover_and_hls(
   tmp_path: Path,
