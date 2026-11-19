@@ -241,6 +241,7 @@ def test_requirements_lock_and_vendored_player_provenance() -> None:
     assert ver in raw_bytes.decode("utf-8", errors="replace")
 
 
+@pytest.mark.slow
 @pytest.mark.asyncio
 async def test_container_entrypoint_end_to_end_pipeline_and_serve(
   tmp_path: Path,
@@ -464,6 +465,8 @@ channels:
     await fake_xtream.stop()
 
 
+@pytest.mark.docker
+@pytest.mark.slow
 @pytest.mark.asyncio
 async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
   """Build the real Alpine Docker image and test it E2E against FakeXtreamServer."""

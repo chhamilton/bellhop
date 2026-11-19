@@ -15,6 +15,7 @@ import json
 import os
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
 from math import ceil
@@ -71,8 +72,14 @@ class SessionInfo:
 class WebAuthManager:
   """Manages Web Guide login verification and HMAC-SHA256 signed session cookies."""
 
-  def __init__(self, config: WebAuthConfig) -> None:
+  def __init__(
+    self,
+    config: WebAuthConfig,
+    *,
+    clock: Callable[[], float] = time.time,
+  ) -> None:
     self.config = config
+    self._clock = clock
     self._key: bytes | None = None
 
   @property
@@ -132,7 +139,7 @@ class WebAuthManager:
   def create_session_token(
     self, username: str, *, now_ts: int | None = None
   ) -> tuple[str, SessionInfo]:
-    now = int(time.time()) if now_ts is None else now_ts
+    now = int(self._clock()) if now_ts is None else now_ts
     exp = now + self.ttl_seconds
     payload = {
       "u": username,
@@ -180,7 +187,7 @@ class WebAuthManager:
     exp = int(data.get("exp") or 0)
     ver = str(data.get("v") or "")
 
-    now = int(time.time()) if now_ts is None else now_ts
+    now = int(self._clock()) if now_ts is None else now_ts
     if exp <= now:
       return None
     if not hmac.compare_digest(user, self.config.username):
@@ -248,6 +255,7 @@ class LoginRateLimiter:
   max_failures: int = 8
   window_sec: float = 60.0
   max_tracked_ips: int = 4096
+  clock: Callable[[], float] = field(default=time.monotonic, repr=False)
   _failures: dict[str, list[float]] = field(default_factory=dict, repr=False)
 
   def _prune_ip(self, ip: str, cutoff: float) -> list[float]:
@@ -266,7 +274,7 @@ class LoginRateLimiter:
     """Return `0` if allowed, or positive `Retry-After` seconds if throttled."""
     if self.max_failures <= 0 or self.window_sec <= 0:
       return 0
-    ts_now = time.monotonic() if now is None else now
+    ts_now = self.clock() if now is None else now
     fresh = self._prune_ip(ip or "unknown", ts_now - self.window_sec)
     if len(fresh) < self.max_failures:
       return 0
@@ -279,7 +287,7 @@ class LoginRateLimiter:
     if self.max_failures <= 0 or self.window_sec <= 0:
       return
     key = ip or "unknown"
-    ts_now = time.monotonic() if now is None else now
+    ts_now = self.clock() if now is None else now
     cutoff = ts_now - self.window_sec
     if (
       key not in self._failures and len(self._failures) >= self.max_tracked_ips

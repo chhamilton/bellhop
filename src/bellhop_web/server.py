@@ -155,8 +155,14 @@ class ActiveTunerSession:
 class TunerSessionManager:
   """Coordinates single-tuner stream handoffs so max_connections=1 accounts never collide."""
 
-  def __init__(self, settle_sec: float = 0.18) -> None:
+  def __init__(
+    self,
+    settle_sec: float = 0.18,
+    *,
+    clock: Callable[[], float] = time.time,
+  ) -> None:
     self.settle_sec = max(0.0, settle_sec)
+    self._clock = clock
     self._lock = asyncio.Lock()
     self._seq = 0
     self._active: ActiveTunerSession | None = None
@@ -171,7 +177,7 @@ class TunerSessionManager:
       "chno": s.chno,
       "channel_name": s.channel_name,
       "mode": s.mode,
-      "uptime_sec": round(max(0.0, time.time() - s.started_at), 1),
+      "uptime_sec": round(max(0.0, self._clock() - s.started_at), 1),
     }
 
   async def preempt_and_acquire(
@@ -192,7 +198,7 @@ class TunerSessionManager:
         chno=chno,
         channel_name=channel_name,
         mode=mode,
-        started_at=time.time(),
+        started_at=self._clock(),
         client_id=client_id,
         task=task,
       )
@@ -254,13 +260,17 @@ class WebGuideApp:
     trusted_proxy_ips: Sequence[str] = DEFAULT_TRUSTED_PROXY_IPS,
     config_reader: Callable[[], dict[str, Any]] | None = None,
     config_writer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    clock: Callable[[], float] = time.time,
   ) -> None:
     self.store = store
     self.static_dir = static_dir
-    self.tuner = TunerSessionManager(settle_sec=settle_sec)
+    self._clock = clock
+    self.tuner = TunerSessionManager(settle_sec=settle_sec, clock=clock)
     self.epg_refresher = epg_refresher
     self.auth = auth
-    self.login_limiter: LoginRateLimiter = login_limiter or LoginRateLimiter()
+    self.login_limiter: LoginRateLimiter = login_limiter or LoginRateLimiter(
+      clock=clock
+    )
     self.trust_proxy_headers = bool(trust_proxy_headers)
     self._trusted_proxy_networks: tuple[IpNetwork, ...] = (
       parse_trusted_proxy_networks(trusted_proxy_ips)
@@ -369,11 +379,15 @@ class WebGuideApp:
   def _auth_enabled(self) -> bool:
     return self.auth is not None and self.auth.enabled
 
-  def _session_for(self, request: web.Request) -> SessionInfo | None:
+  def _session_for(
+    self, request: web.Request, *, now_ts: int | None = None
+  ) -> SessionInfo | None:
     if self.auth is None or not self.auth.enabled:
       return None
+    effective_now = int(self._clock()) if now_ts is None else now_ts
     return self.auth.extract_session_from_headers(
-      {"cookie": request.headers.get("Cookie", "")}
+      {"cookie": request.headers.get("Cookie", "")},
+      now_ts=effective_now,
     )
 
   def _protected(self, handler: _Handler) -> _Handler:
@@ -383,7 +397,8 @@ class WebGuideApp:
       if self.auth is None or not self.auth.enabled:
         return await handler(request)
 
-      session = self._session_for(request)
+      now_ts = int(self._clock())
+      session = self._session_for(request, now_ts=now_ts)
       if session is None:
         clear_hdr = (
           {"Set-Cookie": self.auth.build_clear_cookie_header()}
@@ -402,8 +417,10 @@ class WebGuideApp:
         )
 
       response = await handler(request)
-      if session.needs_renewal() and not response.prepared:
-        new_tok, _ = self.auth.create_session_token(session.username)
+      if session.needs_renewal(now_ts=now_ts) and not response.prepared:
+        new_tok, _ = self.auth.create_session_token(
+          session.username, now_ts=now_ts
+        )
         response.headers.add(
           "Set-Cookie", self.auth.build_set_cookie_header(new_tok)
         )
@@ -601,7 +618,10 @@ class WebGuideApp:
 
   async def _handle_health(self, _request: web.Request) -> web.StreamResponse:
     snap = self.store.get_snapshot()
-    total_progs, active_progs, _max_stop = snap.epg_coverage_stats()
+    now_ts = int(self._clock())
+    total_progs, active_progs, _max_stop = snap.epg_coverage_stats(
+      now_ts=now_ts
+    )
     payload: HealthApiResponseDict = {
       "status": "ok",
       "lineup_id": snap.lineup_id,
@@ -611,7 +631,7 @@ class WebGuideApp:
       "category_count": len(snap.categories),
       "epg_program_count": total_progs,
       "epg_active_program_count": active_progs,
-      "epg_status": self._epg_status_dict(snap),
+      "epg_status": self._epg_status_dict(snap, now_ts=now_ts),
       "active_tuner": self.tuner.active_info,
       "auth_required": self._auth_enabled,
     }
@@ -654,7 +674,7 @@ class WebGuideApp:
     if self.epg_refresher is not None:
       self.epg_refresher.trigger_background_if_needed(reason_prefix="lineup")
     snap = self.store.get_snapshot()
-    now_ts = int(time.time())
+    now_ts = int(self._clock())
     query = request.query
 
     cat_filter = query.get("category", "").strip()
@@ -737,7 +757,7 @@ class WebGuideApp:
         {"error": f"Unknown channel {chno}"}, status=HTTPStatus.NOT_FOUND
       )
 
-    now_ts = int(time.time())
+    now_ts = int(self._clock())
     progs = snap.programs_by_epg_id.get(ch.epg_channel_id, [])
     upcoming = [
       p.to_dict(now_ts=now_ts)
