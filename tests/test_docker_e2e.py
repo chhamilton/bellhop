@@ -79,21 +79,28 @@ def test_dockerfile_compose_and_env_contract(
   assert 'CMD ["bellhop", "serve"]' in dockerfile
   assert "bellhop-web" not in dockerfile
 
-  # Validate POSIX shell syntax and executable bit of docker/entrypoint.sh.
-  entrypoint = REPO_ROOT / "docker" / "entrypoint.sh"
-  assert entrypoint.is_file()
-  assert os.access(entrypoint, os.X_OK), (
-    "docker/entrypoint.sh must be executable"
+  # Validate POSIX shell syntax and executable bit of docker/entrypoint.sh & bellhop-shim.sh.
+  for script_name in ("entrypoint.sh", "bellhop-shim.sh"):
+    script_path = REPO_ROOT / "docker" / script_name
+    assert script_path.is_file()
+    assert os.access(script_path, os.X_OK), (
+      f"docker/{script_name} must be executable"
+    )
+    sh_check = subprocess.run(
+      ["sh", "-n", str(script_path)],
+      capture_output=True,
+      text=True,
+      check=False,
+    )
+    assert sh_check.returncode == 0, (
+      f"{script_name} syntax error: {sh_check.stderr}"
+    )
+
+  entrypoint_text = (REPO_ROOT / "docker" / "entrypoint.sh").read_text(
+    encoding="utf-8"
   )
-  sh_check = subprocess.run(
-    ["sh", "-n", str(entrypoint)],
-    capture_output=True,
-    text=True,
-    check=False,
-  )
-  assert sh_check.returncode == 0, (
-    f"entrypoint.sh syntax error: {sh_check.stderr}"
-  )
+  assert "chown -R" not in entrypoint_text
+  assert "find " in entrypoint_text
 
   # Validate docker-compose.example.yml structure & surfaced credentials/mounts.
   compose: dict[str, Any] = yaml.safe_load(
@@ -558,14 +565,24 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
       assert tz_check.returncode == 0
       assert tz_check.stdout.strip() in {"EST", "EDT"}
 
-      # 3. Run the 6-phase pipeline inside the live container (as PUID:PGID) against FakeXtreamServer.
+      # 3. Run the 6-phase pipeline via plain `docker exec` (NO `-u` flag!):
+      #    `docker exec` starts as uid 0, and `/usr/local/bin/bellhop` must auto-drop
+      #    privileges to PUID:PGID so volume files are never created as root.
+      raw_exec_id = await asyncio.to_thread(
+        subprocess.run,
+        [container_cli, "exec", container_name, "id", "-u"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+      )
+      assert raw_exec_id.stdout.strip() == "0"
+
       run_pipe = await asyncio.to_thread(
         subprocess.run,
         [
           container_cli,
           "exec",
-          "-u",
-          f"{uid}:{gid}",
           container_name,
           "bellhop",
           "run",

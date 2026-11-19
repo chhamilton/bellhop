@@ -39,8 +39,10 @@ COPY --from=frontend-builder /build/src/bellhop_web/static/login.js ./src/bellho
 COPY --from=frontend-builder /build/src/bellhop_web/static/app.js ./src/bellhop_web/static/app.js
 
 RUN pip install --no-cache-dir . \
-  && chmod +x /app/docker/entrypoint.sh \
-  && mkdir -p /config /data/state /data/cache /data/output/xtream
+  && mkdir -p /usr/local/libexec /config /data/state /data/cache /data/output/xtream \
+  && mv /usr/local/bin/bellhop /usr/local/libexec/bellhop \
+  && cp /app/docker/bellhop-shim.sh /usr/local/bin/bellhop \
+  && chmod +x /app/docker/entrypoint.sh /app/docker/bellhop-shim.sh /usr/local/bin/bellhop
 
 ENV TZ=UTC \
     PUID=1000 \
