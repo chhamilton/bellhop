@@ -320,12 +320,13 @@ class WebGuideApp:
     r = app.router
     protect = self._protected
 
-    # Public brand, favicon & client-prefs/login assets (needed by `/login`).
+    # Public brand, favicon, stylesheet & client-prefs/login assets (needed by `/login`).
     for path, asset in (
       ("/favicon.ico", "favicon.ico"),
       ("/static/favicon.ico", "favicon.ico"),
       ("/favicon.svg", "bellhop-logo.svg"),
       ("/static/bellhop-logo.svg", "bellhop-logo.svg"),
+      ("/static/styles.css", "styles.css"),
       ("/static/prefs.js", "prefs.js"),
       ("/static/login.js", "login.js"),
     ):

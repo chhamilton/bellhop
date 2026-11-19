@@ -700,12 +700,20 @@ async def test_public_logo_and_favicon_served_before_auth(
         assert 'href="/favicon.ico"' in login_text
         assert "/static/prefs.js" in login_text
         assert "/static/login.js" in login_text
+        assert 'href="/static/styles.css"' in login_text
+        assert 'class="login-page"' in login_text
         assert "<script>" not in login_text
+        assert "<style>" not in login_text
         assert 'id="theme-toggle-btn"' in login_text
         assert 'class="icon-sun"' in login_text
         assert 'class="icon-moon"' in login_text
 
-      # Brand, favicon, prefs & login controller assets are publicly accessible before auth
+      # Brand, favicon, shared stylesheet, prefs & login controller are public before auth
+      async with client.get("/static/styles.css") as pre_styles:
+        assert pre_styles.status == 200
+        assert "text/css" in pre_styles.headers["Content-Type"]
+        assert "body.login-page" in await pre_styles.text()
+
       async with client.get("/static/login.js") as login_js:
         assert login_js.status == 200
         assert "javascript" in login_js.headers["Content-Type"]
