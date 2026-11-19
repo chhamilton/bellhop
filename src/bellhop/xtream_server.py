@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import json
 import logging
 import re
 import time
@@ -31,6 +30,7 @@ from aiohttp import web
 
 from bellhop.config import AppConfig
 from bellhop.epg_loader import build_passthrough_xmltv_url
+from bellhop_web.export_bundle import ExportBundleReader, as_str_dict
 from bellhop_web.http_utils import (
   build_access_urls,
   bytes_response,
@@ -88,7 +88,7 @@ class PlayerApiStreamDict(TypedDict):
 
 
 def _as_dict(val: object) -> dict[str, Any]:
-  return dict(val) if isinstance(val, Mapping) else {}
+  return as_str_dict(val)
 
 
 def _rewrite_stream_extension(upstream_url: str, requested_ext: str) -> str:
@@ -196,25 +196,15 @@ class XtreamExportStore:
   def __init__(self, xtream_dir: Path, *, fallback_xmltv_url: str = "") -> None:
     self.xtream_dir = xtream_dir.resolve()
     self.fallback_xmltv_url = fallback_xmltv_url
+    self._bundle_reader = ExportBundleReader(self.xtream_dir)
     self._last_sig: tuple[float, ...] = ()
     self._snapshot: XtreamExportSnapshot | None = None
 
   def _watched_files(self) -> list[Path]:
-    return [
-      self.xtream_dir / "bellhop_xtream_playlist.json",
-      self.xtream_dir / "bell_fibe_xtream_playlist.json",
-      self.xtream_dir / "get_live_streams.json",
-      self.xtream_dir / "get_live_categories.json",
-    ]
+    return self._bundle_reader.watched_files()
 
   def _signature(self) -> tuple[float, ...]:
-    out: list[float] = []
-    for path in self._watched_files():
-      try:
-        out.append(path.stat().st_mtime if path.is_file() else 0.0)
-      except OSError:
-        out.append(0.0)
-    return tuple(out)
+    return self._bundle_reader.compute_signature()
 
   def get_snapshot(self, *, force_reload: bool = False) -> XtreamExportSnapshot:
     sig = self._signature()
@@ -228,136 +218,72 @@ class XtreamExportStore:
     return snap
 
   def _load_from_disk(self) -> XtreamExportSnapshot:
-    primary_bundle = self.xtream_dir / "bellhop_xtream_playlist.json"
-    legacy_bundle = self.xtream_dir / "bell_fibe_xtream_playlist.json"
-    bundle_path = primary_bundle if primary_bundle.is_file() else legacy_bundle
-    streams_path = self.xtream_dir / "get_live_streams.json"
-    cats_path = self.xtream_dir / "get_live_categories.json"
-
-    lineup_info: dict[str, Any] = {}
-    server_info: dict[str, Any] = {}
-    user_info: dict[str, Any] = {}
-    epg_guide: dict[str, Any] = {}
-    raw_categories: list[Any] = []
-    raw_streams: list[Any] = []
-
-    if bundle_path.is_file():
-      bundle = _as_dict(json.loads(bundle_path.read_text(encoding="utf-8")))
-      lineup_info = _as_dict(bundle.get("lineup_info"))
-      server_info = _as_dict(bundle.get("server_info"))
-      user_info = _as_dict(bundle.get("user_info"))
-      epg_guide = _as_dict(bundle.get("epg_guide"))
-      raw_categories = list(bundle.get("live_categories") or [])
-      raw_streams = list(bundle.get("live_streams") or [])
-    else:
-      if cats_path.is_file():
-        loaded_cats = json.loads(cats_path.read_text(encoding="utf-8"))
-        if isinstance(loaded_cats, list):
-          raw_categories = loaded_cats
-      if streams_path.is_file():
-        loaded_streams = json.loads(streams_path.read_text(encoding="utf-8"))
-        if isinstance(loaded_streams, list):
-          raw_streams = loaded_streams
-
-    if not raw_streams:
-      # Allow `bellhop serve` to start cleanly before the first pipeline export
-      # and automatically hot-reload once `output/xtream/` is populated.
+    bundle_data = self._bundle_reader.read(
+      fallback_xmltv_url=self.fallback_xmltv_url
+    )
+    if not bundle_data.initialized:
       return XtreamExportSnapshot(
-        lineup_id=str(lineup_info.get("lineup_id") or "UNINITIALIZED"),
-        provider=str(lineup_info.get("provider") or "Bellhop"),
-        market=str(lineup_info.get("market") or ""),
-        timezone=str(server_info.get("timezone") or "America/Montreal"),
-        xmltv_url=self.fallback_xmltv_url,
-        loaded_at=time.time(),
+        lineup_id=bundle_data.lineup_id,
+        provider=bundle_data.provider,
+        market=bundle_data.market,
+        timezone=bundle_data.timezone,
+        xmltv_url=bundle_data.xmltv_url,
+        loaded_at=bundle_data.loaded_at,
       )
 
-    categories: list[PassthroughCategory] = []
-    seen_cats: set[str] = set()
-    for raw_cat in raw_categories:
-      c = _as_dict(raw_cat)
-      cid = str(c.get("category_id") or "").strip()
-      cname = str(c.get("category_name") or "General").strip()
-      if cid and cid not in seen_cats:
-        seen_cats.add(cid)
-        categories.append(
-          PassthroughCategory(
-            category_id=cid,
-            category_name=cname,
-            parent_id=int(c.get("parent_id") or 0),
-          )
-        )
+    categories = [
+      PassthroughCategory(
+        category_id=cat.category_id,
+        category_name=cat.category_name,
+        parent_id=cat.parent_id,
+      )
+      for cat in bundle_data.categories
+    ]
 
     streams: list[PassthroughStream] = []
     stream_by_id: dict[int, PassthroughStream] = {}
     stream_by_num: dict[int, PassthroughStream] = {}
 
-    for idx, raw_item in enumerate(raw_streams):
-      if not isinstance(raw_item, Mapping):
-        continue
-      num = int(raw_item.get("num") or (idx + 1))
-      stream_id = int(raw_item.get("stream_id") or num)
-      cat_id = str(raw_item.get("category_id") or "1")
-      cat_name = str(raw_item.get("category_name") or "General")
-      if cat_id not in seen_cats:
-        seen_cats.add(cat_id)
-        categories.append(
-          PassthroughCategory(category_id=cat_id, category_name=cat_name)
-        )
-
-      guide = _as_dict(raw_item.get("guide"))
+    for rec in bundle_data.streams:
+      stream_id = rec.stream_id or rec.num
       normalized = PassthroughStream(
-        num=num,
-        name=str(raw_item.get("name") or f"Channel {num}"),
-        stream_type="live",
+        num=rec.num,
+        name=rec.name,
+        stream_type=rec.stream_type,
         stream_id=stream_id,
-        stream_icon=str(raw_item.get("stream_icon") or ""),
-        epg_channel_id=str(raw_item.get("epg_channel_id") or ""),
-        added=str(raw_item.get("added") or int(time.time())),
-        is_adult=int(raw_item.get("is_adult") or 0),
-        category_id=cat_id,
-        category_ids=[int(cat_id)] if cat_id.isdigit() else [1],
-        category_name=cat_name,
-        custom_sid=str(raw_item.get("custom_sid") or num),
-        tv_archive=int(raw_item.get("tv_archive") or 0),
-        tv_archive_duration=int(raw_item.get("tv_archive_duration") or 0),
-        language=str(guide.get("language") or ""),
-        gracenote_station_id=str(guide.get("gracenote_station_id") or ""),
-        upstream_url=str(raw_item.get("direct_source") or "").strip(),
+        stream_icon=rec.stream_icon,
+        epg_channel_id=rec.epg_channel_id,
+        added=rec.added,
+        is_adult=rec.is_adult,
+        category_id=rec.category_id,
+        category_ids=list(rec.category_ids),
+        category_name=rec.category_name,
+        custom_sid=rec.custom_sid,
+        tv_archive=rec.tv_archive,
+        tv_archive_duration=rec.tv_archive_duration,
+        language=rec.language,
+        gracenote_station_id=rec.gracenote_station_id,
+        upstream_url=rec.direct_source,
       )
       streams.append(normalized)
       stream_by_id.setdefault(stream_id, normalized)
-      stream_by_num[num] = normalized
-
-    xmltv_url = str(
-      server_info.get("xmltv_url")
-      or epg_guide.get("xmltv_url")
-      or self.fallback_xmltv_url
-      or ""
-    ).strip()
-
-    raw_fmts = user_info.get("allowed_output_formats")
-    allowed_formats = (
-      [str(f) for f in raw_fmts if f]
-      if isinstance(raw_fmts, list) and raw_fmts
-      else ["m3u8", "ts"]
-    )
-    exp_raw = user_info.get("exp_date")
+      stream_by_num[rec.num] = normalized
 
     return XtreamExportSnapshot(
-      lineup_id=str(lineup_info.get("lineup_id") or "CAN-BELLFIBE-MTL-X"),
-      provider=str(lineup_info.get("provider") or "Bell Fibe TV"),
-      market=str(lineup_info.get("market") or "Montréal, QC"),
-      timezone=str(server_info.get("timezone") or "America/Montreal"),
-      max_connections=str(user_info.get("max_connections") or "1"),
-      allowed_output_formats=allowed_formats,
-      exp_date=str(exp_raw) if exp_raw is not None else None,
-      is_trial=str(user_info.get("is_trial") or "0"),
-      xmltv_url=xmltv_url,
+      lineup_id=bundle_data.lineup_id,
+      provider=bundle_data.provider,
+      market=bundle_data.market,
+      timezone=bundle_data.timezone,
+      max_connections=bundle_data.max_connections,
+      allowed_output_formats=list(bundle_data.allowed_output_formats),
+      exp_date=bundle_data.exp_date,
+      is_trial=bundle_data.is_trial,
+      xmltv_url=bundle_data.xmltv_url,
       categories=categories,
       streams=streams,
       stream_by_id=stream_by_id,
       stream_by_num=stream_by_num,
-      loaded_at=time.time(),
+      loaded_at=bundle_data.loaded_at,
     )
 
 

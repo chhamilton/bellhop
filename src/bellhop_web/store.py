@@ -38,7 +38,6 @@ from __future__ import annotations
 import gzip
 import io
 import json
-import re
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping
@@ -47,7 +46,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypedDict
 
-M3U_ATTR_RE = re.compile(r'([a-zA-Z0-9_-]+)="([^"]*)"')
+from bellhop_web.export_bundle import (
+  ExportBundleReader,
+  as_str_dict,
+  parse_m3u8_fallback,
+)
 
 
 class ProgramItemDict(TypedDict, total=False):
@@ -96,7 +99,7 @@ class PublicChannelDict(TypedDict):
 
 
 def _as_dict(val: object) -> dict[str, Any]:
-  return dict(val) if isinstance(val, Mapping) else {}
+  return as_str_dict(val)
 
 
 def parse_xmltv_ts(raw: str) -> int:
@@ -319,34 +322,27 @@ class LineupGuideStore:
     self.xtream_dir = xtream_dir.resolve()
     self.m3u8_path = m3u8_path.resolve() if m3u8_path else None
     self.xmltv_override = xmltv_path.resolve() if xmltv_path else None
+    extra_watched = [
+      self.xtream_dir / "get_epg.json",
+      self.xtream_dir / "xmltv.xml",
+    ]
+    if self.xmltv_override is not None:
+      extra_watched.append(self.xmltv_override)
+    self._bundle_reader = ExportBundleReader(
+      self.xtream_dir,
+      m3u8_path=self.m3u8_path,
+      extra_watched_files=extra_watched,
+    )
     self._last_signature: tuple[float, ...] = ()
     self._snapshot: LineupSnapshot | None = None
     self._epg_overlay: dict[str, list[ProgramItem]] | None = None
     self._epg_overlay_url: str = ""
 
   def _watched_files(self) -> list[Path]:
-    files = [
-      self.xtream_dir / "bellhop_xtream_playlist.json",
-      self.xtream_dir / "bell_fibe_xtream_playlist.json",
-      self.xtream_dir / "get_live_streams.json",
-      self.xtream_dir / "get_live_categories.json",
-      self.xtream_dir / "get_epg.json",
-      self.xtream_dir / "xmltv.xml",
-    ]
-    if self.m3u8_path is not None:
-      files.append(self.m3u8_path)
-    if self.xmltv_override is not None:
-      files.append(self.xmltv_override)
-    return files
+    return self._bundle_reader.watched_files()
 
   def _compute_signature(self) -> tuple[float, ...]:
-    sig: list[float] = []
-    for p in self._watched_files():
-      try:
-        sig.append(p.stat().st_mtime if p.is_file() else 0.0)
-      except OSError:
-        sig.append(0.0)
-    return tuple(sig)
+    return self._bundle_reader.compute_signature()
 
   def get_snapshot(self, *, force_reload: bool = False) -> LineupSnapshot:
     sig = self._compute_signature()
@@ -396,155 +392,71 @@ class LineupGuideStore:
     return total_programs
 
   def _load_from_disk(self) -> LineupSnapshot:
-    primary_bundle = self.xtream_dir / "bellhop_xtream_playlist.json"
-    legacy_bundle = self.xtream_dir / "bell_fibe_xtream_playlist.json"
-    bundle_path = primary_bundle if primary_bundle.is_file() else legacy_bundle
-    streams_path = self.xtream_dir / "get_live_streams.json"
-    cats_path = self.xtream_dir / "get_live_categories.json"
+    bundle_data = self._bundle_reader.read()
     epg_json_path = self.xtream_dir / "get_epg.json"
     xmltv_path = self.xmltv_override or (self.xtream_dir / "xmltv.xml")
 
-    lineup_info: dict[str, Any] = {}
-    server_info: dict[str, Any] = {}
-    bundle_xmltv_url = ""
-    raw_categories: list[Any] = []
-    raw_streams: list[Any] = []
-
-    if bundle_path.is_file():
-      bundle = _as_dict(json.loads(bundle_path.read_text(encoding="utf-8")))
-      lineup_info = _as_dict(bundle.get("lineup_info"))
-      server_info = _as_dict(bundle.get("server_info"))
-      epg_guide_block = _as_dict(bundle.get("epg_guide"))
-      bundle_xmltv_url = str(
-        server_info.get("xmltv_url") or epg_guide_block.get("xmltv_url") or ""
-      ).strip()
-      raw_categories = list(bundle.get("live_categories") or [])
-      raw_streams = list(bundle.get("live_streams") or [])
-    else:
-      if cats_path.is_file():
-        loaded_cats = json.loads(cats_path.read_text(encoding="utf-8"))
-        if isinstance(loaded_cats, list):
-          raw_categories = loaded_cats
-      if streams_path.is_file():
-        loaded_streams = json.loads(streams_path.read_text(encoding="utf-8"))
-        if isinstance(loaded_streams, list):
-          raw_streams = loaded_streams
-
-    if not raw_streams and self.m3u8_path and self.m3u8_path.is_file():
-      raw_categories, raw_streams, m3u_xmltv_url = self._parse_m3u8_fallback(
-        self.m3u8_path
-      )
-      if m3u_xmltv_url and not bundle_xmltv_url:
-        bundle_xmltv_url = m3u_xmltv_url
-
-    if not raw_streams:
-      # Allow `bellhop serve` to boot cleanly on a fresh/empty volume (e.g. first
-      # Docker startup) and hot-reload automatically once `bellhop run` exports.
+    if not bundle_data.initialized:
       return LineupSnapshot(
-        lineup_id=str(lineup_info.get("lineup_id") or "UNINITIALIZED"),
-        provider=str(lineup_info.get("provider") or "Bellhop"),
-        market=str(lineup_info.get("market") or ""),
-        postal_prefix=str(lineup_info.get("postal_prefix") or ""),
-        timezone=str(server_info.get("timezone") or "America/Montreal"),
-        loaded_at=time.time(),
-        xmltv_url=self._epg_overlay_url or bundle_xmltv_url,
+        lineup_id=bundle_data.lineup_id,
+        provider=bundle_data.provider,
+        market=bundle_data.market,
+        postal_prefix=bundle_data.postal_prefix,
+        timezone=bundle_data.timezone,
+        loaded_at=bundle_data.loaded_at,
+        xmltv_url=self._epg_overlay_url or bundle_data.xmltv_url,
       )
 
-    cat_by_id: dict[str, GuideCategory] = {}
-    normalized_cats: list[GuideCategory] = []
-    for raw_cat in raw_categories:
-      item = _as_dict(raw_cat)
-      cid = str(item.get("category_id") or "").strip()
-      cname = str(item.get("category_name") or "General")
-      if cid and cid not in cat_by_id:
-        cat = GuideCategory(category_id=cid, category_name=cname)
-        cat_by_id[cid] = cat
-        normalized_cats.append(cat)
+    normalized_cats = [
+      GuideCategory(
+        category_id=cat.category_id,
+        category_name=cat.category_name,
+        channel_count=cat.channel_count,
+      )
+      for cat in bundle_data.categories
+    ]
 
     channels: list[WebChannel] = []
     channels_by_chno: dict[int, WebChannel] = {}
     programs_by_epg_id: dict[str, list[ProgramItem]] = {}
 
-    for idx, raw_entry in enumerate(raw_streams):
-      entry = _as_dict(raw_entry)
-      if not entry:
-        continue
-      chno = int(entry.get("num") or (idx + 1))
-      guide = _as_dict(entry.get("guide"))
-      cat_id = str(entry.get("category_id") or "1")
-      existing_cat = cat_by_id.get(cat_id)
-      cat_name = str(
-        entry.get("category_name")
-        or guide.get("group_title")
-        or (existing_cat.category_name if existing_cat else None)
-        or "General"
-      )
-      if existing_cat is None:
-        existing_cat = GuideCategory(category_id=cat_id, category_name=cat_name)
-        cat_by_id[cat_id] = existing_cat
-        normalized_cats.append(existing_cat)
-
-      epg_id = str(
-        entry.get("epg_channel_id") or guide.get("epg_channel_id") or ""
-      ).strip()
-      has_native_epg = bool(guide.get("has_native_epg", bool(epg_id)))
-      epg_aliases_list: list[str] = []
-      if epg_id:
-        epg_aliases_list.append(epg_id)
-      official_tvg_id = str(guide.get("official_tvg_id") or "").strip()
-      if official_tvg_id and official_tvg_id not in epg_aliases_list:
-        epg_aliases_list.append(official_tvg_id)
-      upstream_epg_id = str(guide.get("upstream_epg_channel_id") or "").strip()
-      if (
-        has_native_epg
-        and upstream_epg_id
-        and upstream_epg_id not in epg_aliases_list
-      ):
-        epg_aliases_list.append(upstream_epg_id)
-
-      sd_raw = guide.get("sd_chno")
-      sd_chno = int(sd_raw) if sd_raw is not None else None
-      callsign_raw = entry.get("callsign") or guide.get("callsign")
-      raw_fallbacks = guide.get("fallback_sources")
-      fallbacks = (
-        [str(u) for u in raw_fallbacks if u and "***" not in str(u)]
-        if isinstance(raw_fallbacks, list)
-        else []
-      )
-
+    for rec in bundle_data.streams:
       web_ch = WebChannel(
-        chno=chno,
-        sd_chno=sd_chno,
-        name=str(entry.get("name") or f"Channel {chno}"),
-        callsign=str(callsign_raw) if callsign_raw else None,
-        logo=str(entry.get("stream_icon") or guide.get("official_logo") or ""),
-        category_id=cat_id,
-        category_name=cat_name,
-        language=str(guide.get("language") or "en"),
-        quality_tier=str(guide.get("quality_tier") or "unknown"),
-        epg_channel_id=epg_id,
-        has_native_epg=has_native_epg,
-        stream_id=int(entry.get("stream_id") or 0),
-        direct_source=str(entry.get("direct_source") or ""),
-        fallback_sources=fallbacks,
-        epg_aliases=tuple(epg_aliases_list),
+        chno=rec.num,
+        sd_chno=rec.sd_chno,
+        name=rec.name,
+        callsign=rec.callsign,
+        logo=rec.stream_icon,
+        category_id=rec.category_id,
+        category_name=rec.category_name,
+        language=rec.language or "en",
+        quality_tier=rec.quality_tier,
+        epg_channel_id=rec.epg_channel_id,
+        has_native_epg=rec.has_native_epg,
+        stream_id=rec.stream_id,
+        direct_source=rec.direct_source,
+        fallback_sources=list(rec.fallback_sources),
+        epg_aliases=rec.epg_aliases,
       )
       channels.append(web_ch)
-      channels_by_chno[chno] = web_ch
+      channels_by_chno[rec.num] = web_ch
 
-      if epg_id and epg_id not in programs_by_epg_id:
-        inline_list = guide.get("epg_listings")
-        if isinstance(inline_list, list) and inline_list:
-          programs_by_epg_id[epg_id] = [
-            self._program_from_dict(p, default_cid=epg_id)
-            for p in inline_list
-            if isinstance(p, Mapping) and p.get("title")
-          ]
+      if (
+        rec.epg_channel_id
+        and rec.epg_channel_id not in programs_by_epg_id
+        and rec.inline_epg_listings
+      ):
+        programs_by_epg_id[rec.epg_channel_id] = [
+          self._program_from_dict(p, default_cid=rec.epg_channel_id)
+          for p in rec.inline_epg_listings
+          if p.get("title")
+        ]
 
+    resolved_xmltv_url = bundle_data.xmltv_url
     if epg_json_path.is_file():
       epg_data = _as_dict(json.loads(epg_json_path.read_text(encoding="utf-8")))
-      if not bundle_xmltv_url:
-        bundle_xmltv_url = str(epg_data.get("xmltv_url") or "").strip()
+      if not resolved_xmltv_url:
+        resolved_xmltv_url = str(epg_data.get("xmltv_url") or "").strip()
       listings = epg_data.get("epg_listings")
       if isinstance(listings, list) and listings:
         programs_by_epg_id.clear()
@@ -564,22 +476,16 @@ class LineupGuideStore:
         key=lambda item: (item.start_timestamp, item.stop_timestamp, item.id)
       )
 
-    counts_by_cat: dict[str, int] = {}
-    for ch in channels:
-      counts_by_cat[ch.category_id] = counts_by_cat.get(ch.category_id, 0) + 1
-    for cat in normalized_cats:
-      cat.channel_count = counts_by_cat.get(cat.category_id, 0)
-
     channels.sort(key=lambda c: c.chno)
 
     return LineupSnapshot(
-      lineup_id=str(lineup_info.get("lineup_id") or "CAN-BELLFIBE-MTL-X"),
-      provider=str(lineup_info.get("provider") or "Bell Fibe TV"),
-      market=str(lineup_info.get("market") or "Montréal, QC"),
-      postal_prefix=str(lineup_info.get("postal_prefix") or "H2Y"),
-      timezone=str(server_info.get("timezone") or "America/Montreal"),
-      loaded_at=time.time(),
-      xmltv_url=bundle_xmltv_url,
+      lineup_id=bundle_data.lineup_id,
+      provider=bundle_data.provider,
+      market=bundle_data.market,
+      postal_prefix=bundle_data.postal_prefix,
+      timezone=bundle_data.timezone,
+      loaded_at=bundle_data.loaded_at,
+      xmltv_url=resolved_xmltv_url,
       categories=normalized_cats,
       channels=channels,
       channels_by_chno=channels_by_chno,
@@ -653,53 +559,4 @@ class LineupGuideStore:
   def _parse_m3u8_fallback(
     m3u_path: Path,
   ) -> tuple[list[dict[str, str]], list[dict[str, Any]], str]:
-    cats_by_name: dict[str, str] = {}
-    cats: list[dict[str, str]] = []
-    streams: list[dict[str, Any]] = []
-    xmltv_url = ""
-    pending_attrs: dict[str, str] | None = None
-    pending_name = ""
-
-    for raw_line in m3u_path.read_text(
-      encoding="utf-8", errors="replace"
-    ).splitlines():
-      line = raw_line.strip()
-      if not line:
-        continue
-      if line.startswith("#EXTM3U"):
-        hdr_attrs = dict(M3U_ATTR_RE.findall(line))
-        xmltv_url = (
-          hdr_attrs.get("url-tvg") or hdr_attrs.get("x-tvg-url") or ""
-        ).strip()
-        continue
-      if line.startswith("#EXTINF:"):
-        attrs = dict(M3U_ATTR_RE.findall(line))
-        comma_idx = line.rfind(",")
-        pending_name = (
-          line[comma_idx + 1 :].strip() if comma_idx >= 0 else "Channel"
-        )
-        pending_attrs = attrs
-      elif not line.startswith("#") and pending_attrs is not None:
-        grp = pending_attrs.get("group-title", "General")
-        if grp not in cats_by_name:
-          cid = str(len(cats) + 1)
-          cats_by_name[grp] = cid
-          cats.append({"category_id": cid, "category_name": grp})
-        chno_str = pending_attrs.get("tvg-chno") or str(len(streams) + 1)
-        try:
-          chno = int(chno_str)
-        except ValueError:
-          chno = len(streams) + 1
-        streams.append(
-          {
-            "num": chno,
-            "name": pending_name,
-            "stream_icon": pending_attrs.get("tvg-logo", ""),
-            "epg_channel_id": pending_attrs.get("tvg-id", ""),
-            "category_id": cats_by_name[grp],
-            "category_name": grp,
-            "direct_source": line,
-          }
-        )
-        pending_attrs = None
-    return cats, streams, xmltv_url
+    return parse_m3u8_fallback(m3u_path)
