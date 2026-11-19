@@ -115,7 +115,16 @@ def test_typescript_strict_and_compiled_assets_in_sync(tmp_path: Path) -> None:
   )
 
   static_dir = REPO_ROOT / "src" / "bellhop_web" / "static"
-  for filename in ("prefs.js", "login.js", "app.js"):
+  compiled_js = (
+    "prefs.js",
+    "login.js",
+    "guide_logic.js",
+    "render.js",
+    "player.js",
+    "settings.js",
+    "app.js",
+  )
+  for filename in compiled_js:
     fresh = (out_dir / filename).read_text(encoding="utf-8")
     committed = (static_dir / filename).read_text(encoding="utf-8")
     assert committed == fresh, (
@@ -124,13 +133,18 @@ def test_typescript_strict_and_compiled_assets_in_sync(tmp_path: Path) -> None:
     )
 
 
-def test_frontend_prefs_unit_tests_pass() -> None:
+def test_frontend_unit_tests_pass() -> None:
   node_bin = _resolve_venv_tool("node")
   if node_bin is None:
     pytest.skip("node not installed in test environment")
 
   res = subprocess.run(
-    [node_bin, "--test", "tests/frontend/prefs.test.mjs"],
+    [
+      node_bin,
+      "--test",
+      "tests/frontend/prefs.test.mjs",
+      "tests/frontend/guide.test.mjs",
+    ],
     cwd=REPO_ROOT,
     capture_output=True,
     text=True,

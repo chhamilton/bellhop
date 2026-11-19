@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "module": "None",
+    "module": "ES2022",
     "rootDir": "src/bellhop_web/frontend",
     "outDir": "src/bellhop_web/static",
     "strict": true,

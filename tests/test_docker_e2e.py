@@ -630,6 +630,7 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
       assert index_r.status_code == 200
       assert "/static/bellhop-logo.svg" in index_r.text
       assert "/static/prefs.js" in index_r.text
+      assert (await client.get("/static/guide_logic.js")).status_code == 200
 
       # 5. Verify hot-reloaded lineup + dynamic passthrough EPG from FakeXtreamServer.
       refresh_r = await client.post("/api/epg/refresh")
