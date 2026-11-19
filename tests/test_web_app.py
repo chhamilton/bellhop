@@ -737,9 +737,10 @@ async def test_public_logo_and_favicon_served_before_auth(
         assert "javascript" in prefs_js.headers["Content-Type"]
         assert "bellhop.settings" in await prefs_js.text()
 
-      # Private app JS remains protected behind auth
-      async with client.get("/static/app.js", allow_redirects=False) as r_app:
-        assert r_app.status == 401
+      # Private app JS modules remain protected behind auth
+      for protected_js in ("/static/app.js", "/static/guide_logic.js"):
+        async with client.get(protected_js, allow_redirects=False) as r_app:
+          assert r_app.status == 401
 
       # Authenticated index.html renders upper-left logo, favicons, prefs.js & theme toggle
       async with client.post(
@@ -754,6 +755,7 @@ async def test_public_logo_and_favicon_served_before_auth(
         assert "/static/bellhop-logo.svg" in index_text
         assert 'href="/favicon.ico"' in index_text
         assert "/static/prefs.js" in index_text
+        assert 'type="module" src="/static/app.js"' in index_text
         assert 'id="theme-toggle-btn"' in index_text
         assert 'data-view="cards"' in index_text
         assert ">Cards</button>" in index_text
@@ -763,16 +765,27 @@ async def test_public_logo_and_favicon_served_before_auth(
         assert styles_resp.status == 200
         styles_text = await styles_resp.text()
         assert ':root[data-theme="light"]' in styles_text
+        assert "--tl-col-width: 255px;" in styles_text
         assert ".cat-count.is-matched" in styles_text
         assert ".cat-count.is-empty" in styles_text
         assert ".timeline-body" in styles_text
 
-      async with client.get("/static/app.js") as auth_app_js:
-        assert auth_app_js.status == 200
-        app_js_body = await auth_app_js.text()
-        assert "&#39;" in app_js_body
-        assert "onerror=" not in app_js_body
-        assert "data-logo-fallback" in app_js_body
+      js_modules: list[str] = []
+      for mod_name in (
+        "app.js",
+        "guide_logic.js",
+        "render.js",
+        "player.js",
+        "settings.js",
+      ):
+        async with client.get(f"/static/{mod_name}") as mod_resp:
+          assert mod_resp.status == 200
+          js_modules.append(await mod_resp.text())
+      combined_js = "\n".join(js_modules)
+      assert "&#39;" in combined_js
+      assert "onerror=" not in combined_js
+      assert "data-logo-fallback" in combined_js
+      assert "updateLiveProgressInPlace" in combined_js
   finally:
     await runner.cleanup()
     await app.shutdown()
@@ -1025,7 +1038,16 @@ def test_wcag_aa_contrast_landmarks_and_keyboard_a11y_contracts() -> None:
   )
   index_html = (static_dir / "index.html").read_text(encoding="utf-8")
   styles_css = (static_dir / "styles.css").read_text(encoding="utf-8")
-  app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+  compiled_js = "\n".join(
+    (static_dir / name).read_text(encoding="utf-8")
+    for name in (
+      "app.js",
+      "guide_logic.js",
+      "render.js",
+      "player.js",
+      "settings.js",
+    )
+  )
 
   # 1. Landmarks, live regions, dialog labels, and tablist roles in index.html
   assert (
@@ -1050,10 +1072,11 @@ def test_wcag_aa_contrast_landmarks_and_keyboard_a11y_contracts() -> None:
   assert 'aria-label="Close player"' in index_html
   assert 'aria-label="Close settings"' in index_html
 
-  # 2. Focus trap, focus restore & Timeline keyboard navigation in compiled app.js
-  assert "trapFocusInContainer" in app_js
-  assert "restoreFocus" in app_js
-  assert "ArrowRight" in app_js and "ArrowLeft" in app_js
+  # 2. Focus trap, focus restore & Timeline keyboard navigation in compiled JS
+  assert "trapFocusInContainer" in compiled_js
+  assert "restoreFocus" in compiled_js
+  assert "ArrowRight" in compiled_js and "ArrowLeft" in compiled_js
+  assert "--tl-col-width" in compiled_js
   assert ".tl-ch-cell:focus-visible" in styles_css
 
   # 3. WCAG 2.1 AA contrast >= 4.5:1 for muted/empty category text in both themes

@@ -58,6 +58,7 @@
   --tl-cat-bg: linear-gradient(90deg, #102444 0%, #0d182c 35%, #0b1424 100%);
   --tl-cat-sticky-bg: linear-gradient(90deg, #102444 0%, #0e1c34 100%);
   --tl-ch-bg: #121d30;
+  --tl-col-width: 255px;
   --tl-track-bg: rgba(8, 13, 22, 0.48);
   --tl-grid-line: rgba(148, 163, 184, 0.08);
   --tl-prog-bg: var(--bg-elevated);
@@ -858,8 +859,8 @@ html, body {
 }
 
 .tl-corner {
-  width: 255px;
-  min-width: 255px;
+  width: var(--tl-col-width);
+  min-width: var(--tl-col-width);
   flex-shrink: 0;
   padding: 8px 12px;
   display: flex;
@@ -932,7 +933,7 @@ html, body {
   position: sticky;
   left: 0;
   z-index: 18;
-  min-width: 255px;
+  min-width: var(--tl-col-width);
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -966,8 +967,8 @@ html, body {
 }
 
 .tl-ch-cell {
-  width: 255px;
-  min-width: 255px;
+  width: var(--tl-col-width);
+  min-width: var(--tl-col-width);
   flex-shrink: 0;
   position: sticky;
   left: 0;

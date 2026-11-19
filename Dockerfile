@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # -----------------------------------------------------------------------------
-# Stage 1: Compile strictly typed TypeScript frontend -> static/{prefs,app}.js
+# Stage 1: Compile strictly typed TypeScript frontend -> static/*.js
 # -----------------------------------------------------------------------------
 FROM node:22-alpine AS frontend-builder
 
@@ -34,9 +34,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 COPY data ./data
 COPY docker ./docker
-COPY --from=frontend-builder /build/src/bellhop_web/static/prefs.js ./src/bellhop_web/static/prefs.js
-COPY --from=frontend-builder /build/src/bellhop_web/static/login.js ./src/bellhop_web/static/login.js
-COPY --from=frontend-builder /build/src/bellhop_web/static/app.js ./src/bellhop_web/static/app.js
+COPY --from=frontend-builder /build/src/bellhop_web/static/*.js ./src/bellhop_web/static/
 
 RUN pip install --no-cache-dir . \
   && mkdir -p /usr/local/libexec /config /data/state /data/cache /data/output/xtream \
