@@ -141,6 +141,8 @@ def rewrite_hls_manifest(manifest_text: str, base_url: str, chno: int) -> str:
 
 @dataclass(slots=True)
 class ActiveTunerSession:
+  """Live-stream relay session currently holding the single upstream tuner."""
+
   session_id: int
   chno: int
   channel_name: str

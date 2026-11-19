@@ -26,14 +26,15 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
 3. **Credentials & Git Hygiene**
    - `credentials.yaml`, `config.yaml`, `.env`, `cache/`, `state/`, and `output/` are gitignored—never commit secrets or raw provider dumps.
    - Do **not** mask passwords with `***` inside `state/channel_mapping.json`, `output/bellhop.m3u8`, or `output/xtream/get_live_streams.json`: Xtream stream URLs require embedded credentials to play (masking caused `HTTP 513` upstream errors). Redaction belongs only in UI/API serialization (`AppConfig.to_dict(redact_secrets=True)` and `WebChannel.to_public_dict()`, which exposes `/api/stream/<chno>.ts`), while `/api/config` (`export_public_config`) omits credentials, `web_server`, and paths altogether.
+   - **Passthrough Redirect Model:** By design, `XtreamPassthroughServer` (`302` redirects on `/live/<user>/<pass>/<id>` and `/xmltv.php`) returns the upstream IPTV URL (including upstream credentials) in the `Location` header to authenticated Xtream clients so video/XMLTV streams directly from the provider without double-proxying. Browser viewers using the Web TV Guide stream via the server-side `/api/stream/<chno>.ts` and `/api/hls/<chno>/index.m3u8` relays, which never expose upstream credentials.
 
 4. **Package Boundary (`bellhop` vs `bellhop_web`) & Strict Typing**
-   - Keep `src/bellhop_web/` cleanly decoupled from `bellhop.*` imports (shared `aiohttp` server/client & bind-address helpers live in `src/bellhop_web/http_utils.py`). The single runtime CLI entry point is `bellhop` (`bellhop run` / `bellhop serve`).
-   - Maintain `mypy --strict` across `src/` and `tests/` with zero `# type: ignore` suppressions; prefer explicit `@dataclass(slots=True)` structs and `TypedDict`s over nested `dict[str, Any]`.
+   - Keep `src/bellhop_web/` as a pure web/UI presentation, cookie-auth, API-contract, export-bundle, and single-tuner relay layer with **zero imports from `bellhop.*`** (enforced by `tests/test_export_bundle.py::test_bellhop_web_package_never_imports_bellhop`). `bellhop` depends one-way on `bellhop_web` to co-host `bellhop serve` and share `api_contracts.py`, `export_bundle.py`, and `http_utils.py`.
+   - Maintain `mypy --strict` across `src/` and `tests/` with zero `# type: ignore` suppressions; prefer explicit `@dataclass(slots=True)` structs and `TypedDict`s (`src/bellhop_web/api_contracts.py` -> auto-generated `frontend/api_contracts.d.ts`) over nested `dict[str, Any]`.
 
 5. **Coding Style Preferences (Google Python Style & Strict TypeScript Frontend)**
-   - **Python Style:** Follow the **Google Python Style Guide** — **no tabs, spaces only, 2-space indentation per depth**, 80-char line length, Google-style docstrings (`Args:`, `Returns:`, `Raises:`), and sorted imports, enforced via `[tool.ruff]` in `pyproject.toml` (`.venv/bin/ruff format src tests` and `.venv/bin/ruff check src tests`).
-   - **Frontend TypeScript:** All browser JS is authored in strictly typed TypeScript under `src/bellhop_web/frontend/` (`types.d.ts`, `prefs.ts`, `app.ts`, 2-space spaces-only indent, `tsconfig.json` `strict: true` + `noUncheckedIndexedAccess: true`) and compiled into `src/bellhop_web/static/{prefs.js,app.js}` via `.venv/bin/node ./node_modules/typescript/bin/tsc`. Never edit the generated `static/prefs.js` or `static/app.js` files directly.
+   - **Python Style:** Follow the **Google Python Style Guide** — **no tabs, spaces only, 2-space indentation per depth**, 80-column code wrapping via `ruff format` (`E501` ignored so long URLs/strings aren't forcibly split), Google-style docstrings (`D` pydocstyle with `convention = "google"` enforced on modules, packages, public classes, and public functions; `D102`/`D105`/`D107` exempted on self-explanatory methods/`__init__`), and sorted imports via `[tool.ruff]` in `pyproject.toml`.
+   - **Frontend TypeScript:** All browser JS is authored in strictly typed ES2022 TypeScript modules under `src/bellhop_web/frontend/` (`api_contracts.d.ts`, `types.d.ts`, `prefs.ts`, `login.ts`, `guide_logic.ts`, `render.ts`, `player.ts`, `settings.ts`, `app.ts`; 2-space indent, `strict: true` + `noUncheckedIndexedAccess: true`) and compiled into `src/bellhop_web/static/*.js` via `.venv/bin/node ./node_modules/typescript/bin/tsc`. Compiled `static/*.js` and generated `api_contracts.d.ts` are intentionally committed so Python-only installs work without Node at runtime, guarded against drift by `tests/test_typecheck.py`. Never hand-edit `static/*.js` or `frontend/api_contracts.d.ts`.
    - **Client-Side State (`localStorage["bellhop.settings"]`):** Store persistent browser UI preferences (theme, future view/favorite/player preferences) as structured JSON (nested dicts, arrays, strings, numbers, booleans) through `window.BellhopSettings` (`src/bellhop_web/frontend/prefs.ts`) rather than ad-hoc top-level `localStorage` keys.
 
 ---
@@ -44,13 +45,14 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
 .
 ├── config.example.yaml          # Two-tier documented template for config.yaml
 ├── credentials.example.yaml     # Documented template for credentials.yaml
+├── requirements.lock            # Pinned runtime dependency lockfile for reproducible builds
 ├── data/
 │   ├── lineups/bell_fibe_montreal.yaml  # Curated 355-network / 698-slot Bell Fibe MTL lineup
 │   └── official_logos.json              # 339 verified tv-logo/tv-logos transparent PNG URLs
 ├── src/
 │   ├── bellhop/
 │   │   ├── cli.py               # `bellhop run` & `bellhop serve` CLI
-│   │   ├── config.py            # 2-tier + legacy AppConfig loader & scoped `/api/config` serializer
+│   │   ├── config/              # Two-tier config package (`model.py`, `load.py`, `public.py`)
 │   │   ├── runner.py            # Reusable 6-phase `PipelineRunner` engine
 │   │   ├── lineup_retriever.py  # Phase (1) `lineup`: 30d snapshot + diff + backend dispatch
 │   │   ├── providers/           # `LineupProvider` ABC + `tvguide`, `schedules_direct`, `yaml`, `normalizer`
@@ -65,20 +67,22 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
 │   │   ├── xtream_server.py     # Passthrough Xtream Codes & M3U HTTP API server (`302` upstream)
 │   │   └── serve.py             # `UnifiedServeServer` co-hosting Web Guide + Xtream API (shared or split ports)
 │   └── bellhop_web/
-│       ├── http_utils.py        # Shared `aiohttp` server/client factories, middleware & LAN bind helpers
-│       ├── auth.py              # HMAC-SHA256 `bellhop_session` cookie auth & `/login?next=...` page
+│       ├── api_contracts.py     # Shared HTTP `TypedDict`s, JSON Schema & `api_contracts.d.ts` generator
+│       ├── export_bundle.py     # Shared `ExportBundleReader` for `output/xtream/` + M3U8 fallbacks
+│       ├── http_utils.py        # Shared `aiohttp` server/client factories, CSP/CORS/413 & XFF helpers
+│       ├── auth.py              # HMAC-SHA256 `bellhop_session` cookie auth, rate limiter & `/login`
 │       ├── epg_refresh.py       # Dynamic passthrough XMLTV fetcher & `cache/bellhop_web/epg_cache.json`
-│       ├── store.py             # Hot-reloading reader for `output/xtream/` (with M3U8/XMLTV fallbacks)
+│       ├── store.py             # Hot-reloading guide store backed by `ExportBundleReader`
 │       ├── server.py            # `WebGuideApp` + `TunerSessionManager` chunked MPEG-TS & HLS proxy
-│       ├── frontend/            # Strict TypeScript sources (`types.d.ts`, `prefs.ts`, `app.ts`)
-│       └── static/              # HTML/CSS, SVG logo & ICO favicon, compiled `prefs.js`/`app.js`, vendor libs
+│       ├── frontend/            # Strict ES2022 TypeScript modules (`guide_logic`, `render`, `player`, `settings`, `app`)
+│       └── static/              # HTML/CSS, SVG/ICO branding, compiled `*.js`, vendored players + `VERSIONS.md`
 ├── Dockerfile                   # Multi-stage Alpine container (`node:22-alpine` -> `python:3.13-alpine`)
-├── docker/                      # `entrypoint.sh` (`TZ`/`PUID`/`PGID`/mount seeding) & `config.docker.yaml`
+├── docker/                      # `entrypoint.sh`, `bellhop-shim.sh` (`PUID`/`PGID`), & `config.docker.yaml`
 ├── docker-compose.example.yml   # Example Docker Compose stack with `/config`, `/data/{state,cache,output}`
 ├── .env.example                 # Example environment variables (container runtime + surfaced credentials)
-├── tsconfig.json                # Strict TypeScript compiler config (`frontend/*.ts` -> `static/*.js`)
-├── package.json                 # Dev-only TypeScript toolchain manifest
-└── tests/                       # Offline Python, Node & Docker entrypoint/container E2E tests (`pytest`)
+├── tsconfig.json                # Strict ES2022 TypeScript compiler config (`frontend/*.ts` -> `static/*.js`)
+├── package.json                 # Dev-only TypeScript toolchain manifest (`npm ci` locked via `package-lock.json`)
+└── tests/                       # Unit, contract, Node & Docker E2E suite (`pytest`, `pytest-cov >= 85%`)
 ```
 
 ---

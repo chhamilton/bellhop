@@ -48,6 +48,8 @@ def sanitize_next_url(raw_next: str | None) -> str:
 
 @dataclass(slots=True)
 class WebAuthConfig:
+  """Configuration for `bellhop_session` HMAC-SHA256 cookie authentication."""
+
   username: str = ""
   password: str = ""
   session_ttl_hours: float = 168.0  # 7 days
@@ -58,6 +60,8 @@ class WebAuthConfig:
 
 @dataclass(slots=True)
 class SessionInfo:
+  """Verified browser session extracted from a signed `bellhop_session` cookie."""
+
   username: str
   issued_at: int
   expires_at: int

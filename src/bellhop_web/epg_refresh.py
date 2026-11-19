@@ -246,6 +246,8 @@ def parse_xmltv_for_channels(
 
 @dataclass(slots=True)
 class EpgRefreshConfig:
+  """Configuration for background and on-demand XMLTV EPG caching."""
+
   enabled: bool = True
   refresh_hours: float = 6.0
   request_timeout_sec: float = 90.0

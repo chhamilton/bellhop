@@ -67,6 +67,7 @@ def _as_dict(val: object) -> dict[str, Any]:
 
 
 def parse_xmltv_ts(raw: str) -> int:
+  """Parse an XMLTV `YYYYMMDDHHMMSS [±HHMM]` timestamp into a Unix epoch."""
   cleaned = raw.strip()
   if not cleaned:
     return 0
@@ -86,6 +87,7 @@ def parse_xmltv_ts(raw: str) -> int:
 
 
 def open_xml_stream(path: Path) -> io.BufferedReader | gzip.GzipFile:
+  """Open a plain or gzip-compressed XMLTV file for binary streaming."""
   with path.open("rb") as probe_fh:
     magic = probe_fh.read(2)
   if magic == b"\x1f\x8b":

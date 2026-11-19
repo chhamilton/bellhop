@@ -59,6 +59,7 @@ CANADA_FSA_PROVINCE: dict[str, tuple[str, str]] = {
 
 
 def parse_tvguide_provider_id(lineup_id: str) -> str | None:
+  """Extract the numeric TV Guide `providerId` from `TVG-<id>` or `<id>`."""
   m = TVGUIDE_ID_RE.match(lineup_id.strip())
   return m.group(1) if m else None
 
