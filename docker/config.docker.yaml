@@ -36,6 +36,11 @@ web_server:
   password: "${BELLHOP_WEB_PASSWORD}"
   session_ttl_hours: 168.0
   session_secret: "${BELLHOP_WEB_SESSION_SECRET}"
+  # Reverse-proxy X-Forwarded-For trust (config-file only, never surfaced in Web UI)
+  trust_proxy_headers: false
+  trusted_proxy_ips:
+    - "127.0.0.1"
+    - "::1"
 
 # =============================================================================
 # 2. OPERATIONAL SETTINGS (Editable via Web UI Settings panel; no credentials)

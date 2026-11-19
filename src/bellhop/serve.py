@@ -137,6 +137,8 @@ class UnifiedServeServer:
       session_factory=session_factory,
       epg_refresher=epg_refresher,
       auth=web_auth,
+      trust_proxy_headers=config.serve.web.trust_proxy_headers,
+      trusted_proxy_ips=config.serve.web.trusted_proxy_ips,
     )
 
     xtream_store = XtreamExportStore(

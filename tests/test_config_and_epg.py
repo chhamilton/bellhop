@@ -139,6 +139,8 @@ pipeline:
   assert cfg.serve.xtream_port == 8181
   assert cfg.serve.web.username == "guide_admin"
   assert cfg.serve.web.password == "env_web_secret"
+  assert cfg.serve.web.trust_proxy_headers is False
+  assert cfg.serve.web.trusted_proxy_ips == ["127.0.0.1", "::1"]
   assert cfg.serve.xtream.username == "passthrough_client"
   assert cfg.serve.xtream.password == "passthrough_secret"
   assert cfg.serve.xtream.public_host == "tv.home.arpa"
@@ -146,6 +148,14 @@ pipeline:
 
   pub = export_public_config(cfg)
   assert set(pub.keys()) == {"upstream_xtream", "xtream_server", "pipeline"}
+
+  bad_proxy_cfg = tmp_path / "bad_proxy.yaml"
+  bad_proxy_cfg.write_text(
+    'web_server:\n  trust_proxy_headers: true\n  trusted_proxy_ips: ["not-an-ip"]\n',
+    encoding="utf-8",
+  )
+  with pytest.raises(ValueError, match="trusted_proxy_ips"):
+    load_config(bad_proxy_cfg)
 
 
 def test_apply_public_config_update_legacy_layout_and_validation_errors(

@@ -16,10 +16,11 @@ server, pipeline HTTP clients). Provides:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import socket
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from http import HTTPStatus
 from typing import Any, Protocol
 
@@ -29,22 +30,33 @@ from yarl import URL
 
 __all__ = [
   "DEFAULT_CLIENT_MAX_SIZE",
+  "DEFAULT_TRUSTED_PROXY_IPS",
   "UPSTREAM_ERRORS",
   "WEB_CSP_POLICY",
   "ClientSessionFactory",
+  "IpNetwork",
   "build_access_urls",
   "bytes_response",
   "create_web_app",
   "default_session_factory",
   "detect_device_ip",
   "json_response",
+  "parse_trusted_proxy_networks",
   "redirect_response",
   "resolve_bind_host",
+  "resolve_client_ip",
+  "resolve_request_client_ip",
   "start_site",
   "upstream_url",
 ]
 
 logger = logging.getLogger("bellhop_web.http")
+
+IpAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
+IpNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+# Default reverse-proxy allowlist when `trust_proxy_headers: true` is enabled.
+DEFAULT_TRUSTED_PROXY_IPS: tuple[str, ...] = ("127.0.0.1", "::1")
 
 # Maximum accepted request body size (login forms & settings JSON are tiny).
 DEFAULT_CLIENT_MAX_SIZE = 256 * 1024
@@ -173,6 +185,120 @@ def build_access_urls(
     else bind_host
   )
   return [f"{protocol}://{formatted}:{port}"]
+
+
+# -----------------------------------------------------------------------------
+# Trusted reverse-proxy client IP resolution (`X-Forwarded-For` / `X-Real-IP`)
+# -----------------------------------------------------------------------------
+def _parse_ip_addr(raw: str | None) -> IpAddress | None:
+  """Parse an IPv4/IPv6 address, unwrapping IPv4-mapped IPv6 (`::ffff:x.x.x.x`)."""
+  if not raw:
+    return None
+  cleaned = raw.strip()
+  if not cleaned:
+    return None
+  try:
+    addr = ipaddress.ip_address(cleaned)
+  except ValueError:
+    return None
+  if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+    return addr.ipv4_mapped
+  return addr
+
+
+def parse_trusted_proxy_networks(
+  entries: Sequence[str],
+) -> tuple[IpNetwork, ...]:
+  """Validate and parse trusted reverse-proxy IPs or CIDR ranges."""
+  networks: list[IpNetwork] = []
+  for raw in entries:
+    item = str(raw).strip()
+    if not item:
+      continue
+    try:
+      net = ipaddress.ip_network(item, strict=False)
+    except ValueError as exc:
+      raise ValueError(
+        f"Invalid IP address or CIDR in trusted_proxy_ips: {item!r}"
+      ) from exc
+    if (
+      isinstance(net, ipaddress.IPv6Network)
+      and net.prefixlen == 128
+      and net.network_address.ipv4_mapped is not None
+    ):
+      net = ipaddress.ip_network(net.network_address.ipv4_mapped, strict=False)
+    networks.append(net)
+  return tuple(networks)
+
+
+def _ip_in_networks(addr: IpAddress, networks: Sequence[IpNetwork]) -> bool:
+  return any(addr.version == net.version and addr in net for net in networks)
+
+
+def resolve_client_ip(
+  remote: str | None,
+  *,
+  xff_headers: Sequence[str] = (),
+  real_ip_header: str | None = None,
+  trust_proxy_headers: bool = False,
+  trusted_networks: Sequence[IpNetwork] = (),
+) -> str:
+  """Resolve the effective client IP for rate limiting and audit logging.
+
+  When `trust_proxy_headers` is False or `remote` is not inside
+  `trusted_networks`, forwarding headers are ignored. When `remote` is a
+  trusted reverse proxy, walks `X-Forwarded-For` right-to-left and returns the
+  rightmost valid IP that is not itself in `trusted_networks` (preventing
+  leftmost XFF spoofing).
+  """
+  peer_ip = _parse_ip_addr(remote)
+  peer_str = (
+    str(peer_ip)
+    if peer_ip is not None
+    else ((remote or "").strip() or "unknown")
+  )
+  if (
+    not trust_proxy_headers
+    or peer_ip is None
+    or not trusted_networks
+    or not _ip_in_networks(peer_ip, trusted_networks)
+  ):
+    return peer_str
+
+  valid_hops: list[IpAddress] = []
+  for header_val in xff_headers:
+    for token in header_val.split(","):
+      parsed = _parse_ip_addr(token)
+      if parsed is not None:
+        valid_hops.append(parsed)
+
+  if valid_hops:
+    for hop in reversed(valid_hops):
+      if not _ip_in_networks(hop, trusted_networks):
+        return str(hop)
+    return str(valid_hops[0])
+
+  real_ip = _parse_ip_addr(real_ip_header)
+  if real_ip is not None:
+    return str(real_ip)
+
+  return peer_str
+
+
+def resolve_request_client_ip(
+  request: web.Request,
+  *,
+  trust_proxy_headers: bool = False,
+  trusted_networks: Sequence[IpNetwork] = (),
+) -> str:
+  """Resolve the client IP of an `aiohttp.web.Request`."""
+  return resolve_client_ip(
+    request.remote,
+    xff_headers=request.headers.getall("X-Forwarded-For", ()),
+    real_ip_header=request.headers.get("X-Real-IP"),
+    trust_proxy_headers=trust_proxy_headers,
+    trusted_networks=trusted_networks,
+  )
 
 
 # -----------------------------------------------------------------------------

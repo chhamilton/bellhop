@@ -853,6 +853,157 @@ async def test_login_rate_limiter_and_html_single_quote_escaping(
       ) as throttled_form:
         assert throttled_form.status == 429
         assert int(throttled_form.headers["Retry-After"]) >= 1
+
+      # By default (`trust_proxy_headers=False`), spoofing X-Forwarded-For CANNOT bypass 429!
+      async with client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "correct_password"},
+        headers={"X-Forwarded-For": "203.0.113.77"},
+      ) as spoof_attempt:
+        assert spoof_attempt.status == 429
   finally:
     await runner.cleanup()
     await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_trusted_reverse_proxy_xff_resolution_and_allowlist(
+  tmp_path: Path,
+) -> None:
+  from bellhop_web.auth import (
+    LoginRateLimiter,
+    WebAuthConfig,
+    WebAuthManager,
+  )
+  from bellhop_web.http_utils import (
+    parse_trusted_proxy_networks,
+    resolve_client_ip,
+  )
+
+  # 1. Pure unit tests: disabled flag, untrusted peer, multi-hop chain, IPv4-mapped IPv6
+  nets = parse_trusted_proxy_networks(["127.0.0.1", "::1", "172.16.0.0/12"])
+  # Flag disabled -> always returns remote peer IP
+  assert (
+    resolve_client_ip(
+      "127.0.0.1",
+      xff_headers=["203.0.113.5"],
+      trust_proxy_headers=False,
+      trusted_networks=nets,
+    )
+    == "127.0.0.1"
+  )
+  # Flag enabled, but peer IP is NOT in hardcoded trusted_proxy_ips -> ignores XFF!
+  assert (
+    resolve_client_ip(
+      "198.51.100.9",
+      xff_headers=["203.0.113.5"],
+      trust_proxy_headers=True,
+      trusted_networks=nets,
+    )
+    == "198.51.100.9"
+  )
+  # Flag enabled, peer is trusted (`::ffff:127.0.0.1`), client spoofed `1.1.1.1` on the left,
+  # edge proxy (`172.18.0.2`) appended real client `203.0.113.42` -> picks `203.0.113.42`!
+  assert (
+    resolve_client_ip(
+      "::ffff:127.0.0.1",
+      xff_headers=["1.1.1.1", "203.0.113.42, 172.18.0.2"],
+      trust_proxy_headers=True,
+      trusted_networks=nets,
+    )
+    == "203.0.113.42"
+  )
+  # Fallback to X-Real-IP when X-Forwarded-For is absent on a trusted proxy
+  assert (
+    resolve_client_ip(
+      "127.0.0.1",
+      real_ip_header="203.0.113.88",
+      trust_proxy_headers=True,
+      trusted_networks=nets,
+    )
+    == "203.0.113.88"
+  )
+
+  # 2. Live HTTP check: trusted proxy (`127.0.0.1` in allowlist) isolates rate limit per XFF client,
+  #    while a hardcoded allowlist excluding `127.0.0.1` (`["10.99.0.1"]`) ignores XFF!
+  xt_dir = tmp_path / "output" / "xtream"
+  _write_sample_xtream_dir(xt_dir, int(time.time()))
+  auth = WebAuthManager(
+    WebAuthConfig(
+      username="admin",
+      password="correct_password",
+      secret_file=tmp_path / "session_secret.key",
+    )
+  )
+
+  # Case A: `trust_proxy_headers=True` with `trusted_proxy_ips=["127.0.0.1"]`
+  app_trusted = WebGuideApp(
+    LineupGuideStore(xt_dir),
+    auth=auth,
+    login_limiter=LoginRateLimiter(max_failures=2, window_sec=60.0),
+    trust_proxy_headers=True,
+    trusted_proxy_ips=["127.0.0.1"],
+    settle_sec=0.01,
+  )
+  await app_trusted.startup()
+  runner_a, port_a = await start_site(app_trusted.build_app(), "127.0.0.1", 0)
+  try:
+    async with new_test_session(f"http://127.0.0.1:{port_a}") as client:
+      # Attacker at 203.0.113.10 trips rate limit (even when injecting fake leftmost XFF!)
+      for fake_prefix in ("8.8.8.8", "9.9.9.9"):
+        async with client.post(
+          "/api/auth/login",
+          json={"username": "admin", "password": "wrong"},
+          headers={"X-Forwarded-For": f"{fake_prefix}, 203.0.113.10"},
+        ) as r_bad:
+          assert r_bad.status == 401
+
+      async with client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "correct_password"},
+        headers={"X-Forwarded-For": "1.2.3.4, 203.0.113.10"},
+      ) as r_blocked:
+        assert r_blocked.status == 429
+
+      # Legitimate user at 203.0.113.20 behind the same reverse proxy is NOT throttled!
+      async with client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "correct_password"},
+        headers={"X-Forwarded-For": "203.0.113.20"},
+      ) as r_legit:
+        assert r_legit.status == 200
+  finally:
+    await runner_a.cleanup()
+    await app_trusted.shutdown()
+
+  # Case B: `trust_proxy_headers=True`, but `127.0.0.1` is NOT in `trusted_proxy_ips=["10.99.0.1"]`
+  app_unlisted = WebGuideApp(
+    LineupGuideStore(xt_dir),
+    auth=auth,
+    login_limiter=LoginRateLimiter(max_failures=2, window_sec=60.0),
+    trust_proxy_headers=True,
+    trusted_proxy_ips=["10.99.0.1"],
+    settle_sec=0.01,
+  )
+  await app_unlisted.startup()
+  runner_b, port_b = await start_site(app_unlisted.build_app(), "127.0.0.1", 0)
+  try:
+    async with new_test_session(f"http://127.0.0.1:{port_b}") as client:
+      for spoof_ip in ("203.0.113.1", "203.0.113.2"):
+        async with client.post(
+          "/api/auth/login",
+          json={"username": "admin", "password": "wrong"},
+          headers={"X-Forwarded-For": spoof_ip},
+        ) as r_bad2:
+          assert r_bad2.status == 401
+
+      # Because 127.0.0.1 is not in trusted_proxy_ips, XFF was ignored and 127.0.0.1 is throttled!
+      async with client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "correct_password"},
+        headers={"X-Forwarded-For": "203.0.113.99"},
+      ) as r_blocked2:
+        assert r_blocked2.status == 429
+  finally:
+    await runner_b.cleanup()
+    await app_unlisted.shutdown()
