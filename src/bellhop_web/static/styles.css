@@ -81,6 +81,10 @@
   --status-ok: #4ade80;
   --status-warn: #fbbf24;
   --status-error: #f87171;
+  --login-glow: #13213c;
+  --login-card-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --login-toggle-bg: rgba(15, 23, 42, 0.85);
+  --login-toggle-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
@@ -169,6 +173,10 @@
   --status-ok: #15803d;
   --status-warn: #b45309;
   --status-error: #b91c1c;
+  --login-glow: #dff0fe;
+  --login-card-shadow: 0 20px 50px rgba(15, 23, 42, 0.11);
+  --login-toggle-bg: rgba(255, 255, 255, 0.92);
+  --login-toggle-shadow: 0 4px 14px rgba(15, 23, 42, 0.09);
 }
 
 * {
@@ -1723,4 +1731,155 @@ html, body {
   .player-epg-panel {
     grid-template-columns: 1fr;
   }
+}
+
+/* Sign-In Page (`body.login-page`) — shares `:root` / `[data-theme="light"]` tokens */
+body.login-page {
+  min-height: 100vh;
+  height: auto;
+  overflow: auto;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: radial-gradient(circle at top, var(--login-glow) 0%, var(--bg-root) 62%);
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+body.login-page .theme-toggle {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--login-toggle-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  box-shadow: var(--login-toggle-shadow);
+  backdrop-filter: blur(8px);
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+
+body.login-page .theme-toggle:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border-active);
+}
+
+body.login-page .theme-toggle:active {
+  transform: translateY(1px);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 390px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  padding: 28px 26px 26px;
+  box-shadow: var(--login-card-shadow);
+}
+
+.login-card .brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.login-card .brand-logo {
+  width: 76px;
+  height: 76px;
+  margin-bottom: 14px;
+  filter: drop-shadow(0 12px 26px rgba(14, 165, 233, 0.28));
+}
+
+.login-card .brand h1 {
+  font-size: 1.48rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: var(--brand-wordmark);
+}
+
+.login-card .brand h1 span {
+  font-weight: 500;
+  color: var(--brand-wordmark-accent);
+}
+
+.login-card .brand p {
+  margin-top: 5px;
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+}
+
+.login-card .field {
+  margin-bottom: 14px;
+}
+
+.login-card label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.login-card input[type="text"],
+.login-card input[type="password"] {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.login-card input[type="text"]:focus,
+.login-card input[type="password"]:focus {
+  border-color: var(--border-active);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.login-error {
+  margin-bottom: 14px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--close-bg);
+  border: 1px solid var(--close-border);
+  color: var(--close-text);
+  font-size: 0.84rem;
+}
+
+.login-card .submit-btn {
+  width: 100%;
+  margin-top: 6px;
+  padding: 11px 16px;
+  border: none;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #0ea5e9, #2563eb);
+  color: #ffffff;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+}
+
+.login-card .submit-btn:hover {
+  opacity: 0.94;
+}
+
+.login-card .submit-btn:active {
+  transform: translateY(1px);
+}
+
+.login-card .submit-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
