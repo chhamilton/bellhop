@@ -150,7 +150,7 @@ docker compose exec bellhop bellhop run --skip validate
 | `/data/output` | Exported `bellhop.m3u8`, `lineup_report.json`, and `xtream/*.json` bundle |
 
 - **`TZ`** (e.g. `America/Montreal`): Configures container timezone via Alpine `tzdata`.
-- **`PUID` / `PGID`** (default `1000` / `1000`): Maps non-root process execution and volume ownership via `su-exec`.
+- **`PUID` / `PGID`** (default `1000` / `1000`): Maps non-root process execution and volume ownership via `su-exec` (both at container boot and automatically on `docker compose exec bellhop bellhop ...` commands).
 - **Surfaced Credentials (`.env` or `credentials.yaml`):** `BELLHOP_WEB_USERNAME`, `BELLHOP_WEB_PASSWORD`, `BELLHOP_WEB_SESSION_SECRET`, `BELLHOP_SERVE_USERNAME`, `BELLHOP_SERVE_PASSWORD`, `XTREAM_SERVER_URL`, `XTREAM_USERNAME`, `XTREAM_PASSWORD`, and optional `SD_USERNAME` / `SD_PASSWORD`.
 
 ---

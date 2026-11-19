@@ -55,11 +55,11 @@ if [ "$(id -u)" -eq 0 ]; then
     adduser -D -H -u "${PUID}" -G "${GROUP_NAME}" "${USER_NAME}" >/dev/null 2>&1 || true
   fi
 
-  chown -R "${PUID}:${PGID}" \
-    "${CONFIG_DIR}" \
-    "${STATE_DIR}" \
-    "${CACHE_DIR}" \
-    "${OUTPUT_DIR}" 2>/dev/null || true
+  # Only chown paths that do not already match PUID:PGID (fast on large volumes).
+  for dir in "${CONFIG_DIR}" "${STATE_DIR}" "${CACHE_DIR}" "${OUTPUT_DIR}"; do
+    find "${dir}" \( ! -user "${USER_NAME}" -o ! -group "${GROUP_NAME}" \) \
+      -exec chown "${PUID}:${PGID}" {} + 2>/dev/null || true
+  done
 
   exec su-exec "${PUID}:${PGID}" "$@"
 fi
