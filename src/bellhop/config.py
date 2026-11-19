@@ -69,6 +69,10 @@ from ruamel.yaml.scalarstring import (
 )
 
 from bellhop.lineup_loader import DEFAULT_BELL_FIBE_MTL_LINEUP_ID
+from bellhop_web.http_utils import (
+  DEFAULT_TRUSTED_PROXY_IPS,
+  parse_trusted_proxy_networks,
+)
 
 
 class PublicUpstreamXtreamDict(TypedDict):
@@ -303,6 +307,10 @@ class WebConfig:
   password: str = ""
   session_ttl_hours: float = 168.0
   session_secret: str = ""
+  trust_proxy_headers: bool = False
+  trusted_proxy_ips: list[str] = field(
+    default_factory=lambda: list(DEFAULT_TRUSTED_PROXY_IPS)
+  )
 
 
 @dataclass(slots=True)
@@ -315,6 +323,10 @@ class ServeWebConfig:
   password: str = ""
   session_ttl_hours: float = 168.0
   session_secret: str = ""
+  trust_proxy_headers: bool = False
+  trusted_proxy_ips: list[str] = field(
+    default_factory=lambda: list(DEFAULT_TRUSTED_PROXY_IPS)
+  )
 
 
 @dataclass(slots=True)
@@ -470,6 +482,8 @@ class AppConfig:
         "password": _mask(self.web.password, redact_secrets),
         "session_ttl_hours": self.web.session_ttl_hours,
         "session_secret": _mask(self.web.session_secret, redact_secrets),
+        "trust_proxy_headers": self.web.trust_proxy_headers,
+        "trusted_proxy_ips": list(self.web.trusted_proxy_ips),
       },
       "serve": {
         "host": self.serve.host,
@@ -485,6 +499,8 @@ class AppConfig:
           "session_secret": _mask(
             self.serve.web.session_secret, redact_secrets
           ),
+          "trust_proxy_headers": self.serve.web.trust_proxy_headers,
+          "trusted_proxy_ips": list(self.serve.web.trusted_proxy_ips),
         },
         "xtream": {
           "enabled": self.serve.xtream.enabled,
@@ -841,6 +857,33 @@ def load_config(
     os.environ.get("BELLHOP_WEB_SESSION_SECRET"),
     os.environ.get("IPTV_WEB_SESSION_SECRET"),
   )
+  web_trust_proxy = bool(
+    _first_defined(
+      serve_web_raw.get("trust_proxy_headers"),
+      web_raw.get("trust_proxy_headers"),
+      default=False,
+    )
+  )
+  raw_proxy_ips = _first_defined(
+    serve_web_raw.get("trusted_proxy_ips"),
+    web_raw.get("trusted_proxy_ips"),
+  )
+  if raw_proxy_ips is None:
+    web_trusted_proxy_ips = list(DEFAULT_TRUSTED_PROXY_IPS)
+  elif isinstance(raw_proxy_ips, list):
+    web_trusted_proxy_ips = [
+      str(item).strip() for item in raw_proxy_ips if str(item).strip()
+    ]
+  elif isinstance(raw_proxy_ips, str):
+    web_trusted_proxy_ips = [
+      part.strip() for part in raw_proxy_ips.split(",") if part.strip()
+    ]
+  else:
+    raise ValueError(
+      "web_server.trusted_proxy_ips must be a list of IP addresses or CIDRs."
+    )
+  # Validate all configured reverse-proxy IPs/CIDRs eagerly at config load.
+  parse_trusted_proxy_networks(web_trusted_proxy_ips)
 
   serve_web_port_raw = serve_web_raw.get("port")
   serve_xt_port_raw = serve_xt_raw.get("port")
@@ -863,6 +906,8 @@ def load_config(
       password=web_password,
       session_ttl_hours=web_session_ttl_hours,
       session_secret=web_session_secret,
+      trust_proxy_headers=web_trust_proxy,
+      trusted_proxy_ips=list(web_trusted_proxy_ips),
     ),
     xtream=ServeXtreamConfig(
       enabled=bool(serve_xt_raw.get("enabled", True)),
@@ -905,6 +950,8 @@ def load_config(
     password=web_password,
     session_ttl_hours=web_session_ttl_hours,
     session_secret=web_session_secret,
+    trust_proxy_headers=web_trust_proxy,
+    trusted_proxy_ips=list(web_trusted_proxy_ips),
   )
 
   pkg_root = Path(__file__).resolve().parents[2]

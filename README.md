@@ -71,7 +71,7 @@ All persistent settings belong in `config.yaml` (see [config.example.yaml](confi
 1. **Infrastructure & Host Settings (config-file only, never exposed to Web UI):**
    - `credentials_file` — Path to `credentials.yaml`
    - `paths` — `cache_dir`, `state_dir`, `mapping_path`, `lineup_file`, `m3u8_playlist_path`, `m3u8_report_path`, `xtream_output_dir`, `seed_json`, `xmltv_file`
-   - `web_server` — Bind `host`/`port`, `settle_ms`, `session_ttl_hours`, and Web Guide login credentials
+   - `web_server` — Bind `host`/`port`, `settle_ms`, `session_ttl_hours`, Web Guide login credentials, and reverse-proxy `X-Forwarded-For` trust (`trust_proxy_headers` + `trusted_proxy_ips` allowlist)
 2. **Operational Settings (inspectable & editable via the Web UI Settings drawer, excluding credentials):**
    - `upstream_xtream` — Upstream server URL, `stream_format` (`ts`/`m3u8`), timeout, catalog `refresh_hours`
    - `xtream_server` — Passthrough Xtream API `enabled`, optional `host`/`port` override, `public_host`/`public_port`, `server_protocol`

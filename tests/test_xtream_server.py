@@ -941,6 +941,10 @@ web_server:
   session_ttl_hours: 168.0
   username: "web_admin"
   password: "web_secret_pass"
+  trust_proxy_headers: true
+  trusted_proxy_ips:
+    - "127.0.0.1"
+    - "172.16.0.0/12"
 
 # Tier-2 operational settings
 upstream_xtream:
@@ -1051,6 +1055,8 @@ pipeline:
         "web",
         "settle_ms",
         "session_ttl_hours",
+        "trust_proxy_headers",
+        "trusted_proxy_ips",
         "cache_dir",
         "state_dir",
         "mapping_path",
@@ -1077,6 +1083,8 @@ pipeline:
             "session_ttl_hours": 1.0,
             "username": "HACKED",
             "password": "HACKED",
+            "trust_proxy_headers": False,
+            "trusted_proxy_ips": ["0.0.0.0/0"],
           },
           "paths": {
             "cache_dir": "/tmp/hacked_cache",
@@ -1183,6 +1191,11 @@ pipeline:
       assert reloaded.lineup.schedules_direct.password == "sd_secret_pass"
       assert reloaded.serve.web.username == "web_admin"
       assert reloaded.serve.web.password == "web_secret_pass"
+      assert reloaded.serve.web.trust_proxy_headers is True
+      assert reloaded.serve.web.trusted_proxy_ips == [
+        "127.0.0.1",
+        "172.16.0.0/12",
+      ]
       assert reloaded.serve.xtream.username == "xt_user"
       assert reloaded.serve.xtream.password == "xt_secret_pass"
 

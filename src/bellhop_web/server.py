@@ -10,7 +10,7 @@ import logging
 import mimetypes
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from pathlib import Path
@@ -34,14 +34,18 @@ from bellhop_web.epg_refresh import (
   EpgStatusDict,
 )
 from bellhop_web.http_utils import (
+  DEFAULT_TRUSTED_PROXY_IPS,
   UPSTREAM_ERRORS,
   ClientSessionFactory,
+  IpNetwork,
   bytes_response,
   create_web_app,
   default_session_factory,
   detect_device_ip,
   json_response,
+  parse_trusted_proxy_networks,
   redirect_response,
+  resolve_request_client_ip,
   upstream_url,
 )
 from bellhop_web.http_utils import (
@@ -249,6 +253,8 @@ class WebGuideApp:
     epg_refresher: EpgRefreshService | None = None,
     auth: WebAuthManager | None = None,
     login_limiter: LoginRateLimiter | None = None,
+    trust_proxy_headers: bool = False,
+    trusted_proxy_ips: Sequence[str] = DEFAULT_TRUSTED_PROXY_IPS,
     config_reader: Callable[[], dict[str, Any]] | None = None,
     config_writer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
   ) -> None:
@@ -258,6 +264,10 @@ class WebGuideApp:
     self.epg_refresher = epg_refresher
     self.auth = auth
     self.login_limiter: LoginRateLimiter = login_limiter or LoginRateLimiter()
+    self.trust_proxy_headers = bool(trust_proxy_headers)
+    self._trusted_proxy_networks: tuple[IpNetwork, ...] = (
+      parse_trusted_proxy_networks(trusted_proxy_ips)
+    )
     self._config_reader = config_reader
     self._config_writer = config_writer
     self._session_factory: ClientSessionFactory = (
@@ -445,7 +455,11 @@ class WebGuideApp:
       )
 
     is_json = "application/json" in request.content_type.lower()
-    client_ip = request.remote or "unknown"
+    client_ip = resolve_request_client_ip(
+      request,
+      trust_proxy_headers=self.trust_proxy_headers,
+      trusted_networks=self._trusted_proxy_networks,
+    )
     body = await request.read()
     username = ""
     password = ""
