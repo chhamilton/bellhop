@@ -22,6 +22,7 @@ from aiohttp import web
 
 from bellhop_web.auth import (
   SESSION_COOKIE_NAME,
+  LoginRateLimiter,
   SessionInfo,
   WebAuthManager,
   render_login_page_html,
@@ -247,6 +248,7 @@ class WebGuideApp:
     static_dir: Path = STATIC_DIR,
     epg_refresher: EpgRefreshService | None = None,
     auth: WebAuthManager | None = None,
+    login_limiter: LoginRateLimiter | None = None,
     config_reader: Callable[[], dict[str, Any]] | None = None,
     config_writer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
   ) -> None:
@@ -255,6 +257,7 @@ class WebGuideApp:
     self.tuner = TunerSessionManager(settle_sec=settle_sec)
     self.epg_refresher = epg_refresher
     self.auth = auth
+    self.login_limiter: LoginRateLimiter = login_limiter or LoginRateLimiter()
     self._config_reader = config_reader
     self._config_writer = config_writer
     self._session_factory: ClientSessionFactory = (
@@ -307,13 +310,14 @@ class WebGuideApp:
     r = app.router
     protect = self._protected
 
-    # Public brand, favicon & client-prefs assets (needed by `/login`).
+    # Public brand, favicon & client-prefs/login assets (needed by `/login`).
     for path, asset in (
       ("/favicon.ico", "favicon.ico"),
       ("/static/favicon.ico", "favicon.ico"),
       ("/favicon.svg", "bellhop-logo.svg"),
       ("/static/bellhop-logo.svg", "bellhop-logo.svg"),
       ("/static/prefs.js", "prefs.js"),
+      ("/static/login.js", "login.js"),
     ):
       r.add_get(path, self._public_asset_handler(asset))
 
@@ -441,6 +445,7 @@ class WebGuideApp:
       )
 
     is_json = "application/json" in request.content_type.lower()
+    client_ip = request.remote or "unknown"
     body = await request.read()
     username = ""
     password = ""
@@ -465,7 +470,25 @@ class WebGuideApp:
       if form.get("next"):
         next_url = form["next"][0]
 
+    retry_after = self.login_limiter.check(client_ip)
+    if retry_after > 0:
+      retry_hdr = {"Retry-After": str(retry_after)}
+      msg = f"Too many failed sign-in attempts. Retry in {retry_after}s."
+      if is_json:
+        return json_response(
+          {"authenticated": False, "error": msg},
+          status=HTTPStatus.TOO_MANY_REQUESTS,
+          headers=retry_hdr,
+        )
+      return bytes_response(
+        render_login_page_html(next_url=next_url, error_message=msg),
+        "text/html; charset=utf-8",
+        status=HTTPStatus.TOO_MANY_REQUESTS,
+        headers=retry_hdr,
+      )
+
     if not self.auth.verify_credentials(username, password):
+      self.login_limiter.record_failure(client_ip)
       if is_json:
         return json_response(
           {"authenticated": False, "error": "Invalid username or password"},
@@ -478,6 +501,8 @@ class WebGuideApp:
         "text/html; charset=utf-8",
         status=HTTPStatus.UNAUTHORIZED,
       )
+
+    self.login_limiter.record_success(client_ip)
 
     token, session = self.auth.create_session_token(username)
     set_cookie = {"Set-Cookie": self.auth.build_set_cookie_header(token)}

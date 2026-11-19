@@ -30,6 +30,7 @@ from yarl import URL
 __all__ = [
   "DEFAULT_CLIENT_MAX_SIZE",
   "UPSTREAM_ERRORS",
+  "WEB_CSP_POLICY",
   "ClientSessionFactory",
   "build_access_urls",
   "bytes_response",
@@ -47,6 +48,21 @@ logger = logging.getLogger("bellhop_web.http")
 
 # Maximum accepted request body size (login forms & settings JSON are tiny).
 DEFAULT_CLIENT_MAX_SIZE = 256 * 1024
+
+# Content-Security-Policy disallowing inline scripts/eval while permitting
+# `mpegts.js`/`hls.js` blob: workers & MSE streams and external channel logos.
+WEB_CSP_POLICY = (
+  "default-src 'self'; "
+  "script-src 'self' blob:; "
+  "worker-src 'self' blob:; "
+  "media-src 'self' blob:; "
+  "img-src 'self' https: http: data: blob:; "
+  "style-src 'self' 'unsafe-inline'; "
+  "connect-src 'self'; "
+  "object-src 'none'; "
+  "base-uri 'self'; "
+  "frame-ancestors 'self'"
+)
 
 # Exceptions raised by aiohttp client requests for network/HTTP failures.
 UPSTREAM_ERRORS: tuple[type[BaseException], ...] = (
@@ -264,6 +280,8 @@ async def _add_cors_headers(
   response.headers.setdefault(
     "Access-Control-Allow-Methods", "GET, POST, PUT, HEAD, OPTIONS"
   )
+  response.headers.setdefault("Content-Security-Policy", WEB_CSP_POLICY)
+  response.headers.setdefault("X-Content-Type-Options", "nosniff")
 
 
 def create_web_app(

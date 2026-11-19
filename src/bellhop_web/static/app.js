@@ -117,7 +117,8 @@
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
             .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;");
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
     };
     const makeInitials = (name) => {
         const words = String(name || "TV")
@@ -137,7 +138,7 @@
         if (!ch.logo) {
             return `<span class="logo-fallback">${fallback}</span>`;
         }
-        return `<img src="${escapeHtml(ch.logo)}" alt="${escapeHtml(ch.name)}" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'logo-fallback',textContent:'${fallback}'}))" />`;
+        return `<img src="${escapeHtml(ch.logo)}" alt="${escapeHtml(ch.name)}" loading="lazy" data-logo-fallback="${fallback}" />`;
     };
     const qualityBadgeClass = (tier) => {
         const t = String(tier || "").toLowerCase();
@@ -1672,6 +1673,19 @@
             }
         });
     }
+    // Delegated capture-phase fallback for broken channel logo images (CSP-safe, no inline onerror).
+    document.addEventListener("error", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLImageElement))
+            return;
+        const fallback = target.dataset["logoFallback"];
+        if (fallback === undefined)
+            return;
+        const span = document.createElement("span");
+        span.className = "logo-fallback";
+        span.textContent = fallback || "TV";
+        target.replaceWith(span);
+    }, true);
     // Global keyboard shortcuts
     window.addEventListener("keydown", (e) => {
         const target = e.target;

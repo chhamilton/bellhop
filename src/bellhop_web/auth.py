@@ -15,8 +15,9 @@ import json
 import os
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
+from math import ceil
 from pathlib import Path
 from urllib.parse import quote
 
@@ -240,6 +241,63 @@ class WebAuthManager:
     return f"/login?next={quote(safe, safe='')}"
 
 
+@dataclass(slots=True)
+class LoginRateLimiter:
+  """Bounded per-IP sliding-window failed-login rate limiter."""
+
+  max_failures: int = 8
+  window_sec: float = 60.0
+  max_tracked_ips: int = 4096
+  _failures: dict[str, list[float]] = field(default_factory=dict, repr=False)
+
+  def _prune_ip(self, ip: str, cutoff: float) -> list[float]:
+    timestamps = self._failures.get(ip)
+    if not timestamps:
+      self._failures.pop(ip, None)
+      return []
+    fresh = [ts for ts in timestamps if ts > cutoff]
+    if fresh:
+      self._failures[ip] = fresh
+    else:
+      self._failures.pop(ip, None)
+    return fresh
+
+  def check(self, ip: str, *, now: float | None = None) -> int:
+    """Return `0` if allowed, or positive `Retry-After` seconds if throttled."""
+    if self.max_failures <= 0 or self.window_sec <= 0:
+      return 0
+    ts_now = time.monotonic() if now is None else now
+    fresh = self._prune_ip(ip or "unknown", ts_now - self.window_sec)
+    if len(fresh) < self.max_failures:
+      return 0
+    oldest_active = fresh[0]
+    remaining = (oldest_active + self.window_sec) - ts_now
+    return max(1, ceil(remaining))
+
+  def record_failure(self, ip: str, *, now: float | None = None) -> None:
+    """Record a failed login attempt for `ip`."""
+    if self.max_failures <= 0 or self.window_sec <= 0:
+      return
+    key = ip or "unknown"
+    ts_now = time.monotonic() if now is None else now
+    cutoff = ts_now - self.window_sec
+    if (
+      key not in self._failures and len(self._failures) >= self.max_tracked_ips
+    ):
+      for stale_ip in list(self._failures):
+        self._prune_ip(stale_ip, cutoff)
+      if len(self._failures) >= self.max_tracked_ips:
+        oldest_key = next(iter(self._failures))
+        self._failures.pop(oldest_key, None)
+    fresh = self._prune_ip(key, cutoff)
+    fresh.append(ts_now)
+    self._failures[key] = fresh
+
+  def record_success(self, ip: str) -> None:
+    """Clear failed login attempts for `ip` after a successful sign-in."""
+    self._failures.pop(ip or "unknown", None)
+
+
 def render_login_page_html(
   *, next_url: str = "/", error_message: str = ""
 ) -> bytes:
@@ -248,12 +306,14 @@ def render_login_page_html(
   esc_next = (
     safe_next.replace("&", "&amp;")
     .replace('"', "&quot;")
+    .replace("'", "&#39;")
     .replace("<", "&lt;")
     .replace(">", "&gt;")
   )
   esc_err = (
     error_message.replace("&", "&amp;")
     .replace('"', "&quot;")
+    .replace("'", "&#39;")
     .replace("<", "&lt;")
     .replace(">", "&gt;")
   )
@@ -490,54 +550,7 @@ def render_login_page_html(
       <button id="login-submit" class="submit-btn" type="submit">Sign In</button>
     </form>
   </main>
-  <script>
-    (() => {{
-      const themeBtn = document.getElementById("theme-toggle-btn");
-      if (window.BellhopSettings && themeBtn) {{
-        window.BellhopSettings.bindThemeToggle(themeBtn);
-      }}
-
-      const form = document.getElementById("login-form");
-      const errEl = document.getElementById("login-error");
-      const btn = document.getElementById("login-submit");
-      const nextUrl = form.querySelector('input[name="next"]').value || "/";
-
-      form.addEventListener("submit", async (e) => {{
-        e.preventDefault();
-        errEl.hidden = true;
-        btn.disabled = true;
-        btn.textContent = "Signing in…";
-        try {{
-          const resp = await fetch("/api/auth/login", {{
-            method: "POST",
-            headers: {{ "Content-Type": "application/json" }},
-            body: JSON.stringify({{
-              username: document.getElementById("username").value,
-              password: document.getElementById("password").value,
-            }}),
-          }});
-          const data = await resp.json().catch(() => ({{}}));
-          if (!resp.ok) {{
-            errEl.textContent = data.error || "Invalid username or password.";
-            errEl.hidden = false;
-            btn.disabled = false;
-            btn.textContent = "Sign In";
-            return;
-          }}
-          const finalNext =
-            !nextUrl.includes("#") && window.location.hash
-              ? nextUrl + window.location.hash
-              : nextUrl;
-          window.location.replace(finalNext);
-        }} catch {{
-          errEl.textContent = "Unable to reach server. Please try again.";
-          errEl.hidden = false;
-          btn.disabled = false;
-          btn.textContent = "Sign In";
-        }}
-      }});
-    }})();
-  </script>
+  <script src="/static/login.js"></script>
 </body>
 </html>
 """
