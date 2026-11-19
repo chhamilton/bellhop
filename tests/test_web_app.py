@@ -358,10 +358,10 @@ def test_resolve_bind_host_and_access_urls(
 
   cfg_path = tmp_path / "config.yaml"
   cfg_path.write_text(
-    "xtream:\n  server_url: http://example.invalid\n", encoding="utf-8"
+    "upstream_xtream:\n  server_url: http://example.invalid\n", encoding="utf-8"
   )
   cfg = load_config(cfg_path)
-  assert cfg.web.host == "0.0.0.0"
+  assert cfg.serve.web_host == "0.0.0.0"
 
 
 @pytest.mark.asyncio

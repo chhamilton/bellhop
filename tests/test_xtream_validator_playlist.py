@@ -313,20 +313,17 @@ def test_cli_build_from_local_json(tmp_path: Path) -> None:
   cfg_path = tmp_path / "config.yaml"
   cfg_path.write_text(
     f"""\
-xtream:
-  seed_json: "{sample_json}"
-lineup:
-  numbering_mode: "hd"
-state:
+paths:
   state_dir: "{tmp_path / "state"}"
-epg:
-  fetch: false
-output:
-  m3u8:
-    playlist_path: "{out_m3u8}"
-    report_path: "{out_report}"
-  xtream:
-    dir: "{tmp_path / "xtream_build"}"
+  seed_json: "{sample_json}"
+  m3u8_playlist_path: "{out_m3u8}"
+  m3u8_report_path: "{out_report}"
+  xtream_output_dir: "{tmp_path / "xtream_build"}"
+pipeline:
+  lineup:
+    numbering_mode: "hd"
+  epg:
+    verify: false
 """,
     encoding="utf-8",
   )
@@ -367,23 +364,21 @@ def test_collapse_sd_dupes_keeps_hd_and_sd_only_channels(
   cfg_full = tmp_path / "config_full.yaml"
   cfg_full.write_text(
     f"""\
-xtream:
-  seed_json: "{sample_json}"
-lineup:
-  collapse_sd_dupes: false
-state:
+paths:
   state_dir: "{tmp_path / "state1"}"
-validation:
-  enabled: false
-epg:
-  fetch: false
-output:
-  m3u8:
-    playlist_path: "{out_full}"
-    report_path: "{tmp_path / "r1.json"}"
-  xtream:
+  seed_json: "{sample_json}"
+  m3u8_playlist_path: "{out_full}"
+  m3u8_report_path: "{tmp_path / "r1.json"}"
+  xtream_output_dir: "{tmp_path / "xtream1"}"
+pipeline:
+  lineup:
+    collapse_sd_dupes: false
+  validation:
     enabled: false
-    dir: "{tmp_path / "xtream1"}"
+  epg:
+    verify: false
+  output:
+    xtream_enabled: false
 """,
     encoding="utf-8",
   )
@@ -400,23 +395,21 @@ output:
   cfg_collapsed = tmp_path / "config_collapsed.yaml"
   cfg_collapsed.write_text(
     f"""\
-xtream:
-  seed_json: "{sample_json}"
-lineup:
-  collapse_sd_dupes: true
-state:
+paths:
   state_dir: "{tmp_path / "state2"}"
-validation:
-  enabled: false
-epg:
-  fetch: false
-output:
-  m3u8:
-    playlist_path: "{out_collapsed}"
-    report_path: "{tmp_path / "r2.json"}"
-  xtream:
+  seed_json: "{sample_json}"
+  m3u8_playlist_path: "{out_collapsed}"
+  m3u8_report_path: "{tmp_path / "r2.json"}"
+  xtream_output_dir: "{tmp_path / "xtream2"}"
+pipeline:
+  lineup:
+    collapse_sd_dupes: true
+  validation:
     enabled: false
-    dir: "{tmp_path / "xtream2"}"
+  epg:
+    verify: false
+  output:
+    xtream_enabled: false
 """,
     encoding="utf-8",
   )

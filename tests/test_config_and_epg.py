@@ -1,4 +1,4 @@
-"""Unit tests for 2-tier & legacy config loading, public config updates, and EPG verification."""
+"""Unit tests for two-tier config loading, public config updates, and EPG verification."""
 
 from __future__ import annotations
 
@@ -158,42 +158,40 @@ pipeline:
     load_config(bad_proxy_cfg)
 
 
-def test_apply_public_config_update_legacy_layout_and_validation_errors(
+def test_apply_public_config_update_and_validation_errors(
   tmp_path: Path,
 ) -> None:
-  legacy_cfg = tmp_path / "legacy.yaml"
-  legacy_cfg.write_text(
+  cfg_file = tmp_path / "config.yaml"
+  cfg_file.write_text(
     """\
-xtream:
-  server_url: "http://legacy.example"
-  username: "legacy_u"
-  password: "legacy_p"
-  stream_format: "ts"
-lineup:
-  backend: "yaml"
-  lineup_id: "CAN-BELLFIBE-MTL-X"
-state:
-  upgrade_hysteresis_score: 5.0
-output:
-  m3u8:
-    enabled: true
-  xtream:
-    enabled: true
-serve:
+web_server:
+  enabled: false
   host: "127.0.0.1"
   port: 8080
-  web:
-    enabled: false
-  xtream:
-    enabled: true
-    username: "xt_u"
-    password: "xt_p"
+upstream_xtream:
+  server_url: "http://provider.example"
+  username: "up_u"
+  password: "up_p"
+  stream_format: "ts"
+xtream_server:
+  enabled: true
+  username: "xt_u"
+  password: "xt_p"
+pipeline:
+  lineup:
+    backend: "yaml"
+    lineup_id: "CAN-BELLFIBE-MTL-X"
+  matching:
+    upgrade_hysteresis_score: 5.0
+  output:
+    m3u8_enabled: true
+    xtream_enabled: true
 """,
     encoding="utf-8",
   )
 
   updated, restart_req = apply_public_config_update(
-    legacy_cfg,
+    cfg_file,
     {
       "upstream_xtream": {"stream_format": "m3u8", "request_timeout_sec": 25.0},
       "xtream_server": {"public_host": "lan.local"},
@@ -205,8 +203,8 @@ serve:
   )
   assert restart_req is False
   assert updated.xtream.stream_format == "m3u8"
-  assert updated.xtream.username == "legacy_u"
-  assert updated.xtream.password == "legacy_p"
+  assert updated.xtream.username == "up_u"
+  assert updated.xtream.password == "up_p"
   assert updated.state.upgrade_hysteresis_score == 8.0
   assert updated.output.m3u8_enabled is False
   assert updated.serve.xtream.public_host == "lan.local"
@@ -221,12 +219,12 @@ serve:
     {"pipeline": {"lineup": {"numbering_mode": "invalid"}}},
     {"pipeline": {"lineup": {"pinned_streams": "not-a-dict"}}},
     {"pipeline": {"lineup": {"excluded_channels": "not-a-list"}}},
-    # Disabling xtream_server when web.enabled is already false must fail
+    # Disabling xtream_server when web_server.enabled is already false must fail
     {"xtream_server": {"enabled": False}},
   ]
   for bad in invalid_payloads:
     with pytest.raises(ValueError):
-      apply_public_config_update(legacy_cfg, bad)
+      apply_public_config_update(cfg_file, bad)
 
 
 def test_apply_public_config_update_preserves_comments_and_env_placeholders(

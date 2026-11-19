@@ -296,27 +296,25 @@ channels:
   cfg_both_path = tmp_path / "config_both.yaml"
   cfg_both_path.write_text(
     f"""\
-xtream:
+paths:
+  state_dir: "{state_dir}"
+  lineup_file: "{lineup_yaml_path}"
+  seed_json: "{input_catalog_path}"
+  xmltv_file: "{epg_xml_path}"
+  m3u8_playlist_path: "{out_m3u8}"
+  m3u8_report_path: "{out_report}"
+  xtream_output_dir: "{xtream_dir}"
+upstream_xtream:
   server_url: "http://cf.smoothroad.example"
   username: "u"
   password: "p"
-  seed_json: "{input_catalog_path}"
-lineup:
-  lineup_id: "CAN-BELLFIBE-MTL-X"
-  file: "{lineup_yaml_path}"
-  numbering_mode: "both"
-  collapse_sd_dupes: false
-state:
-  state_dir: "{state_dir}"
-epg:
-  verify: true
-  xmltv_file: "{epg_xml_path}"
-output:
-  m3u8:
-    playlist_path: "{out_m3u8}"
-    report_path: "{out_report}"
-  xtream:
-    dir: "{xtream_dir}"
+pipeline:
+  lineup:
+    lineup_id: "CAN-BELLFIBE-MTL-X"
+    numbering_mode: "both"
+    collapse_sd_dupes: false
+  epg:
+    verify: true
 """,
     encoding="utf-8",
   )
@@ -351,21 +349,20 @@ output:
   cfg_hd_path = tmp_path / "config_hd.yaml"
   cfg_hd_path.write_text(
     f"""\
-xtream:
+paths:
+  state_dir: "{state_dir}"
+  lineup_file: "{lineup_yaml_path}"
+  xtream_output_dir: "{xtream_hd_dir}"
+upstream_xtream:
   server_url: "http://cf.smoothroad.example"
   username: "u"
   password: "p"
-lineup:
-  lineup_id: "CAN-BELLFIBE-MTL-X"
-  file: "{lineup_yaml_path}"
-  collapse_sd_dupes: true
-state:
-  state_dir: "{state_dir}"
-epg:
-  verify: false
-output:
-  xtream:
-    dir: "{xtream_hd_dir}"
+pipeline:
+  lineup:
+    lineup_id: "CAN-BELLFIBE-MTL-X"
+    collapse_sd_dupes: true
+  epg:
+    verify: false
 """,
     encoding="utf-8",
   )

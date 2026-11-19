@@ -77,30 +77,29 @@ channels:
   cfg_path = tmp_path / "config.yaml"
   cfg_path.write_text(
     f"""\
-xtream:
+paths:
+  state_dir: "{state_dir}"
+  lineup_file: "{mini_lineup}"
+  seed_json: "{seed_catalog}"
+  m3u8_playlist_path: "{out_m3u8}"
+  m3u8_report_path: "{out_report}"
+  xtream_output_dir: "{out_xtream}"
+upstream_xtream:
   server_url: "http://panel.example"
   username: "alice"
   password: "secret_password"
-  seed_json: "{seed_catalog}"
-lineup:
-  lineup_id: "CAN-BELLFIBE-MTL-X"
-  file: "{mini_lineup}"
-  collapse_sd_dupes: true
-state:
-  state_dir: "{state_dir}"
-validation:
-  enabled: true
-  only_changed: true
-epg:
-  fetch: false
-output:
-  m3u8:
+pipeline:
+  lineup:
+    lineup_id: "CAN-BELLFIBE-MTL-X"
+    collapse_sd_dupes: true
+  validation:
     enabled: true
-    playlist_path: "{out_m3u8}"
-    report_path: "{out_report}"
-  xtream:
-    enabled: true
-    dir: "{out_xtream}"
+    only_changed: true
+  epg:
+    verify: false
+  output:
+    m3u8_enabled: true
+    xtream_enabled: true
 """,
     encoding="utf-8",
   )

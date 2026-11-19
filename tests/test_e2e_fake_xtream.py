@@ -150,39 +150,38 @@ async def test_e2e_pipeline_to_web_guide_passthrough_epg_and_single_tuner(
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
       f"""\
-xtream:
+paths:
+  cache_dir: "cache"
+  state_dir: "state"
+  lineup_file: "{lineup_file}"
+  m3u8_playlist_path: "output/lineup.m3u8"
+  m3u8_report_path: "output/report.json"
+  xtream_output_dir: "output/xtream"
+upstream_xtream:
   server_url: "{fake.base_url}"
   username: "{fake.username}"
   password: "{fake.password}"
   stream_format: "ts"
-  cache_dir: "cache"
-lineup:
-  backend: "yaml"
-  lineup_id: "CAN-BELLFIBE-MTL-X"
-  file: "{lineup_file}"
-  collapse_sd_dupes: true
-state:
-  state_dir: "state"
-validation:
-  enabled: true
-  only_changed: true
-  concurrency: 4
-  ignore_account_limit: false
-  inter_probe_delay_sec: 0.05
-  http_timeout_sec: 5.0
-  min_bytes_to_read: 4096
-  use_ffprobe: false
-epg:
-  verify: true
-  refresh_hours: 6.0
-output:
-  m3u8:
+pipeline:
+  lineup:
+    backend: "yaml"
+    lineup_id: "CAN-BELLFIBE-MTL-X"
+    collapse_sd_dupes: true
+  validation:
     enabled: true
-    playlist_path: "output/lineup.m3u8"
-    report_path: "output/report.json"
-  xtream:
-    enabled: true
-    dir: "output/xtream"
+    only_changed: true
+    concurrency: 4
+    ignore_account_limit: false
+    inter_probe_delay_sec: 0.05
+    http_timeout_sec: 5.0
+    min_bytes_to_read: 4096
+    use_ffprobe: false
+  epg:
+    verify: true
+    refresh_hours: 6.0
+  output:
+    m3u8_enabled: true
+    xtream_enabled: true
 """,
       encoding="utf-8",
     )

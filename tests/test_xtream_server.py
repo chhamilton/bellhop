@@ -101,39 +101,40 @@ async def test_bellhop_serve_xtream_contract_and_302_passthrough(
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
       f"""\
-xtream:
+paths:
+  cache_dir: "cache"
+  state_dir: "state"
+  lineup_file: "{lineup_file}"
+  m3u8_playlist_path: "output/lineup.m3u8"
+  m3u8_report_path: "output/report.json"
+  xtream_output_dir: "output/xtream"
+web_server:
+  host: "127.0.0.1"
+  port: 0
+upstream_xtream:
   server_url: "{upstream.base_url}"
   username: "{upstream.username}"
   password: "{upstream.password}"
   stream_format: "ts"
-  cache_dir: "cache"
-lineup:
-  backend: "yaml"
-  lineup_id: "CAN-BELLFIBE-MTL-X"
-  file: "{lineup_file}"
-  collapse_sd_dupes: true
-state:
-  state_dir: "state"
-validation:
+xtream_server:
   enabled: true
-  use_ffprobe: false
-  inter_probe_delay_sec: 0.02
-  min_bytes_to_read: 4096
-epg:
-  verify: true
-output:
-  m3u8:
-    enabled: true
-    playlist_path: "output/lineup.m3u8"
-    report_path: "output/report.json"
-  xtream:
-    enabled: true
-    dir: "output/xtream"
-serve:
-  host: "127.0.0.1"
-  port: 0
   username: "client_alice"
   password: "client_secret_42"
+pipeline:
+  lineup:
+    backend: "yaml"
+    lineup_id: "CAN-BELLFIBE-MTL-X"
+    collapse_sd_dupes: true
+  validation:
+    enabled: true
+    use_ffprobe: false
+    inter_probe_delay_sec: 0.02
+    min_bytes_to_read: 4096
+  epg:
+    verify: true
+  output:
+    m3u8_enabled: true
+    xtream_enabled: true
 """,
       encoding="utf-8",
     )
@@ -536,7 +537,8 @@ async def test_bellhop_serve_default_bind_config_and_unconfigured_xtream_auth(
   # Default config binds 0.0.0.0:8080
   cfg_default_path = tmp_path / "default_cfg.yaml"
   cfg_default_path.write_text(
-    "xtream:\n  server_url: http://example.invalid\n", encoding="utf-8"
+    "upstream_xtream:\n  server_url: http://example.invalid\n",
+    encoding="utf-8",
   )
   cfg_default = load_config(cfg_default_path)
   assert cfg_default.serve.host == "0.0.0.0"
@@ -546,10 +548,9 @@ async def test_bellhop_serve_default_bind_config_and_unconfigured_xtream_auth(
   cfg_custom_path = tmp_path / "custom_cfg.yaml"
   cfg_custom_path.write_text(
     f"""\
-output:
-  xtream:
-    dir: "{xt_dir}"
-serve:
+paths:
+  xtream_output_dir: "{xt_dir}"
+web_server:
   host: "127.0.0.1"
   port: 0
 """,
@@ -626,20 +627,17 @@ async def test_bellhop_serve_separate_ports_mode(tmp_path: Path) -> None:
   cfg_path = tmp_path / "split_cfg.yaml"
   cfg_path.write_text(
     f"""\
-output:
-  xtream:
-    dir: "{xt_dir}"
-serve:
+paths:
+  xtream_output_dir: "{xt_dir}"
+web_server:
+  enabled: true
   host: "127.0.0.1"
   port: {web_p}
-  web:
-    enabled: true
-    port: {web_p}
-  xtream:
-    enabled: true
-    port: {xt_p}
-    username: "split_user"
-    password: "split_password"
+xtream_server:
+  enabled: true
+  port: {xt_p}
+  username: "split_user"
+  password: "split_password"
 """,
     encoding="utf-8",
   )
@@ -738,23 +736,20 @@ async def test_unified_serve_distinct_web_login_and_xtream_credentials(
   cfg_path = tmp_path / "auth_cfg.yaml"
   cfg_path.write_text(
     f"""\
-xtream:
+paths:
   cache_dir: "{tmp_path / "cache"}"
-output:
-  xtream:
-    dir: "{xt_dir}"
-serve:
+  xtream_output_dir: "{xt_dir}"
+web_server:
+  enabled: true
   host: "127.0.0.1"
   port: 0
-  web:
-    enabled: true
-    username: "web_admin"
-    password: "web_secret_password"
-    session_ttl_hours: 24.0
-  xtream:
-    enabled: true
-    username: "xt_player"
-    password: "xt_secret_password"
+  username: "web_admin"
+  password: "web_secret_password"
+  session_ttl_hours: 24.0
+xtream_server:
+  enabled: true
+  username: "xt_player"
+  password: "xt_secret_password"
 """,
     encoding="utf-8",
   )
