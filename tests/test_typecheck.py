@@ -115,7 +115,7 @@ def test_typescript_strict_and_compiled_assets_in_sync(tmp_path: Path) -> None:
   )
 
   static_dir = REPO_ROOT / "src" / "bellhop_web" / "static"
-  for filename in ("prefs.js", "app.js"):
+  for filename in ("prefs.js", "login.js", "app.js"):
     fresh = (out_dir / filename).read_text(encoding="utf-8")
     committed = (static_dir / filename).read_text(encoding="utf-8")
     assert committed == fresh, (

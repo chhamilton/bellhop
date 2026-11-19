@@ -691,15 +691,26 @@ async def test_public_logo_and_favicon_served_before_auth(
       # Unauthenticated /login renders centered Bellhop splash logo, favicons & theme toggle
       async with client.get("/login", allow_redirects=False) as login_resp:
         assert login_resp.status == 200
+        csp = login_resp.headers.get("Content-Security-Policy", "")
+        assert "script-src 'self' blob:" in csp
+        assert "script-src 'unsafe-inline'" not in csp
+        assert login_resp.headers.get("X-Content-Type-Options") == "nosniff"
         login_text = await login_resp.text()
         assert "/static/bellhop-logo.svg" in login_text
         assert 'href="/favicon.ico"' in login_text
         assert "/static/prefs.js" in login_text
+        assert "/static/login.js" in login_text
+        assert "<script>" not in login_text
         assert 'id="theme-toggle-btn"' in login_text
         assert 'class="icon-sun"' in login_text
         assert 'class="icon-moon"' in login_text
 
-      # Brand, favicon & client-prefs assets are publicly accessible before authentication
+      # Brand, favicon, prefs & login controller assets are publicly accessible before auth
+      async with client.get("/static/login.js") as login_js:
+        assert login_js.status == 200
+        assert "javascript" in login_js.headers["Content-Type"]
+        assert "/api/auth/login" in await login_js.text()
+
       async with client.get("/static/bellhop-logo.svg") as svg_resp:
         assert svg_resp.status == 200
         assert "image/svg+xml" in svg_resp.headers["Content-Type"]
@@ -747,6 +758,101 @@ async def test_public_logo_and_favicon_served_before_auth(
         assert ".cat-count.is-matched" in styles_text
         assert ".cat-count.is-empty" in styles_text
         assert ".timeline-body" in styles_text
+
+      async with client.get("/static/app.js") as auth_app_js:
+        assert auth_app_js.status == 200
+        app_js_body = await auth_app_js.text()
+        assert "&#39;" in app_js_body
+        assert "onerror=" not in app_js_body
+        assert "data-logo-fallback" in app_js_body
+  finally:
+    await runner.cleanup()
+    await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_login_rate_limiter_and_html_single_quote_escaping(
+  tmp_path: Path,
+) -> None:
+  from bellhop_web.auth import (
+    LoginRateLimiter,
+    WebAuthConfig,
+    WebAuthManager,
+    render_login_page_html,
+  )
+
+  # 1. HTML escaping on /login escapes single quotes as &#39;
+  rendered = render_login_page_html(
+    next_url="/?q=O'Connor", error_message="Can't sign in"
+  ).decode("utf-8")
+  assert "&#39;" in rendered
+  assert "Can't" not in rendered
+  assert "<script>" not in rendered
+
+  # 2. Deterministic sliding-window unit checks on LoginRateLimiter
+  unit_limiter = LoginRateLimiter(max_failures=3, window_sec=30.0)
+  assert unit_limiter.check("10.0.0.5", now=100.0) == 0
+  unit_limiter.record_failure("10.0.0.5", now=100.0)
+  unit_limiter.record_failure("10.0.0.5", now=105.0)
+  assert unit_limiter.check("10.0.0.5", now=106.0) == 0
+  unit_limiter.record_failure("10.0.0.5", now=110.0)
+  # 3rd failure within 30s throttles only that IP
+  assert unit_limiter.check("10.0.0.5", now=110.0) == 20
+  assert unit_limiter.check("10.0.0.6", now=110.0) == 0
+  # Window slide after oldest failure expires (t=130.1) unblocks 1 slot
+  assert unit_limiter.check("10.0.0.5", now=130.1) == 0
+  # Successful login clears recorded failures immediately
+  unit_limiter.record_failure("10.0.0.5", now=131.0)
+  assert unit_limiter.check("10.0.0.5", now=131.0) > 0
+  unit_limiter.record_success("10.0.0.5")
+  assert unit_limiter.check("10.0.0.5", now=131.0) == 0
+
+  # 3. Live HTTP 429 Too Many Requests + Retry-After on POST /api/auth/login
+  xt_dir = tmp_path / "output" / "xtream"
+  _write_sample_xtream_dir(xt_dir, int(time.time()))
+  auth = WebAuthManager(
+    WebAuthConfig(
+      username="admin",
+      password="correct_password",
+      secret_file=tmp_path / "session_secret.key",
+    )
+  )
+  live_limiter = LoginRateLimiter(max_failures=3, window_sec=60.0)
+  app = WebGuideApp(
+    LineupGuideStore(xt_dir),
+    auth=auth,
+    login_limiter=live_limiter,
+    settle_sec=0.01,
+  )
+  await app.startup()
+  runner, port = await start_site(app.build_app(), "127.0.0.1", 0)
+  base = f"http://127.0.0.1:{port}"
+
+  try:
+    async with new_test_session(base) as client:
+      for _ in range(3):
+        async with client.post(
+          "/api/auth/login",
+          json={"username": "admin", "password": "wrong"},
+        ) as bad_resp:
+          assert bad_resp.status == 401
+
+      # 4th attempt is throttled with 429 + Retry-After (even if password is right!)
+      async with client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "correct_password"},
+      ) as throttled_json:
+        assert throttled_json.status == 429
+        assert int(throttled_json.headers["Retry-After"]) >= 1
+        assert "Too many" in (await throttled_json.json())["error"]
+
+      async with client.post(
+        "/api/auth/login",
+        data={"username": "admin", "password": "wrong"},
+        allow_redirects=False,
+      ) as throttled_form:
+        assert throttled_form.status == 429
+        assert int(throttled_form.headers["Retry-After"]) >= 1
   finally:
     await runner.cleanup()
     await app.shutdown()

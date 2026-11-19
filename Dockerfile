@@ -35,6 +35,7 @@ COPY src ./src
 COPY data ./data
 COPY docker ./docker
 COPY --from=frontend-builder /build/src/bellhop_web/static/prefs.js ./src/bellhop_web/static/prefs.js
+COPY --from=frontend-builder /build/src/bellhop_web/static/login.js ./src/bellhop_web/static/login.js
 COPY --from=frontend-builder /build/src/bellhop_web/static/app.js ./src/bellhop_web/static/app.js
 
 RUN pip install --no-cache-dir . \
