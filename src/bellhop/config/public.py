@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, MutableMapping
 from io import StringIO
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
@@ -16,109 +16,35 @@ from ruamel.yaml.scalarstring import (
 
 from bellhop.config.load import load_config
 from bellhop.config.model import AppConfig
+from bellhop_web.api_contracts import (
+  PublicConfigPayload,
+  PublicEpgDict,
+  PublicLineupDict,
+  PublicMatchingDict,
+  PublicOutputDict,
+  PublicPipelineDict,
+  PublicSchedulesDirectDict,
+  PublicTvGuideDict,
+  PublicUpstreamXtreamDict,
+  PublicValidationDict,
+  PublicXtreamServerDict,
+)
 
-
-class PublicUpstreamXtreamDict(TypedDict):
-  """Tier-2 `upstream_xtream` payload exposed on `/api/config`."""
-
-  server_url: str
-  stream_format: str
-  request_timeout_sec: float
-  refresh_hours: float
-
-
-class PublicXtreamServerDict(TypedDict):
-  """Tier-2 `xtream_server` payload exposed on `/api/config`."""
-
-  enabled: bool
-  host: str | None
-  port: int | None
-  public_host: str | None
-  public_port: int | None
-  server_protocol: str
-
-
-class PublicTvGuideDict(TypedDict):
-  """Tier-2 `pipeline.lineup.tvguide` payload exposed on `/api/config`."""
-
-  base_url: str
-
-
-class PublicSchedulesDirectDict(TypedDict):
-  """Tier-2 `pipeline.lineup.schedules_direct` payload exposed on `/api/config`."""
-
-  base_url: str
-  auto_add_lineup: bool
-
-
-class PublicLineupDict(TypedDict):
-  """Tier-2 `pipeline.lineup` payload exposed on `/api/config`."""
-
-  backend: str
-  lineup_id: str
-  postal_code: str
-  refresh_days: float
-  numbering_mode: str
-  collapse_sd_dupes: bool
-  exclude_audio: bool
-  pinned_streams: dict[str, int]
-  excluded_channels: list[int]
-  tvguide: PublicTvGuideDict
-  schedules_direct: PublicSchedulesDirectDict
-
-
-class PublicMatchingDict(TypedDict):
-  """Tier-2 `pipeline.matching` payload exposed on `/api/config`."""
-
-  upgrade_hysteresis_score: float
-
-
-class PublicValidationDict(TypedDict):
-  """Tier-2 `pipeline.validation` payload exposed on `/api/config`."""
-
-  enabled: bool
-  only_changed: bool
-  concurrency: int
-  ignore_account_limit: bool
-  inter_probe_delay_sec: float
-  http_timeout_sec: float
-  min_bytes_to_read: int
-  use_ffprobe: bool
-  ffprobe_timeout_sec: float
-  max_candidates_per_channel: int
-
-
-class PublicEpgDict(TypedDict):
-  """Tier-2 `pipeline.epg` payload exposed on `/api/config`."""
-
-  verify: bool
-  refresh_hours: float
-
-
-class PublicOutputDict(TypedDict):
-  """Tier-2 `pipeline.output` payload exposed on `/api/config`."""
-
-  m3u8_enabled: bool
-  xtream_enabled: bool
-  include_unmatched_comment: bool
-
-
-class PublicPipelineDict(TypedDict):
-  """Tier-2 `pipeline` payload exposed on `/api/config`."""
-
-  lineup: PublicLineupDict
-  matching: PublicMatchingDict
-  validation: PublicValidationDict
-  epg: PublicEpgDict
-  output: PublicOutputDict
-
-
-class PublicConfigPayload(TypedDict):
-  """Scoped operational settings payload exposed by `GET /api/config`."""
-
-  upstream_xtream: PublicUpstreamXtreamDict
-  xtream_server: PublicXtreamServerDict
-  pipeline: PublicPipelineDict
+__all__ = [
+  "PublicConfigPayload",
+  "PublicEpgDict",
+  "PublicLineupDict",
+  "PublicMatchingDict",
+  "PublicOutputDict",
+  "PublicPipelineDict",
+  "PublicSchedulesDirectDict",
+  "PublicTvGuideDict",
+  "PublicUpstreamXtreamDict",
+  "PublicValidationDict",
+  "PublicXtreamServerDict",
+  "apply_public_config_update",
+  "export_public_config",
+]
 
 
 def export_public_config(config: AppConfig) -> PublicConfigPayload:

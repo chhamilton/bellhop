@@ -14,12 +14,20 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
 from urllib.parse import parse_qs, urljoin
 
 import aiohttp
 from aiohttp import web
 
+from bellhop_web.api_contracts import (
+  AuthStatusResponseDict,
+  ChannelEpgResponseDict,
+  HealthApiResponseDict,
+  LineupApiResponseDict,
+  PublicConfigResponseDict,
+  TunerActiveInfoDict,
+)
 from bellhop_web.auth import (
   SESSION_COOKIE_NAME,
   LoginRateLimiter,
@@ -75,17 +83,6 @@ __all__ = [
 logger = logging.getLogger("bellhop_web")
 
 _Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
-
-
-class TunerActiveInfoDict(TypedDict):
-  """Telemetry snapshot of the single active live-stream tuner session."""
-
-  session_id: int
-  chno: int
-  channel_name: str
-  mode: str
-  uptime_sec: float
-
 
 UPSTREAM_USER_AGENT = "VLC/3.0.20 LibVLC/3.0.20"
 HLS_URI_ATTR_RE = re.compile(r'URI="([^"]+)"')
@@ -438,14 +435,13 @@ class WebGuideApp:
   ) -> web.StreamResponse:
     auth_enabled = self._auth_enabled
     session = self._session_for(request)
-    return json_response(
-      {
-        "auth_required": auth_enabled,
-        "authenticated": (not auth_enabled) or (session is not None),
-        "username": session.username if session is not None else None,
-        "expires_at": session.expires_at if session is not None else None,
-      }
-    )
+    payload: AuthStatusResponseDict = {
+      "auth_required": auth_enabled,
+      "authenticated": (not auth_enabled) or (session is not None),
+      "username": session.username if session is not None else None,
+      "expires_at": session.expires_at if session is not None else None,
+    }
+    return json_response(payload)
 
   async def _handle_auth_login(
     self, request: web.Request
@@ -569,9 +565,12 @@ class WebGuideApp:
     self, _request: web.Request
   ) -> web.StreamResponse:
     if self._config_reader is None:
-      return json_response(
-        {"available": False, "config": None, "config_file": None}
-      )
+      unavailable: PublicConfigResponseDict = {
+        "available": False,
+        "config": None,
+        "config_file": None,
+      }
+      return json_response(unavailable)
     return json_response(self._config_reader())
 
   async def _handle_config_put(
@@ -603,21 +602,20 @@ class WebGuideApp:
   async def _handle_health(self, _request: web.Request) -> web.StreamResponse:
     snap = self.store.get_snapshot()
     total_progs, active_progs, _max_stop = snap.epg_coverage_stats()
-    return json_response(
-      {
-        "status": "ok",
-        "lineup_id": snap.lineup_id,
-        "provider": snap.provider,
-        "market": snap.market,
-        "channel_count": len(snap.channels),
-        "category_count": len(snap.categories),
-        "epg_program_count": total_progs,
-        "epg_active_program_count": active_progs,
-        "epg_status": self._epg_status_dict(snap),
-        "active_tuner": self.tuner.active_info,
-        "auth_required": self._auth_enabled,
-      }
-    )
+    payload: HealthApiResponseDict = {
+      "status": "ok",
+      "lineup_id": snap.lineup_id,
+      "provider": snap.provider,
+      "market": snap.market,
+      "channel_count": len(snap.channels),
+      "category_count": len(snap.categories),
+      "epg_program_count": total_progs,
+      "epg_active_program_count": active_progs,
+      "epg_status": self._epg_status_dict(snap),
+      "active_tuner": self.tuner.active_info,
+      "auth_required": self._auth_enabled,
+    }
+    return json_response(payload)
 
   async def _handle_epg_refresh(
     self, _request: web.Request
@@ -706,24 +704,23 @@ class WebGuideApp:
 
       channels_out.append(pub)
 
-    return json_response(
-      {
-        "server_timestamp": now_ts,
-        "lineup": {
-          "lineup_id": snap.lineup_id,
-          "provider": snap.provider,
-          "market": snap.market,
-          "postal_prefix": snap.postal_prefix,
-          "timezone": snap.timezone,
-          "total_channels": len(snap.channels),
-          "category_channels": category_channel_count,
-          "filtered_channels": len(channels_out),
-        },
-        "epg_status": self._epg_status_dict(snap, now_ts=now_ts),
-        "categories": [c.to_dict() for c in snap.categories],
-        "channels": channels_out,
-      }
-    )
+    lineup_payload: LineupApiResponseDict = {
+      "server_timestamp": now_ts,
+      "lineup": {
+        "lineup_id": snap.lineup_id,
+        "provider": snap.provider,
+        "market": snap.market,
+        "postal_prefix": snap.postal_prefix,
+        "timezone": snap.timezone,
+        "total_channels": len(snap.channels),
+        "category_channels": category_channel_count,
+        "filtered_channels": len(channels_out),
+      },
+      "epg_status": self._epg_status_dict(snap, now_ts=now_ts),
+      "categories": [c.to_dict() for c in snap.categories],
+      "channels": channels_out,
+    }
+    return json_response(lineup_payload)
 
   async def _handle_channel_epg(
     self, request: web.Request
@@ -747,14 +744,13 @@ class WebGuideApp:
       for p in progs
       if p.stop_timestamp == 0 or p.stop_timestamp > now_ts - 1800
     ]
-    return json_response(
-      {
-        "chno": ch.chno,
-        "name": ch.name,
-        "epg_channel_id": ch.epg_channel_id,
-        "programs": upcoming,
-      }
-    )
+    epg_payload: ChannelEpgResponseDict = {
+      "chno": ch.chno,
+      "name": ch.name,
+      "epg_channel_id": ch.epg_channel_id,
+      "programs": upcoming,
+    }
+    return json_response(epg_payload)
 
   # ---------------------------------------------------------------------------
   # Single-tuner stream relay (MPEG-TS & HLS)
