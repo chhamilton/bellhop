@@ -1,0 +1,4539 @@
+# Bell Fibe TV — Greater Montreal (QC) Channel Lineup
+# Numbering follows Bell Fibe TV Quebec/Montreal structure:
+#   - 100s  / 1100s HD: Chaînes francophones (Montréal locales, nouvelles, sports, spécialisées, cinéma)
+#   - 200s  / 1200s HD: English Montreal Local Networks & US Border Affiliates (Burlington/Plattsburgh)
+#   - 300s  / 1300s HD: Movies, Crave, Starz, HBO, Super Channel & Hollywood Suite
+#   - 400s  / 1400s HD: Sports (TSN 1-5 w/ TSN2 Canadiens regional, Sportsnet East/One/360, Leagues)
+#   - 500s  / 1500s HD: News, Information, Documentaries, Science & Kids
+#   - 600s  / 1600s HD: Lifestyle, Reality, Drama, Comedy & Entertainment
+
+lineup_id: "CAN-BELLFIBE-MTL-X"
+provider: "Bell Fibe TV"
+market: "Montréal, QC"
+postal_prefix: "H2Y"
+
+channels:
+  # ============================================================================
+  # 100s / 1100s — CHAÎNES GÉNÉRALISTES & LOCALES FRANCOPHONES (MONTRÉAL)
+  # ============================================================================
+  - chno: 1101
+    sd_chno: 101
+    name: "ICI Radio-Canada Télé (Montréal)"
+    callsign: "CBFT"
+    tvg_id: "CBFT.ca"
+    group: "Francophone - Généralistes"
+    language: "fr"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "ICI Radio-Canada Montreal"
+      - "ICI Radio-Canada Tele Montreal"
+      - "Radio-Canada Montreal"
+      - "ICI Tele Montreal"
+      - "ICI Montreal"
+      - "CBFT"
+      - "ICI Radio-Canada Tele"
+      - "ICI Radio-Canada"
+      - "Radio-Canada"
+      - "ICI Television"
+      - "ICI Tele"
+    exclude: ["RDI", "ARTV", "Explora", "Ottawa", "Gatineau", "Quebec City", "Est-Quebec", "Estrie", "Mauricie", "Saguenay", "Vancouver", "Toronto", "Acadie", "Moncton", "Winnipeg", "Manitoba", "Edmonton", "Alberta", "Regina", "Saskatchewan", "Yukon", "Premiere", "ICI Tele 2"]
+
+  - chno: 1102
+    sd_chno: 102
+    name: "Noovo (Montréal)"
+    callsign: "CFJP"
+    tvg_id: "CFJP.ca"
+    group: "Francophone - Généralistes"
+    language: "fr"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "Noovo Montreal"
+      - "CFJP"
+      - "Noovo"
+      - "V Tele Montreal"
+      - "V Montreal"
+    exclude: ["Quebec City", "Sherbrooke", "Trois-Rivieres", "Saguenay", "Gatineau"]
+
+  - chno: 1103
+    sd_chno: 103
+    name: "TVA (Montréal)"
+    callsign: "CFTM"
+    tvg_id: "CFTM.ca"
+    group: "Francophone - Généralistes"
+    language: "fr"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "TVA Montreal"
+      - "CFTM"
+      - "TVA Est"
+      - "TVA"
+    exclude: ["Sports", "Sport", "LCN", "Quebec City", "CFCM", "Sherbrooke", "CHLT", "Rimouski", "Riviere-du-Loup", "Trois-Rivieres", "Saguenay", "Gatineau", "Hull", "Carleton"]
+
+  - chno: 1104
+    sd_chno: 104
+    name: "Télé-Québec (Montréal)"
+    callsign: "CIVM"
+    tvg_id: "CIVM.ca"
+    group: "Francophone - Généralistes"
+    language: "fr"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "Tele-Quebec Montreal"
+      - "Tele Quebec Montreal"
+      - "CIVM"
+      - "Tele-Quebec"
+      - "Tele Quebec"
+    exclude: []
+
+  - chno: 1105
+    sd_chno: 105
+    name: "MétéoMédia"
+    tvg_id: "MeteoMedia.ca"
+    group: "Francophone - Nouvelles & Info"
+    language: "fr"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "MeteoMedia Montreal"
+      - "MeteoMedia"
+      - "Meteo Media"
+    exclude: []
+
+  - chno: 1106
+    sd_chno: 106
+    name: "Savoir média"
+    callsign: "CFTU"
+    tvg_id: "CFTU.ca"
+    group: "Francophone - Généralistes"
+    language: "fr"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "Savoir media"
+      - "Canal Savoir"
+      - "CFTU"
+    exclude: []
+
+  - chno: 1107
+    sd_chno: 107
+    name: "MAtv (Montréal)"
+    tvg_id: "MAtvMontreal.ca"
+    group: "Francophone - Généralistes"
+    language: "fr"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "MAtv Montreal"
+      - "MAtv"
+      - "Canal Vox"
+    exclude: ["Quebec City", "Sherbrooke"]
+
+  # ============================================================================
+  # 108–112 / 1108–1112 — SPORTS FRANCOPHONES
+  # ============================================================================
+  - chno: 1108
+    sd_chno: 108
+    name: "RDS"
+    tvg_id: "RDS.ca"
+    group: "Francophone - Sports"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "RDS HD"
+      - "RDS"
+      - "Reseau des sports"
+    exclude: ["RDS 2", "RDS2", "RDS Info"]
+
+  - chno: 1109
+    sd_chno: 109
+    name: "RDS2"
+    tvg_id: "RDS2.ca"
+    group: "Francophone - Sports"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "RDS 2"
+      - "RDS2"
+    exclude: ["Info"]
+
+  - chno: 1110
+    sd_chno: 110
+    name: "RDS Info"
+    tvg_id: "RDSInfo.ca"
+    group: "Francophone - Sports"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "RDS Info"
+      - "RIS Info Sports"
+    exclude: []
+
+  - chno: 1111
+    sd_chno: 111
+    name: "TVA Sports"
+    tvg_id: "TVASports.ca"
+    group: "Francophone - Sports"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "TVA Sports 1"
+      - "TVA Sports"
+      - "TVA Sport"
+    exclude: ["TVA Sports 2", "TVA Sport 2", "TVA Sports 3"]
+
+  - chno: 1112
+    sd_chno: 112
+    name: "TVA Sports 2"
+    tvg_id: "TVASports2.ca"
+    group: "Francophone - Sports"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "TVA Sports 2"
+      - "TVA Sport 2"
+    exclude: []
+
+  # ============================================================================
+  # 114–155 / 1114–1155 — NOUVELLES & SPÉCIALISÉES FRANCOPHONES
+  # ============================================================================
+  - chno: 1114
+    sd_chno: 114
+    name: "Assemblée nationale du Québec"
+    tvg_id: "AssNat.ca"
+    group: "Francophone - Nouvelles & Info"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Assemblee nationale du Quebec"
+      - "Assemblee nationale"
+      - "Canal de l'Assemblee nationale"
+      - "Le Canal de l Assemblee"
+      - "Canal de l Assemblee"
+    exclude: ["France", "Ontario"]
+
+  - chno: 1115
+    sd_chno: 115
+    name: "LCN"
+    tvg_id: "LCN.ca"
+    group: "Francophone - Nouvelles & Info"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "LCN"
+      - "Le Canal Nouvelles"
+      - "TVA LCN"
+    exclude: ["LCI"]
+
+  - chno: 1116
+    sd_chno: 116
+    name: "CPAC (Français)"
+    tvg_id: "CPAC.fr.ca"
+    group: "Francophone - Nouvelles & Info"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "CPAC Francais"
+      - "CPAC French"
+      - "CPAC FR"
+    exclude: ["English", "EN"]
+
+  - chno: 1117
+    sd_chno: 117
+    name: "ICI RDI"
+    tvg_id: "RDI.ca"
+    group: "Francophone - Nouvelles & Info"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI RDI"
+      - "RDI"
+      - "Radio-Canada RDI"
+    exclude: []
+
+  - chno: 1118
+    sd_chno: 118
+    name: "France 24 (Français)"
+    tvg_id: "France24.fr"
+    group: "Francophone - Nouvelles & Info"
+    language: "fr"
+    regions: ["qc", "ca", "fr"]
+    aliases:
+      - "France 24 Francais"
+      - "France 24 FR"
+      - "France 24"
+    exclude: ["English", "EN", "Arabic", "Espanol"]
+
+  - chno: 1119
+    sd_chno: 119
+    name: "Télé-Mag"
+    tvg_id: "TeleMag.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Tele-Mag"
+      - "Telemag"
+    exclude: []
+
+  - chno: 1120
+    sd_chno: 120
+    name: "addik"
+    tvg_id: "addikTV.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "addikTV"
+      - "addik TV"
+      - "addik"
+    exclude: []
+
+  - chno: 1121
+    sd_chno: 121
+    name: "Z"
+    tvg_id: "Ztele.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Canal Z"
+      - "Ztele"
+      - "Z Tele"
+      - "Z HD"
+      - "Z"
+    exclude: ["Zeste", "Zee"]
+
+  - chno: 1122
+    sd_chno: 122
+    name: "Séries Plus"
+    tvg_id: "SeriesPlus.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Series Plus"
+      - "Series+"
+      - "Serie+"
+      - "Serie Plus"
+    exclude: ["Club"]
+
+  - chno: 1123
+    sd_chno: 123
+    name: "Évasion"
+    tvg_id: "Evasion.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Canal Evasion"
+      - "Evasion"
+    exclude: []
+
+  - chno: 1124
+    sd_chno: 124
+    name: "Historia"
+    tvg_id: "Historia.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Historia"
+    exclude: ["Spain", "Espana", "ES"]
+
+  - chno: 1125
+    sd_chno: 125
+    name: "Prise 2"
+    tvg_id: "Prise2.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Prise 2"
+      - "Prise2"
+    exclude: []
+
+  - chno: 1126
+    sd_chno: 126
+    name: "ICI Explora"
+    tvg_id: "Explora.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI Explora"
+      - "Explora"
+    exclude: []
+
+  - chno: 1127
+    sd_chno: 127
+    name: "Témoin"
+    tvg_id: "Investigation.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Temoin"
+      - "Canal Investigation"
+      - "Investigation QC"
+      - "Investigation"
+      - "Moi et Cie"
+      - "Moi & Cie"
+    exclude: ["Discovery", "ID ", "Crime"]
+
+  - chno: 1128
+    sd_chno: 128
+    name: "Canal D"
+    tvg_id: "CanalD.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Canal D"
+      - "CanalD"
+    exclude: ["France"]
+
+  - chno: 1129
+    sd_chno: 129
+    name: "CASA"
+    tvg_id: "CASA.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "CASA TV"
+      - "CASA"
+    exclude: []
+
+  - chno: 1131
+    sd_chno: 131
+    name: "MAX"
+    tvg_id: "MAX.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "MAX QC"
+      - "MusiMax"
+      - "MAX"
+    exclude: ["HBO", "Cinemax", "ActionMax"]
+
+  - chno: 1133
+    sd_chno: 133
+    name: "ICI ARTV"
+    tvg_id: "ARTV.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI ARTV"
+      - "ARTV"
+    exclude: []
+
+  - chno: 1134
+    sd_chno: 134
+    name: "TV5 Québec Canada"
+    tvg_id: "TV5.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca", "fr"]
+    aliases:
+      - "TV5 Quebec Canada"
+      - "TV5 Canada"
+      - "TV5 QC"
+      - "TV5 Monde"
+      - "TV5"
+    exclude: []
+
+  - chno: 1135
+    sd_chno: 135
+    name: "Planète+"
+    tvg_id: "PlanetePlus.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca", "fr"]
+    aliases:
+      - "Planete+ Canada"
+      - "Planete+"
+      - "Planete Plus"
+    exclude: ["AE", "CI", "Crime"]
+
+  - chno: 1136
+    sd_chno: 136
+    name: "Zeste"
+    tvg_id: "Zeste.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Canal Zeste"
+      - "Zeste"
+    exclude: []
+
+  - chno: 1137
+    sd_chno: 137
+    name: "Canal Vie"
+    tvg_id: "CanalVie.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Canal Vie"
+    exclude: []
+
+  - chno: 1139
+    sd_chno: 139
+    name: "Télétoon"
+    tvg_id: "TeletoonFR.ca"
+    group: "Francophone - Jeunesse"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Teletoon FR"
+      - "Teletoon Francais"
+      - "Teletoon French"
+      - "Teletoon QC"
+      - "Teletoon"
+    exclude: ["English", "CA EN", "Plus", "France"]
+
+  - chno: 1140
+    sd_chno: 140
+    name: "La Chaîne Disney"
+    tvg_id: "LaChaineDisney.ca"
+    group: "Francophone - Jeunesse"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "La Chaine Disney"
+      - "Disney La Chaine"
+      - "Telemagino"
+    exclude: []
+
+  - chno: 1141
+    sd_chno: 141
+    name: "Unis TV"
+    tvg_id: "UnisTV.ca"
+    group: "Francophone - Généralistes"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Unis TV"
+      - "Unis"
+    exclude: []
+
+  - chno: 1142
+    sd_chno: 142
+    name: "ELLE Fictions"
+    tvg_id: "ElleFictions.ca"
+    group: "Francophone - Spécialisées"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ELLE Fictions"
+      - "Elle Fiction"
+      - "MusiquePlus"
+    exclude: []
+
+  - chno: 1144
+    sd_chno: 144
+    name: "Cinépop"
+    tvg_id: "Cinepop.ca"
+    group: "Francophone - Cinéma"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Cinepop"
+      - "Cine-Pop"
+    exclude: []
+
+  - chno: 1145
+    sd_chno: 145
+    name: "Frissons TV"
+    tvg_id: "FrissonsTV.ca"
+    group: "Francophone - Cinéma"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Frissons TV"
+      - "Frissons"
+      - "Frisson"
+    exclude: []
+
+  - chno: 1147
+    sd_chno: 147
+    name: "AMI-télé"
+    tvg_id: "AMITele.ca"
+    group: "Francophone - Généralistes"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "AMI-tele"
+      - "AMI Tele"
+    exclude: ["AMI-tv", "English"]
+
+  - chno: 1161
+    sd_chno: 161
+    name: "Super Écran 1"
+    tvg_id: "SuperEcran1.ca"
+    group: "Francophone - Cinéma"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Super Ecran 1"
+      - "Super Ecran"
+    exclude: ["2", "3", "4"]
+
+  - chno: 1162
+    sd_chno: 162
+    name: "Super Écran 2"
+    tvg_id: "SuperEcran2.ca"
+    group: "Francophone - Cinéma"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Super Ecran 2"
+    exclude: ["1", "3", "4"]
+
+  - chno: 1163
+    sd_chno: 163
+    name: "Super Écran 3"
+    tvg_id: "SuperEcran3.ca"
+    group: "Francophone - Cinéma"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Super Ecran 3"
+    exclude: ["1", "2", "4"]
+
+  - chno: 1164
+    sd_chno: 164
+    name: "Super Écran 4"
+    tvg_id: "SuperEcran4.ca"
+    group: "Francophone - Cinéma"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Super Ecran 4"
+    exclude: ["1", "2", "3"]
+
+  # ============================================================================
+  # 200s / 1200s — ENGLISH MONTREAL LOCALS & US BORDER NETWORKS
+  # ============================================================================
+  - chno: 1201
+    sd_chno: 201
+    name: "CTV (Montréal)"
+    callsign: "CFCF"
+    tvg_id: "CFCF.ca"
+    group: "English - Local & Networks"
+    language: "en"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "CTV Montreal"
+      - "CFCF"
+      - "CTV East"
+      - "CTV"
+    exclude: ["CTV 2", "CTV2", "CTV Two", "News", "Sci-Fi", "Drama", "Comedy", "Life", "Wild", "Nature", "Speed", "Much", "Vancouver", "Calgary", "Edmonton", "Winnipeg", "Toronto", "CFTO", "Ottawa", "CJOH", "Halifax", "Kitchener"]
+
+  - chno: 1202
+    sd_chno: 202
+    name: "CTV2"
+    callsign: "CHRO"
+    tvg_id: "CHRO.ca"
+    group: "English - Local & Networks"
+    language: "en"
+    regions: ["montreal", "ca"]
+    aliases:
+      - "CTV2 Ottawa"
+      - "CHRO"
+      - "CTV2"
+      - "CTV 2"
+      - "CTV Two"
+    exclude: ["Vancouver", "Alberta", "Atlantic"]
+
+  - chno: 1203
+    sd_chno: 203
+    name: "Global (Montréal)"
+    callsign: "CKMI"
+    tvg_id: "CKMI.ca"
+    group: "English - Local & Networks"
+    language: "en"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "Global Montreal"
+      - "CKMI"
+      - "Global Quebec"
+      - "Global East"
+      - "Global"
+    exclude: ["News", "BC", "Vancouver", "Calgary", "Edmonton", "Winnipeg", "Toronto", "CIII", "Halifax", "Okanagan", "Saskatoon", "Regina"]
+
+  - chno: 1204
+    sd_chno: 204
+    name: "Citytv (Montréal)"
+    callsign: "CJNT"
+    tvg_id: "CJNT.ca"
+    group: "English - Local & Networks"
+    language: "en"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "Citytv Montreal"
+      - "City TV Montreal"
+      - "CJNT"
+      - "Citytv"
+      - "City TV"
+    exclude: ["Vancouver", "Calgary", "Edmonton", "Winnipeg", "Toronto", "CITY", "Saskatchewan"]
+
+  - chno: 1205
+    sd_chno: 205
+    name: "CBC (Montréal)"
+    callsign: "CBMT"
+    tvg_id: "CBMT.ca"
+    group: "English - Local & Networks"
+    language: "en"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "CBC Montreal"
+      - "CBMT"
+      - "CBC East"
+      - "CBC"
+    exclude: ["News Network", "NN", "Radio-Canada", "Vancouver", "Calgary", "Edmonton", "Winnipeg", "Toronto", "CBLT", "Ottawa", "CBOT", "Halifax"]
+
+  - chno: 1206
+    sd_chno: 206
+    name: "OMNI.1"
+    callsign: "CFMT"
+    tvg_id: "CFMT.ca"
+    group: "English - Local & Networks"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "OMNI 1"
+      - "OMNI.1"
+      - "CFMT"
+    exclude: ["OMNI 2", "OMNI.2", "BC"]
+
+  - chno: 1207
+    sd_chno: 207
+    name: "OMNI.2"
+    callsign: "CJMT"
+    tvg_id: "CJMT.ca"
+    group: "English - Local & Networks"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "OMNI 2"
+      - "OMNI.2"
+      - "CJMT"
+    exclude: ["OMNI 1", "OMNI.1"]
+
+  - chno: 1208
+    sd_chno: 208
+    name: "YES TV"
+    tvg_id: "YESTV.ca"
+    group: "English - Local & Networks"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "YES TV"
+      - "YESTV"
+    exclude: ["Network"]
+
+  - chno: 1209
+    sd_chno: 209
+    name: "CHCH"
+    callsign: "CHCH"
+    tvg_id: "CHCH.ca"
+    group: "English - Local & Networks"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CHCH"
+      - "CHCH Hamilton"
+    exclude: []
+
+  - chno: 1214
+    sd_chno: 214
+    name: "TVO"
+    tvg_id: "TVO.ca"
+    group: "English - Local & Networks"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "TVO"
+      - "TVOntario"
+    exclude: []
+
+  - chno: 1218
+    sd_chno: 218
+    name: "APTN"
+    tvg_id: "APTN.ca"
+    group: "English - Local & Networks"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "APTN HD"
+      - "APTN East"
+      - "APTN"
+    exclude: []
+
+  - chno: 1219
+    sd_chno: 219
+    name: "AMI-tv"
+    tvg_id: "AMItv.ca"
+    group: "English - Local & Networks"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "AMI-tv"
+      - "AMI TV"
+    exclude: ["tele", "Francais"]
+
+  # US Border Networks carried in Montreal (Burlington VT / Plattsburgh NY)
+  - chno: 1220
+    sd_chno: 220
+    name: "The CW (East)"
+    callsign: "WNNE"
+    tvg_id: "CW.us"
+    group: "US Networks"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "CW Burlington"
+      - "WNNE"
+      - "WPIX"
+      - "CW PIX 11"
+      - "The CW East"
+      - "CW East"
+      - "The CW"
+      - "CW"
+    exclude: ["West", "LA", "KTLA", "Forever", "Gold", "Plus"]
+
+  - chno: 1221
+    sd_chno: 221
+    name: "ABC (WVNY Burlington)"
+    callsign: "WVNY"
+    tvg_id: "WVNY.us"
+    group: "US Networks"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "ABC 22 Burlington"
+      - "ABC Burlington"
+      - "WVNY"
+      - "ABC East"
+      - "WABC"
+      - "ABC New York"
+      - "ABC"
+    exclude: ["News", "Spark", "Australia", "AU", "West", "KABC"]
+
+  - chno: 1222
+    sd_chno: 222
+    name: "CBS (WCAX Burlington)"
+    callsign: "WCAX"
+    tvg_id: "WCAX.us"
+    group: "US Networks"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "CBS 3 Burlington"
+      - "CBS Burlington"
+      - "WCAX"
+      - "CBS 3"
+      - "CBS East"
+      - "WCBS"
+      - "CBS New York"
+      - "CBS"
+    exclude: ["Sports", "News", "Reality", "Drama", "UK", "West", "KCBS"]
+
+  - chno: 1223
+    sd_chno: 223
+    name: "NBC (WPTZ Plattsburgh)"
+    callsign: "WPTZ"
+    tvg_id: "WPTZ.us"
+    group: "US Networks"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "NBC 5 Plattsburgh"
+      - "WPTZ NBC 5"
+      - "NBC Plattsburgh"
+      - "NBC Burlington"
+      - "WPTZ"
+      - "NBC East"
+      - "WNBC"
+      - "NBC New York"
+      - "NBC"
+    exclude: ["Sports", "News", "CNBC", "MSNBC", "Golf", "West", "KNBC"]
+
+  - chno: 1224
+    sd_chno: 224
+    name: "FOX (WFFF Burlington)"
+    callsign: "WFFF"
+    tvg_id: "WFFF.us"
+    group: "US Networks"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "FOX 44 Burlington"
+      - "FOX Burlington"
+      - "WFFF"
+      - "FOX East"
+      - "WNYW"
+      - "FOX New York"
+      - "FOX 5"
+      - "FOX"
+    exclude: ["News", "Business", "Sports", "FS1", "FS2", "Weather", "Soul", "Movies", "Crime", "Life", "West", "KTTV"]
+
+  - chno: 1225
+    sd_chno: 225
+    name: "PBS (WETK Vermont)"
+    callsign: "WETK"
+    tvg_id: "WETK.us"
+    group: "US Networks"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "PBS Vermont"
+      - "WETK"
+      - "WCFE"
+      - "Mountain Lake PBS"
+      - "PBS East"
+      - "WNET"
+      - "PBS"
+    exclude: ["Kids", "America", "UK"]
+
+  # ============================================================================
+  # 300s / 1300s — MOVIES, CRAVE, STARZ & HBO
+  # ============================================================================
+  - chno: 1300
+    sd_chno: 300
+    name: "Crave 1"
+    tvg_id: "Crave1.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Crave 1"
+      - "Crave1"
+    exclude: ["2", "3", "4"]
+
+  - chno: 1301
+    sd_chno: 301
+    name: "Crave 2"
+    tvg_id: "Crave2.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Crave 2"
+      - "Crave2"
+    exclude: ["1", "3", "4"]
+
+  - chno: 1302
+    sd_chno: 302
+    name: "Crave 3"
+    tvg_id: "Crave3.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Crave 3"
+      - "Crave3"
+    exclude: ["1", "2", "4"]
+
+  - chno: 1303
+    sd_chno: 303
+    name: "Crave 4"
+    tvg_id: "Crave4.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Crave 4"
+      - "Crave4"
+    exclude: ["1", "2", "3"]
+
+  - chno: 1304
+    sd_chno: 304
+    name: "Starz 1"
+    tvg_id: "Starz1.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Starz 1 Canada"
+      - "Starz 1"
+      - "Starz East"
+    exclude: ["2", "Encore", "Edge", "Comedy", "Kids", "Cinema", "InBlack", "West"]
+
+  - chno: 1305
+    sd_chno: 305
+    name: "Starz 2"
+    tvg_id: "Starz2.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Starz 2 Canada"
+      - "Starz 2"
+    exclude: ["1", "Encore"]
+
+  - chno: 1306
+    sd_chno: 306
+    name: "HBO 1"
+    tvg_id: "HBO1.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "HBO Canada 1"
+      - "HBO 1 Canada"
+      - "HBO Canada"
+      - "HBO 1"
+      - "HBO East"
+      - "HBO"
+    exclude: ["2", "West", "Family", "Signature", "Zone", "Comedy", "Latino", "Mundial"]
+
+  - chno: 1307
+    sd_chno: 307
+    name: "HBO 2"
+    tvg_id: "HBO2.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "HBO Canada 2"
+      - "HBO 2 Canada"
+      - "HBO 2"
+      - "HBO2"
+    exclude: ["Family", "Signature", "Zone", "Comedy", "Latino"]
+
+  - chno: 1315
+    sd_chno: 315
+    name: "Hollywood Suite 70s"
+    tvg_id: "HS70s.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Hollywood Suite 70s"
+      - "Hollywood Suite 70s+"
+      - "HS 70s"
+    exclude: ["80s", "90s", "00s", "2000s", "2010s"]
+
+  - chno: 1316
+    sd_chno: 316
+    name: "Hollywood Suite 80s"
+    tvg_id: "HS80s.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Hollywood Suite 80s"
+      - "Hollywood Suite 80s & 90s"
+      - "HS 80s"
+    exclude: ["70s", "00s", "2000s", "2010s"]
+
+  - chno: 1317
+    sd_chno: 317
+    name: "Hollywood Suite 90s"
+    tvg_id: "HS90s.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Hollywood Suite 90s"
+      - "Hollywood Suite 80s & 90s"
+      - "HS 90s"
+    exclude: ["70s", "00s", "2000s", "2010s"]
+
+  - chno: 1318
+    sd_chno: 318
+    name: "Hollywood Suite 00s"
+    tvg_id: "HS00s.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Hollywood Suite 00s"
+      - "Hollywood Suite 2000s"
+      - "HS 00s"
+    exclude: ["70s", "80s", "90s"]
+
+  - chno: 1326
+    sd_chno: 326
+    name: "Super Channel Fuse"
+    tvg_id: "SuperChannelFuse.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Super Channel Fuse"
+      - "SuperChannel Fuse"
+    exclude: []
+
+  - chno: 1327
+    sd_chno: 327
+    name: "Super Channel Heart & Home"
+    tvg_id: "SuperChannelHeartHome.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Super Channel Heart & Home"
+      - "Super Channel Heart and Home"
+    exclude: []
+
+  - chno: 1328
+    sd_chno: 328
+    name: "Super Channel Vault"
+    tvg_id: "SuperChannelVault.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Super Channel Vault"
+      - "SuperChannel Vault"
+    exclude: []
+
+  - chno: 1329
+    sd_chno: 329
+    name: "Super Channel Quest"
+    tvg_id: "SuperChannelQuest.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Super Channel Quest"
+      - "GINX Canada"
+    exclude: []
+
+  - chno: 1335
+    sd_chno: 335
+    name: "MovieTime"
+    tvg_id: "MovieTime.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "MovieTime"
+      - "Movie Time"
+    exclude: []
+
+  - chno: 1338
+    sd_chno: 338
+    name: "TCM (Turner Classic Movies)"
+    tvg_id: "TCM.us"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Turner Classic Movies"
+      - "TCM"
+    exclude: ["UK", "France", "ES"]
+
+  - chno: 1339
+    sd_chno: 339
+    name: "AMC"
+    tvg_id: "AMC.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "AMC Canada"
+      - "AMC East"
+      - "AMC"
+    exclude: ["Plus", "AMC+", "Thrillers", "Presents"]
+
+  # ============================================================================
+  # 400s / 1400s — SPORTS (ENGLISH & NATIONAL)
+  # ============================================================================
+  - chno: 1400
+    sd_chno: 400
+    name: "TSN5"
+    tvg_id: "TSN5.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "TSN 5"
+      - "TSN5"
+    exclude: ["1", "2", "3", "4"]
+
+  - chno: 1401
+    sd_chno: 401
+    name: "TSN1"
+    tvg_id: "TSN1.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "TSN 1"
+      - "TSN1"
+    exclude: ["2", "3", "4", "5"]
+
+  - chno: 1402
+    sd_chno: 402
+    name: "TSN2 (Montréal)"
+    tvg_id: "TSN2.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "TSN 2"
+      - "TSN2"
+    exclude: ["1", "3", "4", "5"]
+
+  - chno: 1403
+    sd_chno: 403
+    name: "TSN3"
+    tvg_id: "TSN3.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "TSN 3"
+      - "TSN3"
+    exclude: ["1", "2", "4", "5"]
+
+  - chno: 1404
+    sd_chno: 404
+    name: "TSN4"
+    tvg_id: "TSN4.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "TSN 4"
+      - "TSN4"
+    exclude: ["1", "2", "3", "5"]
+
+  - chno: 1405
+    sd_chno: 405
+    name: "Sportsnet East"
+    tvg_id: "SportsnetEast.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "Sportsnet East"
+      - "SN East"
+    exclude: ["Ontario", "West", "Pacific", "One", "360", "World"]
+
+  - chno: 1406
+    sd_chno: 406
+    name: "Sportsnet Ontario"
+    tvg_id: "SportsnetOntario.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Sportsnet Ontario"
+      - "SN Ontario"
+    exclude: ["East", "West", "Pacific", "One", "360", "World"]
+
+  - chno: 1407
+    sd_chno: 407
+    name: "Sportsnet Pacific"
+    tvg_id: "SportsnetPacific.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Sportsnet Pacific"
+      - "SN Pacific"
+    exclude: ["East", "Ontario", "West", "One", "360", "World"]
+
+  - chno: 1408
+    sd_chno: 408
+    name: "Sportsnet West"
+    tvg_id: "SportsnetWest.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Sportsnet West"
+      - "SN West"
+    exclude: ["East", "Ontario", "Pacific", "One", "360", "World"]
+
+  - chno: 1409
+    sd_chno: 409
+    name: "Sportsnet ONE"
+    tvg_id: "SportsnetOne.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Sportsnet ONE"
+      - "Sportsnet 1"
+      - "SN One"
+      - "SN1"
+    exclude: ["East", "Ontario", "West", "Pacific", "360", "World"]
+
+  - chno: 1410
+    sd_chno: 410
+    name: "Sportsnet 360"
+    tvg_id: "Sportsnet360.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Sportsnet 360"
+      - "SN 360"
+      - "SN360"
+    exclude: []
+
+  - chno: 1411
+    sd_chno: 411
+    name: "OLN"
+    tvg_id: "OLN.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Outdoor Life Network"
+      - "OLN"
+    exclude: []
+
+  - chno: 1412
+    sd_chno: 412
+    name: "beIN Sports"
+    tvg_id: "beINSports.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "beIN Sports Canada"
+      - "beIN Sports USA"
+      - "beIN Sports"
+    exclude: ["Espanol", "Ñ", "Xtra", "2", "3", "4", "5", "6", "7", "8", "France", "Arabic"]
+
+  - chno: 1414
+    sd_chno: 414
+    name: "Fight Network"
+    tvg_id: "FightNetwork.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Fight Network"
+    exclude: []
+
+  - chno: 1415
+    sd_chno: 415
+    name: "NBA TV Canada"
+    tvg_id: "NBATV.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "NBA TV Canada"
+      - "NBA TV"
+    exclude: ["League Pass"]
+
+  - chno: 1416
+    sd_chno: 416
+    name: "Golf Channel"
+    tvg_id: "GolfChannel.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Golf Channel"
+      - "NBC Golf"
+    exclude: ["UK", "France"]
+
+  - chno: 1417
+    sd_chno: 417
+    name: "CBS Sports Network"
+    tvg_id: "CBSSportsNetwork.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "CBS Sports Network"
+      - "CBSSN"
+    exclude: ["Golazo", "HQ"]
+
+  - chno: 1419
+    sd_chno: 419
+    name: "NFL Network"
+    tvg_id: "NFLNetwork.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "NFL Network"
+    exclude: ["RedZone", "Red Zone"]
+
+  - chno: 1420
+    sd_chno: 420
+    name: "Sportsnet World"
+    tvg_id: "SportsnetWorld.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Sportsnet World"
+      - "SN World"
+    exclude: []
+
+  - chno: 1421
+    sd_chno: 421
+    name: "MLB Network"
+    tvg_id: "MLBNetwork.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "MLB Network"
+    exclude: ["Strike Zone"]
+
+  - chno: 1422
+    sd_chno: 422
+    name: "Game+"
+    tvg_id: "GamePlus.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Game+"
+      - "Game Plus"
+      - "GameTV"
+    exclude: ["Show"]
+
+  # ============================================================================
+  # 500s / 1500s — NEWS, SCIENCE, DOCUMENTARIES & KIDS
+  # ============================================================================
+  - chno: 1500
+    sd_chno: 500
+    name: "CNN"
+    tvg_id: "CNN.us"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "CNN USA"
+      - "CNN HD"
+      - "CNN"
+    exclude: ["International", "CNNi", "Espanol", "HLN", "Turk", "Brasil"]
+
+  - chno: 1501
+    sd_chno: 501
+    name: "CTV News Channel"
+    tvg_id: "CTVNewsChannel.ca"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV News Channel"
+      - "CTV Newsnet"
+      - "CTV News"
+    exclude: []
+
+  - chno: 1502
+    sd_chno: 502
+    name: "CBC News Network"
+    tvg_id: "CBCNewsNetwork.ca"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC News Network"
+      - "CBC NN"
+      - "CBC News"
+    exclude: []
+
+  - chno: 1503
+    sd_chno: 503
+    name: "CP24"
+    tvg_id: "CP24.ca"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CP24"
+      - "CP 24"
+    exclude: []
+
+  - chno: 1504
+    sd_chno: 504
+    name: "BNN Bloomberg"
+    tvg_id: "BNNBloomberg.ca"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "BNN Bloomberg"
+      - "BNN"
+    exclude: []
+
+  - chno: 1505
+    sd_chno: 505
+    name: "The Weather Network"
+    tvg_id: "WeatherNetwork.ca"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "The Weather Network"
+      - "Weather Network"
+    exclude: ["Weather Channel", "Fox Weather"]
+
+  - chno: 1506
+    sd_chno: 506
+    name: "MSNBC"
+    tvg_id: "MSNBC.us"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "MSNBC"
+    exclude: []
+
+  - chno: 1507
+    sd_chno: 507
+    name: "Fox News Channel"
+    tvg_id: "FoxNews.us"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Fox News Channel"
+      - "Fox News"
+    exclude: ["Business", "Weather", "Local"]
+
+  - chno: 1508
+    sd_chno: 508
+    name: "HLN"
+    tvg_id: "HLN.us"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "HLN"
+      - "Headline News"
+    exclude: []
+
+  - chno: 1509
+    sd_chno: 509
+    name: "CNBC"
+    tvg_id: "CNBC.us"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "CNBC"
+    exclude: ["World", "Europe", "Arabia", "Africa"]
+
+  - chno: 1510
+    sd_chno: 510
+    name: "BBC News"
+    tvg_id: "BBCNews.uk"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us", "uk"]
+    aliases:
+      - "BBC World News"
+      - "BBC News North America"
+      - "BBC News"
+    exclude: ["Parliament", "Arabic", "Persian"]
+
+  - chno: 1512
+    sd_chno: 512
+    name: "CPAC (English)"
+    tvg_id: "CPAC.en.ca"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CPAC English"
+      - "CPAC EN"
+      - "CPAC"
+    exclude: ["Francais", "French", "FR"]
+
+  - chno: 1514
+    sd_chno: 514
+    name: "Al Jazeera English"
+    tvg_id: "AlJazeera.en"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us", "uk"]
+    aliases:
+      - "Al Jazeera English"
+      - "Al Jazeera EN"
+    exclude: ["Arabic", "Mubasher", "Balkans"]
+
+  - chno: 1520
+    sd_chno: 520
+    name: "USA Network / Discovery"
+    tvg_id: "USANetwork.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "USA Network Canada"
+      - "Discovery Channel Canada"
+      - "Discovery Canada"
+      - "Discovery Channel"
+      - "USA Network"
+    exclude: ["Velocity", "Science", "Family", "Life", "Turbo", "ID", "Investigation", "Espanol"]
+
+  - chno: 1521
+    sd_chno: 521
+    name: "CTV Sci-Fi Channel"
+    tvg_id: "CTVSciFi.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV Sci-Fi Channel"
+      - "CTV Sci-Fi"
+      - "CTV SciFi"
+      - "Space Channel"
+    exclude: []
+
+  - chno: 1522
+    sd_chno: 522
+    name: "History"
+    tvg_id: "History.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "History Canada"
+      - "History Channel"
+      - "History"
+    exclude: ["2", "H2", "Military"]
+
+  - chno: 1523
+    sd_chno: 523
+    name: "History2"
+    tvg_id: "History2.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "History 2"
+      - "History2"
+      - "H2"
+    exclude: []
+
+  - chno: 1524
+    sd_chno: 524
+    name: "National Geographic"
+    tvg_id: "NatGeo.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "National Geographic Canada"
+      - "National Geographic"
+      - "Nat Geo"
+    exclude: ["Wild", "Mundo"]
+
+  - chno: 1525
+    sd_chno: 525
+    name: "CTV Wild / Animal Planet"
+    tvg_id: "CTVWild.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "CTV Wild"
+      - "Animal Planet Canada"
+      - "Animal Planet"
+    exclude: []
+
+  - chno: 1526
+    sd_chno: 526
+    name: "CTV Speed / MotorTrend"
+    tvg_id: "CTVSpeed.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "CTV Speed"
+      - "Discovery Velocity"
+      - "MotorTrend"
+      - "Motor Trend"
+    exclude: []
+
+  - chno: 1528
+    sd_chno: 528
+    name: "Smithsonian Channel"
+    tvg_id: "Smithsonian.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Smithsonian Channel Canada"
+      - "Smithsonian Channel"
+      - "Smithsonian"
+    exclude: []
+
+  - chno: 1529
+    sd_chno: 529
+    name: "Love Nature"
+    tvg_id: "LoveNature.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Love Nature"
+    exclude: []
+
+  - chno: 1530
+    sd_chno: 530
+    name: "Nat Geo Wild"
+    tvg_id: "NatGeoWild.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Nat Geo Wild"
+      - "National Geographic Wild"
+    exclude: []
+
+  - chno: 1532
+    sd_chno: 532
+    name: "documentary Channel"
+    tvg_id: "documentary.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC Documentary"
+      - "documentary Channel"
+      - "Documentary"
+    exclude: ["RT"]
+
+  # Kids & Family (1550–1560)
+  - chno: 1550
+    sd_chno: 550
+    name: "Disney Junior"
+    tvg_id: "DisneyJunior.ca"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Disney Junior Canada"
+      - "Disney Junior"
+      - "Disney Jr"
+    exclude: ["FR", "Francais"]
+
+  - chno: 1551
+    sd_chno: 551
+    name: "YTV"
+    tvg_id: "YTV.ca"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "YTV East"
+      - "YTV"
+    exclude: ["West"]
+
+  - chno: 1552
+    sd_chno: 552
+    name: "Cartoon Network"
+    tvg_id: "CartoonNetwork.ca"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Cartoon Network Canada"
+      - "Teletoon English"
+      - "Cartoon Network"
+    exclude: ["Teletoon FR", "Francais"]
+
+  - chno: 1553
+    sd_chno: 553
+    name: "Disney Channel"
+    tvg_id: "DisneyChannel.ca"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Disney Channel Canada"
+      - "Disney Channel"
+    exclude: ["Junior", "Jr", "XD", "La Chaine", "FR", "Francais"]
+
+  - chno: 1554
+    sd_chno: 554
+    name: "Disney XD"
+    tvg_id: "DisneyXD.ca"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Disney XD Canada"
+      - "Disney XD"
+    exclude: []
+
+  - chno: 1555
+    sd_chno: 555
+    name: "Family Channel"
+    tvg_id: "Family.ca"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Family Channel"
+      - "Family East"
+    exclude: ["CHRGD", "Jr", "Junior", "West"]
+
+  - chno: 1556
+    sd_chno: 556
+    name: "WildBrainTV"
+    tvg_id: "WildBrainTV.ca"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "WildBrainTV"
+      - "WildBrain TV"
+      - "Family CHRGD"
+    exclude: []
+
+  - chno: 1557
+    sd_chno: 557
+    name: "Nickelodeon"
+    tvg_id: "Nickelodeon.ca"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Nickelodeon Canada"
+      - "Nickelodeon"
+      - "Nick"
+    exclude: ["Jr", "Junior", "Nicktoons", "TeenNick", "Music"]
+
+  - chno: 1558
+    sd_chno: 558
+    name: "Boomerang"
+    tvg_id: "Boomerang.ca"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Boomerang Canada"
+      - "Boomerang"
+    exclude: ["FR", "France"]
+
+  - chno: 1560
+    sd_chno: 560
+    name: "Treehouse"
+    tvg_id: "Treehouse.ca"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Treehouse TV"
+      - "Treehouse"
+    exclude: []
+
+  # ============================================================================
+  # 600s / 1600s — LIFESTYLE, REALITY, DRAMA & ENTERTAINMENT
+  # ============================================================================
+  - chno: 1600
+    sd_chno: 600
+    name: "Home Network / HGTV"
+    tvg_id: "HGTV.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Home Network Canada"
+      - "Home Network"
+      - "HGTV Canada"
+      - "HGTV"
+    exclude: ["UK"]
+
+  - chno: 1601
+    sd_chno: 601
+    name: "Slice"
+    tvg_id: "Slice.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Slice"
+    exclude: []
+
+  - chno: 1603
+    sd_chno: 603
+    name: "Flavour Network / Food Network"
+    tvg_id: "FoodNetwork.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Flavour Network"
+      - "Food Network Canada"
+      - "Food Network"
+    exclude: ["UK"]
+
+  - chno: 1605
+    sd_chno: 605
+    name: "Magnolia Network"
+    tvg_id: "Magnolia.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Magnolia Network"
+      - "DIY Network"
+    exclude: []
+
+  - chno: 1607
+    sd_chno: 607
+    name: "TLC"
+    tvg_id: "TLC.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "TLC Canada"
+      - "TLC"
+    exclude: ["UK", "Germany"]
+
+  - chno: 1609
+    sd_chno: 609
+    name: "Cottage Life"
+    tvg_id: "CottageLife.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Cottage Life"
+    exclude: []
+
+  - chno: 1610
+    sd_chno: 610
+    name: "CTV Life Channel"
+    tvg_id: "CTVLife.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV Life Channel"
+      - "CTV Life"
+      - "Gusto"
+    exclude: []
+
+  - chno: 1612
+    sd_chno: 612
+    name: "Crime + Investigation"
+    tvg_id: "CrimeInvestigation.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Crime + Investigation"
+      - "Crime and Investigation"
+      - "Crime & Investigation"
+    exclude: []
+
+  - chno: 1614
+    sd_chno: 614
+    name: "Lifetime"
+    tvg_id: "Lifetime.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Lifetime Canada"
+      - "Lifetime"
+    exclude: ["Movies", "LMN"]
+
+  - chno: 1615
+    sd_chno: 615
+    name: "A&E"
+    tvg_id: "AE.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "A&E Canada"
+      - "A&E"
+      - "A and E"
+    exclude: []
+
+  - chno: 1616
+    sd_chno: 616
+    name: "Showcase"
+    tvg_id: "Showcase.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Showcase Canada"
+      - "Showcase"
+    exclude: ["Action", "Diva"]
+
+  - chno: 1617
+    sd_chno: 617
+    name: "Adult Swim"
+    tvg_id: "AdultSwim.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Adult Swim Canada"
+      - "Adult Swim"
+    exclude: []
+
+  - chno: 1618
+    sd_chno: 618
+    name: "DTOUR"
+    tvg_id: "DTOUR.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "DTOUR"
+    exclude: []
+
+  - chno: 1620
+    sd_chno: 620
+    name: "Bravo / CTV Drama"
+    tvg_id: "CTVDrama.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Bravo Canada"
+      - "CTV Drama Channel"
+      - "CTV Drama"
+      - "Bravo"
+    exclude: []
+
+  - chno: 1621
+    sd_chno: 621
+    name: "E!"
+    tvg_id: "E.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "E! Canada"
+      - "E! Entertainment"
+      - "E!"
+    exclude: ["UK"]
+
+  - chno: 1622
+    sd_chno: 622
+    name: "W Network"
+    tvg_id: "WNetwork.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "W Network"
+    exclude: []
+
+  - chno: 1624
+    sd_chno: 624
+    name: "Much"
+    tvg_id: "Much.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "MuchMusic"
+      - "Much Music"
+      - "CTV Much"
+      - "Much"
+    exclude: []
+
+  - chno: 1625
+    sd_chno: 625
+    name: "CTV Comedy Channel"
+    tvg_id: "CTVComedy.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV Comedy Channel"
+      - "CTV Comedy"
+      - "The Comedy Network"
+      - "Comedy Network"
+    exclude: ["West"]
+
+  - chno: 1626
+    sd_chno: 626
+    name: "MTV"
+    tvg_id: "MTV.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "MTV Canada"
+      - "MTV"
+    exclude: ["2", "MTV2", "Classic", "Live", "Hits", "80s", "90s", "00s", "UK"]
+
+  - chno: 1627
+    sd_chno: 627
+    name: "CMT"
+    tvg_id: "CMT.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "CMT Canada"
+      - "CMT"
+    exclude: []
+
+  - chno: 1628
+    sd_chno: 628
+    name: "BET"
+    tvg_id: "BET.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "BET Canada"
+      - "BET"
+    exclude: ["Her", "Gospel", "Jams", "Soul", "France"]
+
+  - chno: 1629
+    sd_chno: 629
+    name: "Paramount Network"
+    tvg_id: "ParamountNetwork.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Paramount Network"
+    exclude: ["Spain", "UK"]
+
+  - chno: 1631
+    sd_chno: 631
+    name: "FX"
+    tvg_id: "FX.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "FX Canada"
+      - "FX"
+    exclude: ["FXX", "FXM", "Movie"]
+
+  - chno: 1632
+    sd_chno: 632
+    name: "FXX"
+    tvg_id: "FXX.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "FXX Canada"
+      - "FXX"
+    exclude: []
+
+  - chno: 1635
+    sd_chno: 635
+    name: "Game Show Network"
+    tvg_id: "GSN.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Game Show Network"
+      - "GSN"
+    exclude: []
+
+  - chno: 1636
+    sd_chno: 636
+    name: "Peachtree TV"
+    callsign: "WPCH"
+    tvg_id: "WPCH.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Peachtree TV"
+      - "WPCH"
+    exclude: []
+
+
+  # ============================================================================
+  # EXTENDED FRANCOPHONE SPECIALTY, EDUCATION & REGIONAL STATIONS (100s / 1100s)
+  # ============================================================================
+  - chno: 1113
+    sd_chno: 113
+    name: "Euronews (Français)"
+    tvg_id: "Euronews.fr"
+    group: "Francophone - Nouvelles & Info"
+    language: "fr"
+    regions: ["qc", "ca", "fr"]
+    aliases:
+      - "Euronews Francais"
+      - "Euronews FR"
+      - "Euronews"
+    exclude: ["English", "EN"]
+
+  - chno: 1138
+    sd_chno: 138
+    name: "TFO"
+    tvg_id: "TFO.ca"
+    group: "Francophone - Jeunesse"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "TFO"
+      - "Tele Francais Ontario"
+    exclude: []
+
+  - chno: 1143
+    sd_chno: 143
+    name: "Yoopa"
+    tvg_id: "Yoopa.ca"
+    group: "Francophone - Jeunesse"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Yoopa"
+    exclude: []
+
+  - chno: 148
+    name: "Canal M (Audio / Lecture)"
+    tvg_id: "CanalM.ca"
+    group: "Music & Audio"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Canal M FM"
+      - "Canal M"
+    exclude: []
+
+  - chno: 1170
+    sd_chno: 170
+    name: "ICI Radio-Canada Télé (Ottawa-Gatineau)"
+    callsign: "CBOFT"
+    tvg_id: "CBOFT.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI Tele Ottawa-Gatineau"
+      - "ICI Radio-Canada Ottawa"
+      - "CBOFT"
+    exclude: []
+
+  - chno: 1171
+    sd_chno: 171
+    name: "ICI Radio-Canada Télé (Estrie / Sherbrooke)"
+    callsign: "CKSH"
+    tvg_id: "CKSH.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI Tele Estrie"
+      - "ICI Radio-Canada Estrie"
+      - "CKSH"
+    exclude: []
+
+  - chno: 1172
+    sd_chno: 172
+    name: "ICI Radio-Canada Télé (Mauricie)"
+    callsign: "CKTM"
+    tvg_id: "CKTM.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI Tele Mauricie"
+      - "CKTM"
+    exclude: []
+
+  - chno: 1173
+    sd_chno: 173
+    name: "ICI Radio-Canada Télé (Saguenay)"
+    callsign: "CKTV"
+    tvg_id: "CKTV.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI Tele Saguenay"
+      - "CKTV"
+    exclude: []
+
+  - chno: 1174
+    sd_chno: 174
+    name: "ICI Radio-Canada Télé (Est-du-Québec)"
+    callsign: "CJBR"
+    tvg_id: "CJBR.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI Tele Est-Quebec"
+      - "CJBR"
+    exclude: []
+
+  - chno: 1175
+    sd_chno: 175
+    name: "ICI Radio-Canada Télé (Acadie / Moncton)"
+    callsign: "CBAFT"
+    tvg_id: "CBAFT.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI Tele Acadie"
+      - "ICI Radio Canada Tele Moncton"
+      - "CBAFT"
+    exclude: []
+
+  - chno: 1176
+    sd_chno: 176
+    name: "ICI Radio-Canada Télé (Toronto)"
+    callsign: "CBLFT"
+    tvg_id: "CBLFT.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI Radio-Canada Tele Toronto"
+      - "ICI Radio Tele Toronto"
+      - "CBLFT"
+    exclude: []
+
+  - chno: 1177
+    sd_chno: 177
+    name: "ICI Radio-Canada Télé (Manitoba)"
+    callsign: "CBWFT"
+    tvg_id: "CBWFT.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI Tele Manitoba"
+      - "CBWFT"
+    exclude: []
+
+  - chno: 1178
+    sd_chno: 178
+    name: "ICI Radio-Canada Télé (Saskatchewan)"
+    callsign: "CBKFT"
+    tvg_id: "CBKFT.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI Tele Saskatchewan"
+      - "CBKFT"
+    exclude: []
+
+  - chno: 1179
+    sd_chno: 179
+    name: "ICI Radio-Canada Télé (Alberta)"
+    callsign: "CBXFT"
+    tvg_id: "CBXFT.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI Tele Alberta"
+      - "CBXFT"
+    exclude: []
+
+  - chno: 1180
+    sd_chno: 180
+    name: "ICI Radio-Canada Télé (Vancouver)"
+    callsign: "CBUFT"
+    tvg_id: "CBUFT.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "ICI Radio Canada Tele Vancouver"
+      - "ICI Vancouver"
+      - "CBUFT"
+    exclude: []
+
+  - chno: 1181
+    sd_chno: 181
+    name: "TVA (Québec)"
+    callsign: "CFCM"
+    tvg_id: "CFCM.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "TVA Quebec"
+      - "CFCM"
+    exclude: ["Sports"]
+
+  - chno: 1182
+    sd_chno: 182
+    name: "TVA (Gatineau-Hull)"
+    callsign: "CHOT"
+    tvg_id: "CHOT.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "TVA Hull"
+      - "TVA Gatineau"
+      - "CHOT"
+    exclude: ["Sports"]
+
+  - chno: 1183
+    sd_chno: 183
+    name: "Noovo (Québec)"
+    callsign: "CFAP"
+    tvg_id: "CFAP.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Noovo Quebec"
+      - "V Quebec City"
+      - "CFAP"
+    exclude: []
+
+  - chno: 1184
+    sd_chno: 184
+    name: "Noovo (Sherbrooke)"
+    callsign: "CFKS"
+    tvg_id: "CFKS.ca"
+    group: "Francophone - Régionales"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Noovo Sherbrooke"
+      - "V Sherbrooke"
+      - "CFKS"
+    exclude: []
+
+  # ============================================================================
+  # TIME-SHIFTING / OUT-OF-MARKET CANADIAN & US LOCALS (230–289 / 1230–1289)
+  # ============================================================================
+  - chno: 1230
+    sd_chno: 230
+    name: "CTV (Halifax / Atlantic)"
+    callsign: "CJCH"
+    tvg_id: "CJCH.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV Halifax"
+      - "CTV Atlantic"
+      - "CTV Atlentic"
+      - "CJCH"
+    exclude: ["CTV2", "CTV 2"]
+
+  - chno: 1231
+    sd_chno: 231
+    name: "CTV (Ottawa)"
+    callsign: "CJOH"
+    tvg_id: "CTVOH.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV Ottawa"
+      - "CJOH"
+    exclude: ["CTV2", "CTV 2"]
+
+  - chno: 1232
+    sd_chno: 232
+    name: "CTV (Toronto)"
+    callsign: "CFTO"
+    tvg_id: "CTVHT.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV Toronto"
+      - "CFTO"
+    exclude: ["CTV2", "CTV 2"]
+
+  - chno: 1233
+    sd_chno: 233
+    name: "CTV (Kitchener)"
+    callsign: "CKCO"
+    tvg_id: "CKCO.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV Kitchener"
+      - "CKCO"
+    exclude: []
+
+  - chno: 1234
+    sd_chno: 234
+    name: "CTV (Northern Ontario / Sudbury)"
+    callsign: "CICI"
+    tvg_id: "ctvsudbury.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV Sudbury"
+      - "CICI"
+    exclude: []
+
+  - chno: 1235
+    sd_chno: 235
+    name: "CTV (Regina)"
+    callsign: "CKCK"
+    tvg_id: "CKCK.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV Regina"
+      - "CTV News Regina"
+      - "CKCK"
+    exclude: []
+
+  - chno: 1236
+    sd_chno: 236
+    name: "CTV (Saskatoon)"
+    callsign: "CFQC"
+    tvg_id: "CFQC.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV Saskatoon"
+      - "CTV Saskatoon Saskatchewan"
+      - "CFQC"
+    exclude: []
+
+  - chno: 1237
+    sd_chno: 237
+    name: "CTV (Calgary)"
+    callsign: "CFCN"
+    tvg_id: "CFCN.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV Calgary"
+      - "CFCN"
+    exclude: ["News"]
+
+  - chno: 1238
+    sd_chno: 238
+    name: "CTV (Edmonton)"
+    callsign: "CFRN"
+    tvg_id: "CFRN.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV Edmonton"
+      - "CTV News Edmonton"
+      - "CFRN"
+    exclude: []
+
+  - chno: 1239
+    sd_chno: 239
+    name: "CTV (Vancouver)"
+    callsign: "CIVT"
+    tvg_id: "CIVT.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV Vancouver"
+      - "CIVT"
+    exclude: ["CTV2", "Island"]
+
+  - chno: 1240
+    sd_chno: 240
+    name: "CTV2 (Atlantic)"
+    tvg_id: "ASN.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV2 Atlantic"
+      - "CTV 2 Atlantic"
+      - "ASN"
+    exclude: []
+
+  - chno: 1241
+    sd_chno: 241
+    name: "CTV2 (Barrie / Toronto)"
+    callsign: "CKVR"
+    tvg_id: "CKVR.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV2 Barrie"
+      - "CTV 2 Barrie"
+      - "CKVR"
+    exclude: []
+
+  - chno: 1242
+    sd_chno: 242
+    name: "CTV2 (London)"
+    callsign: "CFPL"
+    tvg_id: "CFPL.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV2 London"
+      - "CTV 2 London"
+      - "CFPL"
+    exclude: []
+
+  - chno: 1243
+    sd_chno: 243
+    name: "CTV2 (Windsor)"
+    callsign: "CHWI"
+    tvg_id: "CHWI.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CTV2 Windsor"
+      - "CTV 2 Windsor"
+      - "CHWI"
+    exclude: []
+
+  - chno: 1245
+    sd_chno: 245
+    name: "CBC (St. John's)"
+    callsign: "CBNT"
+    tvg_id: "CBNT.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC St John's"
+      - "CBC St Johns"
+      - "CBNT"
+    exclude: []
+
+  - chno: 1246
+    sd_chno: 246
+    name: "CBC (Charlottetown)"
+    callsign: "CBCT"
+    tvg_id: "CBCT.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC Charlottetown"
+      - "CBCT"
+    exclude: []
+
+  - chno: 1247
+    sd_chno: 247
+    name: "CBC (Halifax)"
+    callsign: "CBHT"
+    tvg_id: "CBHT.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC Halifax"
+      - "CBHT"
+    exclude: []
+
+  - chno: 1248
+    sd_chno: 248
+    name: "CBC (Fredericton)"
+    callsign: "CBAT"
+    tvg_id: "CBAT.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC Fredericton"
+      - "CBAT"
+    exclude: []
+
+  - chno: 1250
+    sd_chno: 250
+    name: "NTV (Newfoundland)"
+    callsign: "CJON"
+    tvg_id: "CJON.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "NTV Newfoundland"
+      - "NTV St John's"
+      - "CJON"
+      - "NTV Canada"
+    exclude: ["Russia", "Turkey", "Kenya"]
+
+  - chno: 1251
+    sd_chno: 251
+    name: "CBC (Ottawa)"
+    callsign: "CBOT"
+    tvg_id: "CBCOttawa.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC Ottawa"
+      - "CBOT"
+    exclude: []
+
+  - chno: 1252
+    sd_chno: 252
+    name: "CBC (Toronto)"
+    callsign: "CBLT"
+    tvg_id: "CBC.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC Toronto"
+      - "CBLT"
+    exclude: []
+
+  - chno: 1253
+    sd_chno: 253
+    name: "CBC (Windsor)"
+    callsign: "CBET"
+    tvg_id: "CBET.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC Windsor"
+      - "CBC Windsor News"
+      - "CBET"
+    exclude: []
+
+  - chno: 1254
+    sd_chno: 254
+    name: "CBC (Winnipeg)"
+    callsign: "CBWT"
+    tvg_id: "CBWT.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC Winnipeg"
+      - "CBWT"
+    exclude: []
+
+  - chno: 1255
+    sd_chno: 255
+    name: "CBC (Regina)"
+    callsign: "CBKT"
+    tvg_id: "CBKT.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC Regina"
+      - "CBKT"
+    exclude: []
+
+  - chno: 1256
+    sd_chno: 256
+    name: "CBC (Calgary)"
+    callsign: "CBRT"
+    tvg_id: "CBRT.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC Calgary"
+      - "CBRT"
+    exclude: []
+
+  - chno: 1257
+    sd_chno: 257
+    name: "CBC (Edmonton)"
+    callsign: "CBXT"
+    tvg_id: "CBXT.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC Edmonton"
+      - "CBXT"
+    exclude: []
+
+  - chno: 1258
+    sd_chno: 258
+    name: "CBC (Vancouver)"
+    callsign: "CBUT"
+    tvg_id: "CBUT.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC Vancouver"
+      - "CBUT"
+    exclude: []
+
+  - chno: 1259
+    sd_chno: 259
+    name: "CBC North (Yellowknife)"
+    callsign: "CFYK"
+    tvg_id: "CFYK.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CBC Yellowknife"
+      - "CBC North"
+      - "CFYK"
+    exclude: []
+
+  - chno: 1260
+    sd_chno: 260
+    name: "Global (Halifax / Maritimes)"
+    callsign: "CIHF"
+    tvg_id: "CIHF.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Global Halifax"
+      - "Global Maritimes"
+      - "CIHF"
+    exclude: ["News"]
+
+  - chno: 1261
+    sd_chno: 261
+    name: "Global (Toronto)"
+    callsign: "CIII"
+    tvg_id: "CIII.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Global Toronto"
+      - "CIII"
+    exclude: ["News"]
+
+  - chno: 1262
+    sd_chno: 262
+    name: "Global (Calgary)"
+    callsign: "CICT"
+    tvg_id: "GlobalCalgary.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Global Calgary"
+      - "Global Calagry"
+      - "CICT"
+    exclude: ["News"]
+
+  - chno: 1263
+    sd_chno: 263
+    name: "Global (Edmonton)"
+    callsign: "CITV"
+    tvg_id: "CITV.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Global Edmonton"
+      - "GlLOBL Edmonton"
+      - "CITV"
+    exclude: ["News"]
+
+  - chno: 1264
+    sd_chno: 264
+    name: "Global (BC / Vancouver)"
+    callsign: "CHAN"
+    tvg_id: "CHAN.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Global BC"
+      - "Global Vancouver"
+      - "CHAN"
+    exclude: ["News"]
+
+  - chno: 1265
+    sd_chno: 265
+    name: "Citytv (Toronto)"
+    callsign: "CITY"
+    tvg_id: "CityTVToronto.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Citytv Toronto"
+      - "City TV Toronto"
+    exclude: ["News"]
+
+  - chno: 1266
+    sd_chno: 266
+    name: "Citytv (Winnipeg)"
+    callsign: "CHMI"
+    tvg_id: "CHMI.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Citytv Winnipeg"
+      - "City TV Winnipeg"
+      - "CHMI"
+    exclude: []
+
+  - chno: 1267
+    sd_chno: 267
+    name: "Citytv (Saskatchewan)"
+    callsign: "CSCN"
+    tvg_id: "CSCN.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Citytv Saskatchewan"
+      - "City TV Saskatchewan"
+      - "CSCN"
+    exclude: []
+
+  - chno: 1268
+    sd_chno: 268
+    name: "Citytv (Calgary)"
+    callsign: "CKAL"
+    tvg_id: "CKAL.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Citytv Calgary"
+      - "City TV Calgary"
+      - "City Calgary"
+      - "CKAL"
+    exclude: []
+
+  - chno: 1269
+    sd_chno: 269
+    name: "Citytv (Edmonton)"
+    callsign: "CKEM"
+    tvg_id: "CKEM.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Citytv Edmonton"
+      - "City TV Edmonton"
+      - "CKEM"
+    exclude: []
+
+  - chno: 1280
+    sd_chno: 280
+    name: "Citytv (Vancouver)"
+    callsign: "CKVU"
+    tvg_id: "CityTVVancouver.ca"
+    group: "Time-Shift & Regional Locals"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Citytv Vancouver"
+      - "City TV Vancouver"
+      - "CKVU"
+    exclude: []
+
+  - chno: 1270
+    sd_chno: 270
+    name: "CBS West (Los Angeles)"
+    callsign: "KCBS"
+    tvg_id: "KCBS.us"
+    group: "US Networks"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "CBS West"
+      - "CBS Los Angeles"
+      - "KCBS"
+    exclude: ["Sports", "News"]
+
+  - chno: 1271
+    sd_chno: 271
+    name: "ABC West (Los Angeles)"
+    callsign: "KABC"
+    tvg_id: "KABC.us"
+    group: "US Networks"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "ABC West"
+      - "ABC Los Angeles"
+      - "KABC"
+    exclude: ["News"]
+
+  - chno: 1272
+    sd_chno: 272
+    name: "NBC West (Los Angeles)"
+    callsign: "KNBC"
+    tvg_id: "KNBC.us"
+    group: "US Networks"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "NBC West"
+      - "NBC Los Angeles"
+      - "KNBC"
+    exclude: ["Sports", "News"]
+
+  - chno: 1273
+    sd_chno: 273
+    name: "FOX West (Los Angeles)"
+    callsign: "KTTV"
+    tvg_id: "KTTV.us"
+    group: "US Networks"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "FOX West"
+      - "FOX Los Angeles"
+      - "FOX 11 Los Angeles"
+      - "KTTV"
+    exclude: ["News", "Sports"]
+
+  - chno: 1274
+    sd_chno: 274
+    name: "CW West (KTLA / KSTW)"
+    callsign: "KSTW"
+    tvg_id: "KSTW.us"
+    group: "US Networks"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "KTLA 5"
+      - "KTLA"
+      - "CW 11"
+      - "KSTW"
+      - "CW Seattle"
+    exclude: []
+
+  - chno: 1275
+    sd_chno: 275
+    name: "WSBK (TV38 Boston)"
+    callsign: "WSBK"
+    tvg_id: "WSBK.us"
+    group: "US Networks"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "WSBK"
+      - "TV38 Boston"
+      - "MyTV38"
+    exclude: []
+
+  - chno: 1276
+    sd_chno: 276
+    name: "WGN / NewsNation"
+    callsign: "WGN"
+    tvg_id: "WGN.us"
+    group: "US Networks"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "WGN 9 Chicago"
+      - "WGN Chicago"
+      - "NewsNation"
+      - "WGN"
+    exclude: []
+
+  # ============================================================================
+  # EXTENDED MOVIES & CLASSIC CINEMA (300s / 1300s)
+  # ============================================================================
+  - chno: 1319
+    sd_chno: 319
+    name: "Hollywood Suite 2010s+"
+    tvg_id: "HS2010s.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Hollywood Suite 2010s+"
+      - "Hollywood Suite 2010s"
+    exclude: ["70s", "80s", "90s", "2000s"]
+
+  - chno: 1332
+    sd_chno: 332
+    name: "Silver Screen Classics"
+    tvg_id: "SilverScreenClassics.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Silver Screen Classics"
+    exclude: []
+
+  - chno: 1334
+    sd_chno: 334
+    name: "DejaView"
+    tvg_id: "DejaView.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "DejaView"
+      - "Deja View"
+    exclude: []
+
+  - chno: 1336
+    sd_chno: 336
+    name: "ABC Spark"
+    tvg_id: "ABCSpark.ca"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "ABC Spark"
+    exclude: []
+
+  - chno: 1337
+    sd_chno: 337
+    name: "Lifetime Movie Network (LMN)"
+    tvg_id: "LMN.us"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Lifetime Movie Network"
+      - "Lifetime Movies"
+      - "LMN"
+    exclude: []
+
+  - chno: 1340
+    sd_chno: 340
+    name: "FX Movie Channel (FXM)"
+    tvg_id: "FXM.us"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "FX Movie Channel"
+      - "FXM"
+    exclude: []
+
+  - chno: 1341
+    sd_chno: 341
+    name: "SundanceTV"
+    tvg_id: "SundanceTV.us"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "SundanceTV"
+      - "Sundance TV"
+    exclude: []
+
+  - chno: 1342
+    sd_chno: 342
+    name: "IFC"
+    tvg_id: "IFC.us"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "IFC"
+      - "Independent Film Channel"
+    exclude: []
+
+  - chno: 1343
+    sd_chno: 343
+    name: "MGM+"
+    tvg_id: "MGMPlus.us"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "MGM+"
+      - "MGM Plus"
+      - "Epix"
+    exclude: ["Hits", "Marquee", "Drive-In"]
+
+  - chno: 1345
+    sd_chno: 345
+    name: "Hallmark Channel"
+    tvg_id: "Hallmark.us"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Hallmark Channel"
+      - "Hallmark"
+    exclude: ["Mystery", "Movies & Mysteries", "Drama", "Family"]
+
+  - chno: 1346
+    sd_chno: 346
+    name: "Hallmark Mystery"
+    tvg_id: "HallmarkMystery.us"
+    group: "Movies & Premium"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Hallmark Mystery"
+      - "Hallmark Movies & Mysteries"
+    exclude: []
+
+  # ============================================================================
+  # EXTENDED SPORTS, LEAGUE NETWORKS & OVERFLOW PACKS (400s / 1400s)
+  # ============================================================================
+  - chno: 1413
+    sd_chno: 413
+    name: "OneSoccer"
+    tvg_id: "OneSoccer.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "OneSoccer"
+      - "One Soccer"
+    exclude: []
+
+  - chno: 1418
+    sd_chno: 418
+    name: "Sportsman Channel"
+    tvg_id: "SportsmanChannel.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Sportsman Channel"
+      - "Sportsman"
+    exclude: []
+
+  - chno: 1423
+    sd_chno: 423
+    name: "MAVTV"
+    tvg_id: "MAVTV.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "MAVTV"
+      - "MAV TV"
+    exclude: []
+
+  - chno: 1424
+    sd_chno: 424
+    name: "REV TV"
+    tvg_id: "REVTV.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "REV TV"
+      - "REVTV"
+    exclude: []
+
+  - chno: 1426
+    sd_chno: 426
+    name: "HPItv (Horse Racing)"
+    tvg_id: "HPItv.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "HPItv"
+      - "HPI TV"
+    exclude: []
+
+  - chno: 1427
+    sd_chno: 427
+    name: "Ride TV"
+    tvg_id: "RideTV.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Ride TV"
+    exclude: []
+
+  - chno: 1428
+    sd_chno: 428
+    name: "Willow Cricket"
+    tvg_id: "WillowCricket.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Willow Cricket Canada"
+      - "Willow Cricket"
+      - "Willow TV"
+    exclude: ["Xtra"]
+
+  - chno: 1429
+    sd_chno: 429
+    name: "Olympic Channel"
+    tvg_id: "OlympicChannel.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Olympic Channel"
+    exclude: []
+
+  - chno: 1430
+    sd_chno: 430
+    name: "WWE Network"
+    tvg_id: "WWENetwork.ca"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "WWE Network"
+    exclude: []
+
+  - chno: 1431
+    sd_chno: 431
+    name: "Tennis Channel"
+    tvg_id: "TennisChannel.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Tennis Channel"
+    exclude: ["Plus", "2"]
+
+  - chno: 1432
+    sd_chno: 432
+    name: "Big Ten Network (BTN)"
+    tvg_id: "BigTenNetwork.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Big Ten Network"
+      - "BTN"
+    exclude: ["BTN+"]
+
+  - chno: 1433
+    sd_chno: 433
+    name: "SEC Network"
+    tvg_id: "SECNetwork.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "SEC Network"
+    exclude: ["Plus"]
+
+  - chno: 1434
+    sd_chno: 434
+    name: "ACC Network"
+    tvg_id: "ACCNetwork.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "ACC Network"
+    exclude: ["Extra"]
+
+  - chno: 1435
+    sd_chno: 435
+    name: "FS1 (Fox Sports 1 / Racing)"
+    tvg_id: "FS1.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Fox Sports Racing"
+      - "Fox Sports 1"
+      - "FS1"
+    exclude: ["FS2", "2"]
+
+  - chno: 1436
+    sd_chno: 436
+    name: "FS2 (Fox Sports 2)"
+    tvg_id: "FS2.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Fox Sports 2"
+      - "FS2"
+    exclude: ["FS1"]
+
+  - chno: 1437
+    sd_chno: 437
+    name: "NHL Network"
+    tvg_id: "NHLNetwork.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "NHL Network"
+    exclude: []
+
+  - chno: 1438
+    sd_chno: 438
+    name: "NFL RedZone"
+    tvg_id: "NFLRedZone.us"
+    group: "Sports"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "NFL RedZone"
+      - "NFL Red Zone"
+    exclude: []
+
+  - chno: 1439
+    sd_chno: 439
+    name: "ESPN"
+    tvg_id: "ESPN.us"
+    group: "Sports"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "ESPN"
+    exclude: ["2", "ESPN2", "ESPNU", "News", "ESPNews", "Deportes", "Plus", "ESPN+", "UK"]
+
+  - chno: 1440
+    sd_chno: 440
+    name: "ESPN2"
+    tvg_id: "ESPN2.us"
+    group: "Sports"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "ESPN 2"
+      - "ESPN2"
+    exclude: ["Deportes"]
+
+  - chno: 1441
+    sd_chno: 441
+    name: "TSN / RDS Extra 1"
+    tvg_id: "TSNRDSExtra1.ca"
+    group: "Sports - League & Overflow"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "TSN/RDS Extra 1"
+      - "TSN RDS Extra 1"
+    exclude: ["2", "3", "4", "5"]
+
+  - chno: 1442
+    sd_chno: 442
+    name: "TSN / RDS Extra 2"
+    tvg_id: "TSNRDSExtra2.ca"
+    group: "Sports - League & Overflow"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "TSN/RDS Extra 2"
+      - "TSN RDS Extra 2"
+    exclude: ["1", "3", "4", "5"]
+
+  - chno: 1443
+    sd_chno: 443
+    name: "TSN / RDS Extra 3"
+    tvg_id: "TSNRDSExtra3.ca"
+    group: "Sports - League & Overflow"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "TSN/RDS Extra 3"
+      - "TSN RDS Extra 3"
+    exclude: ["1", "2", "4", "5"]
+
+  - chno: 1444
+    sd_chno: 444
+    name: "TSN / RDS Extra 4"
+    tvg_id: "TSNRDSExtra4.ca"
+    group: "Sports - League & Overflow"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "TSN/RDS Extra 4"
+      - "TSN RDS Extra 4"
+    exclude: ["1", "2", "3", "5"]
+
+  - chno: 1445
+    sd_chno: 445
+    name: "TSN / RDS Extra 5"
+    tvg_id: "TSNRDSExtra5.ca"
+    group: "Sports - League & Overflow"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "TSN/RDS Extra 5"
+      - "TSN RDS Extra 5"
+    exclude: ["1", "2", "3", "4"]
+
+  - chno: 1451
+    sd_chno: 451
+    name: "Super Sports Pack / Centre Ice 1"
+    tvg_id: "SuperSportsPack1.ca"
+    group: "Sports - League & Overflow"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Rogers Super Sports Pack 1"
+      - "Super Sports Pack 1"
+    exclude: ["10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "21", "31"]
+
+  - chno: 1452
+    sd_chno: 452
+    name: "Super Sports Pack / Centre Ice 2"
+    tvg_id: "SuperSportsPack2.ca"
+    group: "Sports - League & Overflow"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Rogers Super Sports Pack 2"
+      - "Super Sports Pack 2"
+    exclude: ["12", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "32"]
+
+  - chno: 1453
+    sd_chno: 453
+    name: "Super Sports Pack / Centre Ice 3"
+    tvg_id: "SuperSportsPack3.ca"
+    group: "Sports - League & Overflow"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Rogers Super Sports Pack 3"
+      - "Super Sports Pack 3"
+    exclude: ["13", "23", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39"]
+
+  - chno: 1454
+    sd_chno: 454
+    name: "Super Sports Pack / Centre Ice 4"
+    tvg_id: "SuperSportsPack4.ca"
+    group: "Sports - League & Overflow"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Rogers Super Sports Pack 4"
+      - "Super Sports Pack 4"
+    exclude: ["14", "24", "34", "40"]
+
+  - chno: 1455
+    sd_chno: 455
+    name: "Super Sports Pack / Centre Ice 5"
+    tvg_id: "SuperSportsPack5.ca"
+    group: "Sports - League & Overflow"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Rogers Super Sports Pack 5"
+      - "Super Sports Pack 5"
+    exclude: ["15", "25", "35"]
+
+  - chno: 1456
+    sd_chno: 456
+    name: "Super Sports Pack / Centre Ice 6"
+    tvg_id: "SuperSportsPack6.ca"
+    group: "Sports - League & Overflow"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Rogers Super Sports Pack 6"
+      - "Super Sports Pack 6"
+    exclude: ["16", "26", "36"]
+
+  - chno: 1457
+    sd_chno: 457
+    name: "Super Sports Pack / Centre Ice 7"
+    tvg_id: "SuperSportsPack7.ca"
+    group: "Sports - League & Overflow"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Rogers Super Sports Pack 7"
+      - "Super Sports Pack 7"
+    exclude: ["17", "27", "37"]
+
+  - chno: 1458
+    sd_chno: 458
+    name: "Super Sports Pack / Centre Ice 8"
+    tvg_id: "SuperSportsPack8.ca"
+    group: "Sports - League & Overflow"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Rogers Super Sports Pack 8"
+      - "Super Sports Pack 8"
+    exclude: ["18", "28", "38"]
+
+  - chno: 1459
+    sd_chno: 459
+    name: "Super Sports Pack / Centre Ice 9"
+    tvg_id: "SuperSportsPack9.ca"
+    group: "Sports - League & Overflow"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Rogers Super Sports Pack 9"
+      - "Super Sports Pack 9"
+    exclude: ["19", "29", "39"]
+
+  - chno: 1460
+    sd_chno: 460
+    name: "Super Sports Pack / Centre Ice 10"
+    tvg_id: "SuperSportsPack10.ca"
+    group: "Sports - League & Overflow"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Rogers Super Sports Pack 10"
+      - "Super Sports Pack 10"
+    exclude: []
+
+  # ============================================================================
+  # EXTENDED NEWS, SCIENCE, NATURE & KIDS (500s / 1500s)
+  # ============================================================================
+  - chno: 1511
+    sd_chno: 511
+    name: "Global News (National / BC1)"
+    tvg_id: "GlobalNewsBC1.ca"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Global News National"
+      - "Global News BC"
+      - "Global News"
+    exclude: ["Calgary", "Edmonton", "Toronto", "Winnipeg", "Montreal", "Halifax", "Regina", "Saskatoon", "Kingston", "Peterborough", "Lethbridge"]
+
+  - chno: 1513
+    sd_chno: 513
+    name: "Bloomberg Television"
+    tvg_id: "Bloomberg.us"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Bloomberg TV"
+      - "Bloomberg Television"
+      - "Bloomberg TV+"
+      - "Bloomberg"
+    exclude: ["BNN", "Europe", "Asia", "HT"]
+
+  - chno: 1515
+    sd_chno: 515
+    name: "Fox Business Network"
+    tvg_id: "FoxBusiness.us"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Fox Business Network"
+      - "Fox Business"
+    exclude: []
+
+  - chno: 1516
+    sd_chno: 516
+    name: "CNN International"
+    tvg_id: "CNNInternational.us"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us", "uk"]
+    aliases:
+      - "CNN International"
+      - "CNNi"
+    exclude: []
+
+  - chno: 1517
+    sd_chno: 517
+    name: "Sky News"
+    tvg_id: "SkyNews.uk"
+    group: "News & Information"
+    language: "en"
+    regions: ["uk", "ca", "us"]
+    aliases:
+      - "Sky News"
+    exclude: ["Arabia", "Australia", "Sports"]
+
+  - chno: 1518
+    sd_chno: 518
+    name: "Euronews (English)"
+    tvg_id: "Euronews.en"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us", "uk"]
+    aliases:
+      - "Euronews English"
+      - "Euronews EN"
+      - "Euronews World"
+      - "Euronews"
+    exclude: ["Francais", "CA FR", "FR:", "Espanol", "All"]
+
+  - chno: 1519
+    sd_chno: 519
+    name: "France 24 (English)"
+    tvg_id: "France24.en"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us", "uk"]
+    aliases:
+      - "France 24 English"
+      - "France 24 EN"
+    exclude: ["Francais", "FR", "Arabic"]
+
+  - chno: 1527
+    sd_chno: 527
+    name: "CTV Nature / Discovery Science"
+    tvg_id: "DiscoveryScience.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "CTV Nature Canada"
+      - "CTV Nature"
+      - "Discovery Science"
+      - "Science Channel"
+    exclude: []
+
+  - chno: 1531
+    sd_chno: 531
+    name: "American Heroes Channel (AHC)"
+    tvg_id: "AHC.us"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "American Heroes Channel"
+      - "AHC"
+    exclude: []
+
+  - chno: 1533
+    sd_chno: 533
+    name: "BBC Earth"
+    tvg_id: "BBCEarth.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca", "us", "uk"]
+    aliases:
+      - "BBC Earth Canada"
+      - "BBC Earth"
+    exclude: []
+
+  - chno: 1534
+    sd_chno: 534
+    name: "Investigation Discovery (ID)"
+    tvg_id: "InvestigationDiscovery.us"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Investigation Discovery"
+      - "ID Investigation Discovery"
+    exclude: []
+
+  - chno: 1535
+    sd_chno: 535
+    name: "BBC Canada"
+    tvg_id: "BBCCanada.ca"
+    group: "Science & History"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "BBC Canada"
+    exclude: []
+
+  - chno: 1540
+    sd_chno: 540
+    name: "DW (Deutsche Welle English)"
+    tvg_id: "DW.en"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us", "uk"]
+    aliases:
+      - "DW English"
+      - "Deutsche Welle"
+      - "DW"
+    exclude: ["Deutsch", "Espanol", "Arabic"]
+
+  - chno: 1541
+    sd_chno: 541
+    name: "NHK World Japan"
+    tvg_id: "NHKWorld.jp"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us", "uk"]
+    aliases:
+      - "NHK World Japan"
+      - "NHK World"
+    exclude: []
+
+  - chno: 1542
+    sd_chno: 542
+    name: "i24NEWS"
+    tvg_id: "i24News.us"
+    group: "News & Information"
+    language: "en"
+    regions: ["ca", "us", "fr"]
+    aliases:
+      - "i24NEWS English"
+      - "i24 News"
+      - "i24NEWS"
+    exclude: ["Arabic"]
+
+  - chno: 1543
+    sd_chno: 543
+    name: "The Weather Channel (US)"
+    tvg_id: "WeatherChannel.us"
+    group: "News & Information"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "The Weather Channel"
+      - "Weather Channel"
+    exclude: []
+
+  - chno: 1544
+    sd_chno: 544
+    name: "Global News Montréal"
+    tvg_id: "GlobalNewsMontreal.ca"
+    group: "News & Information"
+    language: "en"
+    regions: ["montreal", "qc", "ca"]
+    aliases:
+      - "Global News Montreal"
+    exclude: []
+
+  - chno: 1559
+    sd_chno: 559
+    name: "Family Jr."
+    tvg_id: "FamilyJr.ca"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Family Jr"
+      - "Family Junior"
+    exclude: []
+
+  - chno: 1561
+    sd_chno: 561
+    name: "Teletoon (English)"
+    tvg_id: "Teletoon.ca"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "CA EN Teletoon"
+      - "Teletoon"
+    exclude: ["French", "Francais", "CA FR", "FR", "Plus"]
+
+  - chno: 1562
+    sd_chno: 562
+    name: "Nick Jr."
+    tvg_id: "NickJr.us"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Nick Jr"
+      - "Nick Junior"
+    exclude: ["Too"]
+
+  - chno: 1563
+    sd_chno: 563
+    name: "Nicktoons"
+    tvg_id: "Nicktoons.us"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Nicktoons"
+    exclude: []
+
+  - chno: 1564
+    sd_chno: 564
+    name: "TeenNick"
+    tvg_id: "TeenNick.us"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "TeenNick"
+      - "Teen Nick"
+    exclude: []
+
+  - chno: 1565
+    sd_chno: 565
+    name: "PBS Kids"
+    tvg_id: "PBSKids.us"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "PBS Kids"
+    exclude: []
+
+  - chno: 1566
+    sd_chno: 566
+    name: "BabyTV"
+    tvg_id: "BabyTV.us"
+    group: "Kids & Family"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "BabyTV"
+      - "Baby TV"
+    exclude: []
+
+  # ============================================================================
+  # EXTENDED LIFESTYLE, ENTERTAINMENT & MUSIC VIDEO (600s / 1600s)
+  # ============================================================================
+  - chno: 1604
+    sd_chno: 604
+    name: "Cooking Channel"
+    tvg_id: "CookingChannel.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "The Cooking Channel"
+      - "Cooking Channel"
+    exclude: []
+
+  - chno: 1606
+    sd_chno: 606
+    name: "Makeful"
+    tvg_id: "Makeful.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Makeful"
+    exclude: []
+
+  - chno: 1608
+    sd_chno: 608
+    name: "OWN (Oprah Winfrey Network)"
+    tvg_id: "OprahWinfreyNetwork.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Oprah Winfrey Network"
+      - "OWN"
+    exclude: []
+
+  - chno: 1611
+    sd_chno: 611
+    name: "VisionTV"
+    tvg_id: "VisionTV.ca"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "VisionTV"
+      - "Vision TV"
+      - "Vision"
+    exclude: [" Mundo"]
+
+  - chno: 1613
+    sd_chno: 613
+    name: "Daystar"
+    tvg_id: "Daystar.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Daystar TV"
+      - "Daystar"
+    exclude: ["Espanol"]
+
+  - chno: 1619
+    sd_chno: 619
+    name: "EWTN"
+    tvg_id: "EWTN.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "EWTN"
+    exclude: []
+
+  - chno: 1623
+    sd_chno: 623
+    name: "Syfy"
+    tvg_id: "Syfy.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Syfy"
+    exclude: ["UK", "France"]
+
+  - chno: 1630
+    sd_chno: 630
+    name: "Comedy Central"
+    tvg_id: "ComedyCentral.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "Comedy Central"
+    exclude: ["Extra", "UK", "Pluto"]
+
+  - chno: 1633
+    sd_chno: 633
+    name: "TV Land"
+    tvg_id: "TVLand.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "TV Land"
+      - "TVLand"
+    exclude: []
+
+  - chno: 1634
+    sd_chno: 634
+    name: "MeTV"
+    tvg_id: "MeTV.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "MeTV"
+    exclude: ["Toons", "Plus"]
+
+  - chno: 1637
+    sd_chno: 637
+    name: "truTV"
+    tvg_id: "truTV.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "truTV"
+      - "Tru TV"
+    exclude: []
+
+  - chno: 1638
+    sd_chno: 638
+    name: "TBS"
+    tvg_id: "TBS.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "TBS"
+    exclude: ["West"]
+
+  - chno: 1639
+    sd_chno: 639
+    name: "TNT"
+    tvg_id: "TNT.us"
+    group: "Lifestyle & Entertainment"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "TNT"
+    exclude: ["Sports", "West", "Serie", "Film"]
+
+  - chno: 1640
+    sd_chno: 640
+    name: "VH1"
+    tvg_id: "VH1.us"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["us", "ca"]
+    aliases:
+      - "VH1"
+    exclude: ["Classic", "Mega"]
+
+  - chno: 1641
+    sd_chno: 641
+    name: "MTV Live"
+    tvg_id: "MTVLive.us"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["us", "ca", "fr"]
+    aliases:
+      - "MTV Live"
+    exclude: []
+
+  - chno: 1642
+    sd_chno: 642
+    name: "Stingray Hits!"
+    tvg_id: "StingrayHits.ca"
+    group: "Music & Audio"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Stingray Hits!"
+      - "Stingray Hits"
+    exclude: ["Greatest"]
+
+  - chno: 1643
+    sd_chno: 643
+    name: "Stingray Classica"
+    tvg_id: "StingrayClassica.ca"
+    group: "Music & Audio"
+    language: "fr"
+    regions: ["qc", "ca"]
+    aliases:
+      - "Stingray Classica"
+    exclude: []
+
+  - chno: 1644
+    sd_chno: 644
+    name: "Stingray Naturescape"
+    tvg_id: "StingrayNaturescape.ca"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Stingray Naturescape"
+    exclude: []
+
+  - chno: 1645
+    sd_chno: 645
+    name: "Qello Concerts by Stingray"
+    tvg_id: "QelloConcerts.ca"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Qello Concerts by Stingray"
+      - "Qello Concerts"
+    exclude: []
+
+  - chno: 1646
+    sd_chno: 646
+    name: "Mezzo Live"
+    tvg_id: "MezzoLive.fr"
+    group: "Music & Audio"
+    language: "fr"
+    regions: ["qc", "ca", "fr"]
+    aliases:
+      - "Mezzo Live"
+      - "Mezzo"
+    exclude: []
+
+  - chno: 1647
+    sd_chno: 647
+    name: "Trace Urban"
+    tvg_id: "TraceUrban.fr"
+    group: "Music & Audio"
+    language: "fr"
+    regions: ["qc", "ca", "fr"]
+    aliases:
+      - "Trace Urban"
+    exclude: ["Africa", "Naija", "Toca"]
+
+  # ============================================================================
+  # INTERNATIONAL — FRANCE & MULTICULTURAL PACKAGES (700s / 1700s)
+  # ============================================================================
+  - chno: 1701
+    sd_chno: 701
+    name: "TF1"
+    tvg_id: "TF1.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "TF1"
+    exclude: ["Series", "Films"]
+
+  - chno: 1702
+    sd_chno: 702
+    name: "France 2"
+    tvg_id: "France2.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "France 2"
+    exclude: ["24"]
+
+  - chno: 1703
+    sd_chno: 703
+    name: "France 3"
+    tvg_id: "France3.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "France 3"
+    exclude: []
+
+  - chno: 1704
+    sd_chno: 704
+    name: "France 4"
+    tvg_id: "France4.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "France 4"
+    exclude: []
+
+  - chno: 1705
+    sd_chno: 705
+    name: "France 5"
+    tvg_id: "France5.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "France 5"
+    exclude: []
+
+  - chno: 1706
+    sd_chno: 706
+    name: "M6"
+    tvg_id: "M6.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "M6"
+    exclude: ["Music", "Boutique"]
+
+  - chno: 1707
+    sd_chno: 707
+    name: "ARTE"
+    tvg_id: "ARTE.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "ARTE"
+    exclude: ["DE"]
+
+  - chno: 1708
+    sd_chno: 708
+    name: "BFM TV"
+    tvg_id: "BFMTV.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "BFM TV"
+      - "BFMTV"
+    exclude: ["Business", "Lyon", "Paris"]
+
+  - chno: 1709
+    sd_chno: 709
+    name: "BFM Business"
+    tvg_id: "BFMBusiness.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "BFM Business"
+    exclude: []
+
+  - chno: 1710
+    sd_chno: 710
+    name: "LCI (La Chaîne Info)"
+    tvg_id: "LCI.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "LCI"
+    exclude: []
+
+  - chno: 1711
+    sd_chno: 711
+    name: "CNews"
+    tvg_id: "cnews.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "CNews"
+    exclude: []
+
+  - chno: 1712
+    sd_chno: 712
+    name: "franceinfo:"
+    tvg_id: "FranceInfo.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "France Info"
+      - "Franceinfo"
+    exclude: []
+
+  - chno: 1713
+    sd_chno: 713
+    name: "C8"
+    tvg_id: "C8.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "C8"
+    exclude: []
+
+  - chno: 1714
+    sd_chno: 714
+    name: "CStar"
+    tvg_id: "CStar.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "CStar"
+    exclude: []
+
+  - chno: 1715
+    sd_chno: 715
+    name: "6ter"
+    tvg_id: "6ter.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "6ter"
+      - "6 ter"
+    exclude: []
+
+  - chno: 1716
+    sd_chno: 716
+    name: "Chérie 25"
+    tvg_id: "Cherie25.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "Cherie 25"
+      - "Cherie25"
+    exclude: []
+
+  - chno: 1717
+    sd_chno: 717
+    name: "13ème Rue"
+    tvg_id: "13emeRue.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "13eme Rue"
+      - "13 eme Rue"
+    exclude: []
+
+  - chno: 1718
+    sd_chno: 718
+    name: "L'Équipe"
+    tvg_id: "LEquipe.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "L'Equipe 21"
+      - "L'Equipe Live"
+      - "L'Equipe"
+    exclude: []
+
+  - chno: 1719
+    sd_chno: 719
+    name: "NRJ 12"
+    tvg_id: "NRJ12.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "NRJ 12"
+      - "NRJ12"
+    exclude: ["Hits"]
+
+  - chno: 1720
+    sd_chno: 720
+    name: "OCS Max"
+    tvg_id: "OCSMax.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "OCS Max"
+    exclude: []
+
+  - chno: 1721
+    sd_chno: 721
+    name: "OCS Choc"
+    tvg_id: "OCSChoc.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "OCS Choc"
+    exclude: []
+
+  - chno: 1722
+    sd_chno: 722
+    name: "OCS Géants"
+    tvg_id: "OCSGeants.fr"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["fr", "qc", "ca"]
+    aliases:
+      - "OCS Geants"
+    exclude: []
+
+  - chno: 1730
+    sd_chno: 730
+    name: "CGTN Français"
+    tvg_id: "CGTNFrench.cn"
+    group: "International & Multicultural"
+    language: "fr"
+    regions: ["qc", "ca", "fr"]
+    aliases:
+      - "CGTN Francais"
+      - "CA FR CGTN"
+      - "CGTN"
+    exclude: ["Arabic", "Espanol", "Russian", "Documentary"]
+
+  - chno: 1801
+    sd_chno: 801
+    name: "Univision"
+    tvg_id: "Univision.us"
+    group: "International & Multicultural"
+    language: "es"
+    regions: ["us", "ca"]
+    aliases:
+      - "Univision Canada"
+      - "Univision East"
+      - "Univision"
+    exclude: ["Deportes", "TUDN", "Noticias"]
+
+  - chno: 1802
+    sd_chno: 802
+    name: "Telemundo"
+    tvg_id: "Telemundo.us"
+    group: "International & Multicultural"
+    language: "es"
+    regions: ["us", "ca"]
+    aliases:
+      - "Telemundo East"
+      - "Telemundo"
+    exclude: ["Noticias"]
+
+  - chno: 1810
+    sd_chno: 810
+    name: "Zee TV Canada"
+    tvg_id: "ZeeTV.ca"
+    group: "International & Multicultural"
+    language: "en"
+    regions: ["ca"]
+    aliases:
+      - "Zee TV Canada"
+    exclude: []
+
+  # ============================================================================
+  # STINGRAY MUSIC CHANNELS (901–911 — Single-Slot Music / Audio Tier)
+  # ============================================================================
+  - chno: 901
+    name: "Stingray Classic Rock"
+    tvg_id: "StingrayClassicRock.ca"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Stingray Classic Rock"
+    exclude: []
+
+  - chno: 902
+    name: "Stingray Easy Listening"
+    tvg_id: "StingrayEasyListening.ca"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Stingray Easy Listening"
+    exclude: []
+
+  - chno: 903
+    name: "Stingray Greatest Hits"
+    tvg_id: "StingrayGreatestHits.ca"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Stingray Greatest Hits"
+    exclude: []
+
+  - chno: 904
+    name: "Stingray Hit List"
+    tvg_id: "StingrayHitList.ca"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Stingray Hit List"
+    exclude: []
+
+  - chno: 905
+    name: "Stingray Hot Country"
+    tvg_id: "StingrayHotCountry.ca"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Stingray Hot Country"
+    exclude: []
+
+  - chno: 906
+    name: "Stingray Remember the '80s"
+    tvg_id: "StingrayRemember80s.ca"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Stingray Remember the 80s"
+      - "Stingray Remember the '80s"
+    exclude: []
+
+  - chno: 907
+    name: "Stingray Smooth Jazz"
+    tvg_id: "StingraySmoothJazz.ca"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Stingray Smooth Jazz"
+    exclude: []
+
+  - chno: 908
+    name: "Stingray Spa"
+    tvg_id: "StingraySpa.ca"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Stingray Spa"
+    exclude: []
+
+  - chno: 909
+    name: "Stingray Today's Latin Pop"
+    tvg_id: "StingrayLatinPop.ca"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Stingray Today's Latin Pop"
+      - "Stingray Todays Latin Pop"
+    exclude: []
+
+  - chno: 910
+    name: "Stingray Holidayscapes"
+    tvg_id: "StingrayHolidayscapes.ca"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "Stingray Holidayscapes"
+    exclude: []
+
+  - chno: 911
+    name: "ZenLIFE by Stingray"
+    tvg_id: "StingrayZenLife.ca"
+    group: "Music & Audio"
+    language: "en"
+    regions: ["ca", "us"]
+    aliases:
+      - "ZenLIFE by Stingray"
+      - "Stingray ZenLIFE"
+    exclude: []

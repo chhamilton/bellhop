@@ -1,0 +1,14 @@
+{
+  "name": "bellhop-web-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Strictly typed TypeScript frontend for the Bellhop Web TV Guide & Player",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "test": "node --test tests/frontend/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}
