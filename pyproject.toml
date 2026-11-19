@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bellhop"
+version = "0.1.0"
+description = "Bellhop — Stateful 6-phase IPTV lineup & stream validation pipeline, single-tuner Web TV Guide, and passthrough Xtream Codes API server."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27.0",
+    "pyyaml>=6.0.1",
+    "python-dotenv>=1.0.1",
+    "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.10.0",
+    "nodejs-wheel>=22.0.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.9.0",
+    "types-PyYAML>=6.0.12",
+]
+
+[project.scripts]
+bellhop = "bellhop.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+bellhop = ["py.typed"]
+bellhop_web = ["py.typed", "static/*", "static/vendor/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+mypy_path = ["src"]
+files = ["src", "tests"]
+warn_unreachable = true
+show_error_codes = true
+
+[tool.ruff]
+target-version = "py310"
+line-length = 80
+indent-width = 2
+src = ["src", "tests"]
+
+[tool.ruff.format]
+indent-style = "space"
+quote-style = "double"
+line-ending = "lf"
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "N"]
+ignore = ["E501"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+force-single-line = false
+known-first-party = ["bellhop", "bellhop_web"]

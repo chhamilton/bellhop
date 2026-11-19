@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Bellhop">
+  <defs>
+    <linearGradient id="bh-tile" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0%" stop-color="#0ea5e9" />
+      <stop offset="55%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#0c4a6e" />
+    </linearGradient>
+    <radialGradient id="bh-sheen" cx="30%" cy="15%" r="65%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.16" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </radialGradient>
+    <mask id="bh-play-cutout">
+      <rect width="64" height="64" fill="#ffffff" />
+      <path d="M 27.5 30.6 C 27.5 29.1 29.1 28.2 30.4 29.0 L 38.2 33.9 C 39.4 34.6 39.4 36.4 38.2 37.1 L 30.4 42.0 C 29.1 42.8 27.5 41.9 27.5 40.4 Z" fill="#000000" />
+    </mask>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#bh-tile)" />
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#bh-sheen)" />
+  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="14.25" fill="none" stroke="rgba(186,230,253,0.28)" stroke-width="1.5" />
+  <g transform="translate(6.4, 6.4) scale(0.8)">
+    <rect x="24.5" y="11" width="15" height="4.5" rx="2.25" fill="#7dd3fc" />
+    <rect x="29.75" y="15" width="4.5" height="7.5" fill="#ffffff" />
+    <path d="M 10 44.5 A 22 22.5 0 0 1 54 44.5 Q 54 46 52.5 46 L 11.5 46 Q 10 46 10 44.5 Z" fill="#ffffff" mask="url(#bh-play-cutout)" />
+    <rect x="7" y="49.5" width="50" height="5.8" rx="2.9" fill="#ffffff" />
+  </g>
+</svg>

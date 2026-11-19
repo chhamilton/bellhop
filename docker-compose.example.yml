@@ -1,0 +1,68 @@
+# Bellhop — Example Docker Compose Configuration
+# Copy `.env.example` -> `.env` and `docker-compose.example.yml` -> `docker-compose.yml`,
+# fill in your credentials, then run:
+#   docker compose up -d --build
+#
+# To run the 6-phase pipeline inside the running container:
+#   docker compose exec bellhop bellhop run --skip validate
+
+services:
+  bellhop:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bellhop:latest
+    container_name: bellhop
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Timezone & non-root file ownership (mapped to host user/group IDs)
+      TZ: ${TZ:-America/Montreal}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+
+      # Clean internal mount points (matching volumes below)
+      BELLHOP_CONFIG_DIR: /config
+      BELLHOP_STATE_DIR: /data/state
+      BELLHOP_CACHE_DIR: /data/cache
+      BELLHOP_OUTPUT_DIR: /data/output
+      BELLHOP_CONFIG: /config/config.yaml
+
+      # Bellhop Web Guide login & Passthrough Xtream API credentials
+      BELLHOP_WEB_USERNAME: ${BELLHOP_WEB_USERNAME:-}
+      BELLHOP_WEB_PASSWORD: ${BELLHOP_WEB_PASSWORD:-}
+      BELLHOP_WEB_SESSION_SECRET: ${BELLHOP_WEB_SESSION_SECRET:-}
+      BELLHOP_SERVE_USERNAME: ${BELLHOP_SERVE_USERNAME:-}
+      BELLHOP_SERVE_PASSWORD: ${BELLHOP_SERVE_PASSWORD:-}
+
+      # Upstream IPTV provider & optional Schedules Direct credentials
+      XTREAM_SERVER_URL: ${XTREAM_SERVER_URL:-}
+      XTREAM_USERNAME: ${XTREAM_USERNAME:-}
+      XTREAM_PASSWORD: ${XTREAM_PASSWORD:-}
+      XTREAM_STREAM_FORMAT: ${XTREAM_STREAM_FORMAT:-ts}
+      SD_USERNAME: ${SD_USERNAME:-}
+      SD_PASSWORD: ${SD_PASSWORD:-}
+    ports:
+      - "${BELLHOP_PORT:-8080}:8080"
+    volumes:
+      # Declarative config.yaml (auto-seeded on first boot) & optional credentials.yaml
+      - ./docker-data/config:/config
+      # Stateful lineup/catalog snapshots & channel_mapping.json
+      - ./docker-data/state:/data/state
+      # Web Guide dynamic EPG cache & session signing key
+      - ./docker-data/cache:/data/cache
+      # Exported M3U8, diagnostics report & Xtream JSON bundle
+      - ./docker-data/output:/data/output
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/auth/status', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

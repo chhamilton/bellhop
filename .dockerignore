@@ -1,0 +1,32 @@
+# Git & editor metadata
+.git/
+.gitignore
+.DS_Store
+
+# Local Python / Node environments & caches
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Machine-local secrets, configs, runtime state & exports
+.env
+config.yaml
+credentials.yaml
+cache/
+state/
+output/
+docker-data/
+*.m3u
+*.m3u8
+
+# Dev/agent files & tests (not needed in runtime image)
+.agents/
+tests/
+AGENTS.md
+GEMINI.md

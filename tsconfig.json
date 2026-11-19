@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "None",
+    "rootDir": "src/bellhop_web/frontend",
+    "outDir": "src/bellhop_web/static",
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "forceConsistentCasingInFileNames": true,
+    "newLine": "lf",
+    "removeComments": false
+  },
+  "include": ["src/bellhop_web/frontend/**/*.ts"]
+}

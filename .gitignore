@@ -1,0 +1,64 @@
+# =============================================================================
+# Python & build artifacts
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# =============================================================================
+# Node / TypeScript toolchain
+# (package-lock.json IS tracked; compiled static/*.js IS tracked and
+#  verified against frontend/*.ts by tests/test_typecheck.py)
+# =============================================================================
+node_modules/
+npm-debug.log*
+
+# =============================================================================
+# Secrets & machine-local configuration
+# (Keep config.example.yaml, credentials.example.yaml, .env.example, and
+#  docker-compose.example.yml tracked)
+# =============================================================================
+.env
+.env.*
+!.env.example
+config.yaml
+credentials.yaml
+*.yaml.tmp
+*.key
+docker-compose.yml
+docker-compose.override.yml
+
+# =============================================================================
+# Runtime state, caches, and generated playlists/EPGs
+# =============================================================================
+/cache/
+/state/
+/output/
+/docker-data/
+*.m3u
+*.m3u8
+
+# =============================================================================
+# Archives, logs, editors & OS files
+# =============================================================================
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.log
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
