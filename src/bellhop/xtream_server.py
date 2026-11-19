@@ -1,4 +1,4 @@
-"""Passthrough Xtream Codes API server (`bellhop serve`) backed by calculated pipeline outputs.
+"""Passthrough Xtream Codes API server (`bellhop serve`, aiohttp) backed by pipeline outputs.
 
 Xtream Codes HTTP Contract & Wire Layouts
 -----------------------------------------
@@ -20,25 +20,26 @@ import json
 import logging
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, TypedDict
 
+from aiohttp import web
+
 from bellhop.config import AppConfig
 from bellhop.epg_loader import build_passthrough_xmltv_url
 from bellhop_web.http_utils import (
-  HttpRequest,
-  bound_server_port,
   build_access_urls,
+  bytes_response,
+  create_web_app,
   detect_device_ip,
+  json_response,
+  redirect_response,
   resolve_bind_host,
-  send_bytes,
-  send_json,
-  send_redirect,
-  serve_http_connection,
+  start_site,
 )
 
 __all__ = [
@@ -55,6 +56,8 @@ __all__ = [
 ]
 
 logger = logging.getLogger("bellhop.serve")
+
+_Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
 class PassthroughCategoryDict(TypedDict):
@@ -359,7 +362,11 @@ class XtreamExportStore:
 
 
 class XtreamPassthroughServer:
-  """Async HTTP/1.1 server implementing the Xtream Codes API with 302 upstream passthrough."""
+  """aiohttp Xtream Codes API server with `302` upstream passthrough.
+
+  Routes are registered via `add_routes()` (shared listener with the Web
+  Guide) or `build_app()` / `start()` (dedicated listener).
+  """
 
   def __init__(
     self,
@@ -381,7 +388,7 @@ class XtreamPassthroughServer:
     self.public_host = public_host
     self.public_port = public_port
     self.server_protocol = server_protocol
-    self._server: asyncio.Server | None = None
+    self._runner: web.AppRunner | None = None
     self._created_at = int(time.time())
 
   @classmethod
@@ -400,33 +407,86 @@ class XtreamPassthroughServer:
       server_protocol=config.serve.server_protocol,
     )
 
+  # ---------------------------------------------------------------------------
+  # Lifecycle (dedicated listener)
+  # ---------------------------------------------------------------------------
   @property
   def bound_port(self) -> int:
-    return bound_server_port(self._server, self.port)
+    return self.port
+
+  def build_app(self) -> web.Application:
+    """Return a standalone `aiohttp` application serving only the Xtream API."""
+    app = create_web_app()
+    self.add_routes(app, include_health=True)
+    return app
 
   async def start(self) -> XtreamPassthroughServer:
-    self._server = await asyncio.start_server(
-      self.handle_connection,
-      host=self.bind_host,
-      port=self.port,
+    self._runner, self.port = await start_site(
+      self.build_app(), self.bind_host, self.port
     )
-    self.port = self.bound_port
     return self
 
   async def stop(self) -> None:
-    if self._server is not None:
-      self._server.close()
-      await self._server.wait_closed()
-      self._server = None
+    if self._runner is not None:
+      await self._runner.cleanup()
+      self._runner = None
 
   async def serve_forever(self) -> None:
     await self.start()
-    assert self._server is not None
     try:
-      async with self._server:
-        await self._server.serve_forever()
+      await asyncio.Event().wait()
     finally:
       await self.stop()
+
+  def add_routes(
+    self, app: web.Application, *, include_health: bool = False
+  ) -> None:
+    """Register Xtream Codes API & passthrough routes on `app`.
+
+    Args:
+      app: Target application.
+      include_health: Also register `/health` and `/api/health` (only for a
+        dedicated listener; the shared listener provides its own `/health`).
+    """
+    r = app.router
+    if include_health:
+      r.add_get("/health", self._handle_health)
+      r.add_get("/api/health", self._handle_health)
+    for path in ("/player_api.php", "/player.php"):
+      r.add_get(path, self._handle_player_api)
+      r.add_post(path, self._handle_player_api)
+    r.add_get("/panel_api.php", self._handle_panel_api)
+    r.add_post("/panel_api.php", self._handle_panel_api)
+    for path in ("/xmltv.php", "/epg.xml"):
+      r.add_get(path, self._handle_xmltv_passthrough)
+    r.add_get("/get.php", self._m3u_handler("m3u_plus"))
+    r.add_get("/playlist.m3u8", self._m3u_handler("m3u_plus"))
+    r.add_get("/playlist.m3u", self._m3u_handler("m3u"))
+    r.add_get(
+      r"/{kind:(?:movie|series|timeshift)}/{user}/{passwd}/{tail:.+}",
+      self._handle_nonlive,
+    )
+    stream_pattern = r"{user}/{passwd}/{sid:\d+}{ext:(?:\.[A-Za-z0-9]+)?}"
+    r.add_get(f"/live/{stream_pattern}", self._handle_stream_passthrough)
+    r.add_get(f"/{stream_pattern}", self._handle_stream_passthrough)
+
+  # ---------------------------------------------------------------------------
+  # Helpers
+  # ---------------------------------------------------------------------------
+  @staticmethod
+  async def _params(request: web.Request) -> dict[str, str]:
+    """Merge query parameters with urlencoded POST form fields (query wins)."""
+    params: dict[str, str] = {}
+    if request.method == "POST" and request.can_read_body:
+      ctype = request.content_type.lower()
+      if ctype in ("", "application/x-www-form-urlencoded"):
+        form = await request.post()
+        for key, val in form.items():
+          if isinstance(val, str):
+            params.setdefault(key, val)
+    for key, val in request.query.items():
+      params[key] = val
+    return params
 
   def _is_authorized(self, user: str, passwd: str) -> bool:
     if not self.username or not self.password:
@@ -503,148 +563,52 @@ class XtreamPassthroughServer:
     }
     return user_info, server_info
 
-  async def handle_connection(
-    self,
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-  ) -> None:
-    async def _on_req(req: HttpRequest, w: asyncio.StreamWriter) -> None:
-      await self._route(req.method, req.path, req.query, req.headers, w)
-
-    await serve_http_connection(
-      reader,
-      writer,
-      _on_req,
-      logger=logger,
-      merge_form_query=True,
+  @staticmethod
+  def _unauthorized() -> web.Response:
+    return bytes_response(
+      b"Unauthorized", "text/plain", status=HTTPStatus.UNAUTHORIZED
     )
 
-  async def dispatch(
-    self,
-    method: str,
-    path: str,
-    params: dict[str, list[str]],
-    headers: Mapping[str, str],
-    writer: asyncio.StreamWriter,
-  ) -> None:
-    """Route a parsed HTTP request to the Xtream Codes API & 302 passthrough handlers."""
-    await self._route(method, path, params, headers, writer)
-
-  async def _route(
-    self,
-    method: str,
-    path: str,
-    params: dict[str, list[str]],
-    headers: Mapping[str, str],
-    writer: asyncio.StreamWriter,
-  ) -> None:
-    if path in ("/health", "/api/health") and method == "GET":
-      snap = self.store.get_snapshot()
-      await self._send_json(
-        writer,
-        HTTPStatus.OK,
-        {
-          "status": "ok",
-          "lineup_id": snap.lineup_id,
-          "provider": snap.provider,
-          "market": snap.market,
-          "category_count": len(snap.categories),
-          "channel_count": len(snap.streams),
-        },
-      )
-      return
-
-    if path in ("/player_api.php", "/player.php") and method in ("GET", "POST"):
-      await self._handle_player_api(params, headers, writer)
-      return
-
-    if path == "/panel_api.php" and method in ("GET", "POST"):
-      await self._handle_panel_api(params, headers, writer)
-      return
-
-    if path in ("/xmltv.php", "/epg.xml") and method in ("GET", "HEAD"):
-      await self._handle_xmltv_passthrough(params, writer)
-      return
-
-    if path in ("/get.php", "/playlist.m3u", "/playlist.m3u8") and method in (
-      "GET",
-      "HEAD",
-    ):
-      default_type = "m3u_plus" if path != "/playlist.m3u" else "m3u"
-      await self._handle_get_m3u(
-        params,
-        headers,
-        writer,
-        method=method,
-        default_type=default_type,
-      )
-      return
-
-    m_nonlive = re.match(
-      r"^/(?:movie|series|timeshift)/([^/]+)/([^/]+)/.+$",
-      path,
-    )
-    if m_nonlive and method in ("GET", "HEAD"):
-      user, passwd = m_nonlive.groups()
-      if not self._is_authorized(user, passwd):
-        await self._send_bytes(
-          writer, HTTPStatus.UNAUTHORIZED, b"Unauthorized", "text/plain"
-        )
-        return
-      await self._send_bytes(
-        writer, HTTPStatus.NOT_FOUND, b"Not found", "text/plain"
-      )
-      return
-
-    m_live = re.match(
-      r"^(?:/live)?/([^/]+)/([^/]+)/(\d+)(?:\.([A-Za-z0-9]+))?$",
-      path,
-    )
-    if m_live and method in ("GET", "HEAD"):
-      user, passwd, sid_str, ext = m_live.groups()
-      await self._handle_stream_passthrough(
-        user=user,
-        passwd=passwd,
-        stream_key=int(sid_str),
-        ext=ext or "",
-        writer=writer,
-      )
-      return
-
-    await self._send_json(
-      writer, HTTPStatus.NOT_FOUND, {"error": f"Not found: {path}"}
+  # ---------------------------------------------------------------------------
+  # Handlers
+  # ---------------------------------------------------------------------------
+  async def _handle_health(self, _request: web.Request) -> web.StreamResponse:
+    snap = self.store.get_snapshot()
+    return json_response(
+      {
+        "status": "ok",
+        "lineup_id": snap.lineup_id,
+        "provider": snap.provider,
+        "market": snap.market,
+        "category_count": len(snap.categories),
+        "channel_count": len(snap.streams),
+      }
     )
 
   async def _handle_player_api(
-    self,
-    params: dict[str, list[str]],
-    headers: Mapping[str, str],
-    writer: asyncio.StreamWriter,
-  ) -> None:
-    user = (params.get("username") or [""])[0]
-    passwd = (params.get("password") or [""])[0]
-    if not self._is_authorized(user, passwd):
-      await self._send_json(writer, HTTPStatus.OK, {"user_info": {"auth": 0}})
-      return
+    self, request: web.Request
+  ) -> web.StreamResponse:
+    params = await self._params(request)
+    if not self._is_authorized(
+      params.get("username", ""), params.get("password", "")
+    ):
+      return json_response({"user_info": {"auth": 0}})
 
     snap = self.store.get_snapshot()
-    action = (params.get("action") or [""])[0].strip().lower()
+    action = params.get("action", "").strip().lower()
 
     if action == "get_live_categories":
-      await self._send_json(
-        writer, HTTPStatus.OK, [c.to_dict() for c in snap.categories]
-      )
-      return
+      return json_response([c.to_dict() for c in snap.categories])
 
     if action == "get_live_streams":
-      cat_filter = (params.get("category_id") or [""])[0].strip()
-      items = [
-        s.to_player_api_dict()
-        for s in snap.streams
-        if not cat_filter or s.category_id == cat_filter
-      ]
-      await self._send_json(writer, HTTPStatus.OK, items)
-      return
+      cat_filter = params.get("category_id", "").strip()
+      return json_response(
+        [
+          s.to_player_api_dict()
+          for s in snap.streams
+          if not cat_filter or s.category_id == cat_filter
+        ]
+      )
 
     if action in {
       "get_vod_categories",
@@ -652,133 +616,108 @@ class XtreamPassthroughServer:
       "get_vod_streams",
       "get_series",
     }:
-      await self._send_json(writer, HTTPStatus.OK, [])
-      return
-
+      return json_response([])
     if action == "get_vod_info":
-      await self._send_json(
-        writer, HTTPStatus.OK, {"info": {}, "movie_data": {}}
-      )
-      return
-
+      return json_response({"info": {}, "movie_data": {}})
     if action == "get_series_info":
-      await self._send_json(
-        writer,
-        HTTPStatus.OK,
-        {"seasons": [], "info": {}, "episodes": {}},
-      )
-      return
-
+      return json_response({"seasons": [], "info": {}, "episodes": {}})
     if action in {"get_short_epg", "get_simple_data_table"}:
-      await self._send_json(writer, HTTPStatus.OK, {"epg_listings": []})
-      return
+      return json_response({"epg_listings": []})
 
-    user_info, server_info = self._build_user_and_server_info(snap, headers)
-    await self._send_json(
-      writer,
-      HTTPStatus.OK,
-      {"user_info": user_info, "server_info": server_info},
+    user_info, server_info = self._build_user_and_server_info(
+      snap, request.headers
     )
+    return json_response({"user_info": user_info, "server_info": server_info})
 
-  async def _handle_panel_api(
-    self,
-    params: dict[str, list[str]],
-    headers: Mapping[str, str],
-    writer: asyncio.StreamWriter,
-  ) -> None:
-    user = (params.get("username") or [""])[0]
-    passwd = (params.get("password") or [""])[0]
-    if not self._is_authorized(user, passwd):
-      await self._send_json(writer, HTTPStatus.OK, {"user_info": {"auth": 0}})
-      return
+  async def _handle_panel_api(self, request: web.Request) -> web.StreamResponse:
+    params = await self._params(request)
+    if not self._is_authorized(
+      params.get("username", ""), params.get("password", "")
+    ):
+      return json_response({"user_info": {"auth": 0}})
 
     snap = self.store.get_snapshot()
-    user_info, server_info = self._build_user_and_server_info(snap, headers)
-    available = {str(s.num): s.to_player_api_dict() for s in snap.streams}
-    await self._send_json(
-      writer,
-      HTTPStatus.OK,
+    user_info, server_info = self._build_user_and_server_info(
+      snap, request.headers
+    )
+    return json_response(
       {
         "user_info": user_info,
         "server_info": server_info,
         "categories": {"live": [c.to_dict() for c in snap.categories]},
-        "available_channels": available,
-      },
+        "available_channels": {
+          str(s.num): s.to_player_api_dict() for s in snap.streams
+        },
+      }
     )
 
   async def _handle_xmltv_passthrough(
-    self,
-    params: dict[str, list[str]],
-    writer: asyncio.StreamWriter,
-  ) -> None:
-    user = (params.get("username") or [""])[0]
-    passwd = (params.get("password") or [""])[0]
-    if not self._is_authorized(user, passwd):
-      await self._send_bytes(
-        writer, HTTPStatus.UNAUTHORIZED, b"Unauthorized", "text/plain"
-      )
-      return
+    self, request: web.Request
+  ) -> web.StreamResponse:
+    params = await self._params(request)
+    if not self._is_authorized(
+      params.get("username", ""), params.get("password", "")
+    ):
+      return self._unauthorized()
 
     snap = self.store.get_snapshot()
     if not snap.xmltv_url:
-      await self._send_json(
-        writer,
-        HTTPStatus.NOT_FOUND,
+      return json_response(
         {"error": "No upstream XMLTV passthrough URL configured."},
+        status=HTTPStatus.NOT_FOUND,
       )
-      return
-
     logger.debug("Passthrough redirect /xmltv.php -> upstream XMLTV")
-    await self._send_redirect(writer, snap.xmltv_url)
+    return redirect_response(snap.xmltv_url)
+
+  async def _handle_nonlive(self, request: web.Request) -> web.StreamResponse:
+    if not self._is_authorized(
+      request.match_info["user"], request.match_info["passwd"]
+    ):
+      return self._unauthorized()
+    return bytes_response(
+      b"Not found", "text/plain", status=HTTPStatus.NOT_FOUND
+    )
 
   async def _handle_stream_passthrough(
-    self,
-    *,
-    user: str,
-    passwd: str,
-    stream_key: int,
-    ext: str,
-    writer: asyncio.StreamWriter,
-  ) -> None:
-    if not self._is_authorized(user, passwd):
-      await self._send_bytes(
-        writer, HTTPStatus.UNAUTHORIZED, b"Unauthorized", "text/plain"
-      )
-      return
+    self, request: web.Request
+  ) -> web.StreamResponse:
+    info = request.match_info
+    if not self._is_authorized(info["user"], info["passwd"]):
+      return self._unauthorized()
 
+    stream_key = int(info["sid"])
     snap = self.store.get_snapshot()
     item = snap.stream_by_id.get(stream_key) or snap.stream_by_num.get(
       stream_key
     )
     if item is None or not item.upstream_url:
-      await self._send_bytes(
-        writer, HTTPStatus.NOT_FOUND, b"Stream not found", "text/plain"
+      return bytes_response(
+        b"Stream not found", "text/plain", status=HTTPStatus.NOT_FOUND
       )
-      return
 
-    target_url = _rewrite_stream_extension(item.upstream_url, ext)
+    target_url = _rewrite_stream_extension(
+      item.upstream_url, info["ext"].lstrip(".")
+    )
     logger.debug("Passthrough redirect stream %s -> upstream", stream_key)
-    await self._send_redirect(writer, target_url)
+    return redirect_response(target_url)
+
+  def _m3u_handler(self, default_type: str) -> _Handler:
+    async def _handler(request: web.Request) -> web.StreamResponse:
+      return await self._handle_get_m3u(request, default_type=default_type)
+
+    return _handler
 
   async def _handle_get_m3u(
-    self,
-    params: dict[str, list[str]],
-    headers: Mapping[str, str],
-    writer: asyncio.StreamWriter,
-    *,
-    method: str = "GET",
-    default_type: str = "m3u_plus",
-  ) -> None:
-    user = (params.get("username") or [""])[0]
-    passwd = (params.get("password") or [""])[0]
+    self, request: web.Request, *, default_type: str
+  ) -> web.StreamResponse:
+    params = await self._params(request)
+    user = params.get("username", "")
+    passwd = params.get("password", "")
     if not self._is_authorized(user, passwd):
-      await self._send_bytes(
-        writer, HTTPStatus.UNAUTHORIZED, b"Unauthorized", "text/plain"
-      )
-      return
+      return self._unauthorized()
 
     snap = self.store.get_snapshot()
-    raw_type = (params.get("type") or [default_type])[0].strip().lower()
+    raw_type = params.get("type", default_type).strip().lower()
     is_plus = raw_type in {
       "m3u_plus",
       "m3u8",
@@ -788,7 +727,7 @@ class XtreamPassthroughServer:
       "",
     }
 
-    raw_out = (params.get("output") or [""])[0].strip().lower()
+    raw_out = params.get("output", "").strip().lower()
     if not raw_out:
       raw_out = (
         "m3u8"
@@ -797,14 +736,14 @@ class XtreamPassthroughServer:
       )
     ext = "m3u8" if raw_out in {"hls", "m3u8"} else "ts"
 
-    raw_cats = (params.get("category_id") or [""])[0].strip()
+    raw_cats = params.get("category_id", "").strip()
     allowed_cats = (
       {c.strip() for c in raw_cats.split(",") if c.strip()}
       if raw_cats
       else set()
     )
 
-    adv_host, adv_port = self._resolve_advertised_host_port(headers)
+    adv_host, adv_port = self._resolve_advertised_host_port(request.headers)
     host_fmt = (
       f"[{adv_host}]"
       if ":" in adv_host and not adv_host.startswith("[")
@@ -847,20 +786,9 @@ class XtreamPassthroughServer:
         lines.append(f"#EXTINF:-1,{safe_name}")
       lines.append(stream_url)
 
-    payload = ("\n".join(lines) + "\n").encode("utf-8")
     filename = "playlist.m3u8" if is_plus else "playlist.m3u"
-    extra_headers = {
-      "Content-Disposition": f'attachment; filename="{filename}"'
-    }
-    await self._send_bytes(
-      writer,
-      HTTPStatus.OK,
-      b"" if method == "HEAD" else payload,
+    return bytes_response(
+      ("\n".join(lines) + "\n").encode("utf-8"),
       "audio/x-mpegurl; charset=utf-8",
-      content_length=len(payload),
-      extra_headers=extra_headers,
+      headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
-  _send_redirect = staticmethod(send_redirect)
-  _send_json = staticmethod(send_json)
-  _send_bytes = staticmethod(send_bytes)

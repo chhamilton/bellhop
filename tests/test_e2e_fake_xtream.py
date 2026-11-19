@@ -7,12 +7,13 @@ import json
 import time
 from pathlib import Path
 
-import httpx
+import aiohttp
 import pytest
 
 from bellhop.config import load_config
 from bellhop.runner import PipelineRunner, PipelineRunOptions
 from bellhop_web.epg_refresh import EpgRefreshConfig, EpgRefreshService
+from bellhop_web.http_utils import start_site
 from bellhop_web.server import WebGuideApp
 from bellhop_web.store import LineupGuideStore
 from tests.fake_xtream_server import (
@@ -20,6 +21,7 @@ from tests.fake_xtream_server import (
   FakeStreamDef,
   FakeXtreamServer,
 )
+from tests.http_mock import new_test_session
 
 
 def _write_mini_lineup(path: Path) -> None:
@@ -56,7 +58,7 @@ channels:
 
 
 async def _read_first_ts_chunk(
-  resp: httpx.Response,
+  resp: aiohttp.ClientResponse,
   *,
   min_bytes: int = 188,
   timeout: float = 5.0,
@@ -64,7 +66,7 @@ async def _read_first_ts_chunk(
   buf = bytearray()
 
   async def _collect() -> bytes:
-    async for chunk in resp.aiter_bytes():
+    async for chunk in resp.content.iter_any():
       buf.extend(chunk)
       if len(buf) >= min_bytes:
         return bytes(buf)
@@ -219,20 +221,23 @@ output:
     )
     app = WebGuideApp(store, settle_sec=0.05, epg_refresher=refresher)
     await app.startup()
-    web_server = await asyncio.start_server(
-      app.handle_connection, host="127.0.0.1", port=0
-    )
-    web_port = web_server.sockets[0].getsockname()[1]
+    web_runner, web_port = await start_site(app.build_app(), "127.0.0.1", 0)
     web_base = f"http://127.0.0.1:{web_port}"
 
     try:
-      async with httpx.AsyncClient(base_url=web_base, timeout=10.0) as client:
+      async with new_test_session(web_base, timeout=10.0) as client:
         # Wait for automatic passthrough EPG fetch & disk cache persistence
+        health: dict[str, object] = {}
         for _ in range(60):
-          health = (await client.get("/api/health")).json()
+          async with client.get("/api/health") as r_h:
+            health = await r_h.json()
+          epg_st = health.get("epg_status")
+          active_cnt = health.get("epg_active_program_count")
           if (
-            health["epg_status"]["state"] == "ok"
-            and health["epg_active_program_count"] > 0
+            isinstance(epg_st, dict)
+            and epg_st.get("state") == "ok"
+            and isinstance(active_cnt, int)
+            and active_cnt > 0
           ):
             break
           await asyncio.sleep(0.05)
@@ -243,33 +248,29 @@ output:
         )
         assert "e2e_secret_password" not in json.dumps(health)
 
-        lu = (await client.get("/api/lineup")).json()
+        async with client.get("/api/lineup") as r_lu:
+          lu = await r_lu.json()
         ch_1101 = next(c for c in lu["channels"] if c["chno"] == 1101)
         assert ch_1101["now_playing"]["title"] == "Le Téléjournal"
         assert "Montréal en direct" in ch_1101["now_playing"]["description"]
 
         # Stream Ch 1101 live, then switch to Ch 1108 without releasing first (tuner preemption!)
-        async with client.stream(
-          "GET", "/api/stream/1101.ts?client=viewer-1"
-        ) as s1:
-          assert s1.status_code == 200
+        async with client.get("/api/stream/1101.ts?client=viewer-1") as s1:
+          assert s1.status == 200
           data1 = await _read_first_ts_chunk(s1)
           assert data1[0] == 0x47 and data1[4] == 0xA1
 
-          async with client.stream(
-            "GET", "/api/stream/1108.ts?client=viewer-1"
-          ) as s2:
-            assert s2.status_code == 200
+          async with client.get("/api/stream/1108.ts?client=viewer-1") as s2:
+            assert s2.status == 200
             data2 = await _read_first_ts_chunk(s2)
             assert data2[0] == 0x47 and data2[4] == 0xB8
 
-        rel = await client.post("/api/tuner/release?client=viewer-1")
-        assert rel.status_code == 200
+        async with client.post("/api/tuner/release?client=viewer-1") as rel:
+          assert rel.status == 200
         assert fake.peak_concurrent_streams == 1
         assert fake.connection_limit_violations == 0
     finally:
-      web_server.close()
-      await web_server.wait_closed()
+      await web_runner.cleanup()
       await app.shutdown()
 
 
@@ -360,38 +361,33 @@ async def test_e2e_reload_channel_deep_link_race_placeholder_failover_and_hls(
     store = LineupGuideStore(xt_dir)
     app = WebGuideApp(store, settle_sec=0.05)
     await app.startup()
-    web_server = await asyncio.start_server(
-      app.handle_connection, host="127.0.0.1", port=0
-    )
-    web_port = web_server.sockets[0].getsockname()[1]
+    web_runner, web_port = await start_site(app.build_app(), "127.0.0.1", 0)
     web_base = f"http://127.0.0.1:{web_port}"
 
     try:
-      async with httpx.AsyncClient(base_url=web_base, timeout=10.0) as client:
+      async with new_test_session(web_base, timeout=10.0) as client:
         # 1. Reload race: tab-old is streaming Ch 1101 (failing over past /video/black.ts to #101),
         #    then reloaded tab-new opens /api/stream/1101.ts?client=tab-new,
         #    then tab-old's delayed pagehide beacon hits /api/tuner/release?client=tab-old!
-        async with client.stream(
-          "GET", "/api/stream/1101.ts?client=tab-old"
-        ) as old_stream:
-          assert old_stream.status_code == 200
-          old_chunk = await _read_first_ts_chunk(old_stream)
+        async with client.get("/api/stream/1101.ts?client=tab-old") as old_st:
+          assert old_st.status == 200
+          old_chunk = await _read_first_ts_chunk(old_st)
           assert (
             old_chunk[0] == 0x47 and old_chunk[4] == 0x55
           )  # rescued via fallback #101!
 
-          async with client.stream(
-            "GET", "/api/stream/1101.ts?client=tab-new"
-          ) as new_stream:
-            assert new_stream.status_code == 200
-            new_iter = new_stream.aiter_bytes()
+          async with client.get("/api/stream/1101.ts?client=tab-new") as new_st:
+            assert new_st.status == 200
+            new_iter = new_st.content.iter_any()
             new_chunk_1 = await asyncio.wait_for(anext(new_iter), timeout=5.0)
             assert new_chunk_1[0] == 0x47 and new_chunk_1[4] == 0x55
 
             # Delayed pagehide beacon from tab-old arrives AFTER tab-new acquired the tuner
-            stale_rel = await client.post("/api/tuner/release?client=tab-old")
-            assert stale_rel.status_code == 200
-            assert stale_rel.json()["released"] is False
+            async with client.post(
+              "/api/tuner/release?client=tab-old"
+            ) as stale_rel:
+              assert stale_rel.status == 200
+              assert (await stale_rel.json())["released"] is False
 
             # tab-new MUST keep receiving live chunks uninterrupted!
             new_chunk_2 = await asyncio.wait_for(anext(new_iter), timeout=5.0)
@@ -401,33 +397,34 @@ async def test_e2e_reload_channel_deep_link_race_placeholder_failover_and_hls(
             )
 
         # Releasing from tab-new closes the tuner cleanly
-        own_rel = await client.post("/api/tuner/release?client=tab-new")
-        assert own_rel.status_code == 200
+        async with client.post("/api/tuner/release?client=tab-new") as own_rel:
+          assert own_rel.status == 200
         await asyncio.sleep(0.05)
         assert fake.active_live_streams == 0
         assert fake.peak_concurrent_streams == 1
         assert fake.connection_limit_violations == 0
 
         # 2. HLS mode: 302 edge redirect + manifest rewrite + 60s edge session affinity
-        hls1 = await client.get("/api/hls/1108/index.m3u8?client=hls-tab")
-        assert hls1.status_code == 200
+        async with client.get("/api/hls/1108/index.m3u8?client=hls-tab") as h1:
+          assert h1.status == 200
+          hls1_text = await h1.text()
         seg_url = next(
           ln
-          for ln in hls1.text.splitlines()
+          for ln in hls1_text.splitlines()
           if ln.startswith("/api/hls/1108/asset?u=")
         )
-        seg_resp = await client.get(seg_url)
-        assert seg_resp.status_code == 200
-        assert seg_resp.content[0] == 0x47 and seg_resp.content[4] == 0x77
+        async with client.get(seg_url) as seg_resp:
+          assert seg_resp.status == 200
+          seg_bytes = await seg_resp.read()
+        assert seg_bytes[0] == 0x47 and seg_bytes[4] == 0x77
 
         # Second manifest refresh reuses cached /edge/tok1/108.m3u8 without minting tok2
-        hls2 = await client.get("/api/hls/1108/index.m3u8?client=hls-tab")
-        assert hls2.status_code == 200
+        async with client.get("/api/hls/1108/index.m3u8?client=hls-tab") as h2:
+          assert h2.status == 200
         assert fake.hls_manifest_requests == [
           "/edge/tok1/108.m3u8",
           "/edge/tok1/108.m3u8",
         ]
     finally:
-      web_server.close()
-      await web_server.wait_closed()
+      await web_runner.cleanup()
       await app.shutdown()

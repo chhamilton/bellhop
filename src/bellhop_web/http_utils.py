@@ -1,54 +1,95 @@
-"""Shared async HTTP/1.1 connection, request/response, and bind-address utilities."""
+"""Shared aiohttp server/client helpers and LAN bind-address utilities.
+
+Used by both `bellhop_web` (Web Guide) and `bellhop` (Xtream passthrough
+server, pipeline HTTP clients). Provides:
+
+  - Bind-address helpers: `detect_device_ip`, `resolve_bind_host`,
+    `build_access_urls`.
+  - Server helpers: `create_web_app` (CORS, OPTIONS preflight, JSON error
+    middleware, request size limit), `json_response`, `bytes_response`,
+    `redirect_response`, and `start_site` (returns the OS-bound port).
+  - Client helpers: `ClientSessionFactory` / `default_session_factory` for
+    dependency-injected `aiohttp.ClientSession` creation, `upstream_url` for
+    verbatim (non-requoted) upstream URLs, and `UPSTREAM_ERRORS`.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import socket
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping
 from http import HTTPStatus
-from typing import Any
-from urllib.parse import parse_qs, unquote, urlsplit
+from typing import Any, Protocol
+
+import aiohttp
+from aiohttp import web
+from yarl import URL
 
 __all__ = [
-  "HttpRequest",
-  "bound_server_port",
+  "DEFAULT_CLIENT_MAX_SIZE",
+  "UPSTREAM_ERRORS",
+  "ClientSessionFactory",
   "build_access_urls",
+  "bytes_response",
+  "create_web_app",
+  "default_session_factory",
   "detect_device_ip",
-  "read_http_request",
+  "json_response",
+  "redirect_response",
   "resolve_bind_host",
-  "send_bytes",
-  "send_json",
-  "send_redirect",
-  "serve_http_connection",
-  "write_chunk",
+  "start_site",
+  "upstream_url",
 ]
 
+logger = logging.getLogger("bellhop_web.http")
 
-def bound_server_port(server: asyncio.Server | None, fallback: int) -> int:
-  """Return the OS-assigned TCP port for a started `asyncio.Server`, or `fallback`."""
-  if server is not None and server.sockets:
-    sockname = server.sockets[0].getsockname()
-    if isinstance(sockname, tuple) and len(sockname) >= 2:
-      return int(sockname[1])
-  return fallback
+# Maximum accepted request body size (login forms & settings JSON are tiny).
+DEFAULT_CLIENT_MAX_SIZE = 256 * 1024
 
+# Exceptions raised by aiohttp client requests for network/HTTP failures.
+UPSTREAM_ERRORS: tuple[type[BaseException], ...] = (
+  aiohttp.ClientError,
+  asyncio.TimeoutError,
+)
 
-@dataclass(slots=True)
-class HttpRequest:
-  """Parsed HTTP/1.1 request head and bounded request body."""
-
-  method: str
-  raw_target: str
-  path: str
-  query: dict[str, list[str]]
-  headers: dict[str, str]
-  body: bytes
+_Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
+_MAX_BODY_KEY: web.AppKey[int] = web.AppKey("max_body_bytes", int)
 
 
+class ClientSessionFactory(Protocol):
+  """Callable creating an `aiohttp.ClientSession` (injectable for tests)."""
+
+  def __call__(
+    self,
+    *,
+    timeout: aiohttp.ClientTimeout,
+    headers: Mapping[str, str] | None = None,
+  ) -> aiohttp.ClientSession: ...
+
+
+def default_session_factory(
+  *,
+  timeout: aiohttp.ClientTimeout,
+  headers: Mapping[str, str] | None = None,
+) -> aiohttp.ClientSession:
+  """Create a production `aiohttp.ClientSession`."""
+  return aiohttp.ClientSession(timeout=timeout, headers=headers)
+
+
+def upstream_url(url: str) -> URL:
+  """Wrap an already-encoded upstream URL without re-quoting it.
+
+  Upstream panels and HLS edges frequently embed signed tokens whose exact
+  percent-encoding must be preserved byte-for-byte.
+  """
+  return URL(url, encoded=True)
+
+
+# -----------------------------------------------------------------------------
+# Bind-address & LAN URL helpers
+# -----------------------------------------------------------------------------
 def detect_device_ip() -> str | None:
   """Return the device's primary non-loopback IPv4 address, if available."""
   for target in (("10.255.255.255", 1), ("192.0.2.1", 80), ("8.8.8.8", 80)):
@@ -118,181 +159,137 @@ def build_access_urls(
   return [f"{protocol}://{formatted}:{port}"]
 
 
-async def read_http_request(
-  reader: asyncio.StreamReader,
+# -----------------------------------------------------------------------------
+# Response helpers
+# -----------------------------------------------------------------------------
+def _with_headers(
+  base: dict[str, str], extra: Mapping[str, str] | None
+) -> dict[str, str]:
+  if extra:
+    base.update(extra)
+  return base
+
+
+def json_response(
+  payload: Any,
+  status: int = HTTPStatus.OK,
   *,
-  max_body_bytes: int = 65536,
-  merge_form_query: bool = False,
-) -> HttpRequest | None:
-  """Read and parse a single HTTP/1.1 request from `reader` (`None` on clean EOF)."""
-  req_line_bytes = await asyncio.wait_for(reader.readline(), timeout=15.0)
-  if not req_line_bytes:
-    return None
-  parts = req_line_bytes.decode("latin-1", errors="replace").strip().split(" ")
-  if len(parts) < 2:
-    raise ValueError("Malformed HTTP request line")
-  method, raw_target = parts[0].upper(), parts[1]
-
-  headers: dict[str, str] = {}
-  while True:
-    hline = await asyncio.wait_for(reader.readline(), timeout=10.0)
-    if not hline or hline in (b"\r\n", b"\n"):
-      break
-    decoded = hline.decode("latin-1", errors="replace").strip()
-    if ":" in decoded:
-      k, v = decoded.split(":", 1)
-      headers[k.strip().lower()] = v.strip()
-
-  body = b""
-  content_len = int(headers.get("content-length", "0") or "0")
-  if content_len > 0:
-    body = await asyncio.wait_for(
-      reader.readexactly(min(content_len, max_body_bytes)),
-      timeout=5.0,
-    )
-
-  parsed = urlsplit(raw_target)
-  path = unquote(parsed.path)
-  query = parse_qs(parsed.query)
-  if merge_form_query and method == "POST" and body:
-    ctype = (headers.get("content-type") or "").lower()
-    if "application/x-www-form-urlencoded" in ctype or (
-      "application/json" not in ctype and b"=" in body
-    ):
-      for k, vals in parse_qs(body.decode("utf-8", errors="replace")).items():
-        query.setdefault(k, vals)
-
-  return HttpRequest(
-    method=method,
-    raw_target=raw_target,
-    path=path,
-    query=query,
-    headers=headers,
-    body=body,
+  headers: Mapping[str, str] | None = None,
+) -> web.Response:
+  """Serialize `payload` as UTF-8 JSON (non-ASCII preserved, never cached)."""
+  return web.Response(
+    body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+    status=int(status),
+    content_type="application/json",
+    charset="utf-8",
+    headers=_with_headers({"Cache-Control": "no-store"}, headers),
   )
 
 
-async def send_bytes(
-  writer: asyncio.StreamWriter,
-  status: HTTPStatus,
+def bytes_response(
   body: bytes,
   content_type: str,
   *,
-  content_length: int | None = None,
+  status: int = HTTPStatus.OK,
   cache_control: str = "no-store",
-  extra_headers: dict[str, str] | None = None,
-) -> None:
-  """Write a complete HTTP/1.1 response with `Content-Length`."""
-  clen = len(body) if content_length is None else content_length
-  hdr_lines = [
-    f"HTTP/1.1 {status.value} {status.phrase}",
-    f"Content-Type: {content_type}",
-    f"Content-Length: {clen}",
-    f"Cache-Control: {cache_control}",
-    "Access-Control-Allow-Origin: *",
-    "Access-Control-Allow-Methods: GET, POST, PUT, HEAD, OPTIONS",
-    "Connection: close",
-  ]
-  if extra_headers:
-    for k, v in extra_headers.items():
-      hdr_lines.append(f"{k}: {v}")
-  writer.write(("\r\n".join(hdr_lines) + "\r\n\r\n").encode("latin-1"))
-  if body:
-    writer.write(body)
-  await writer.drain()
-
-
-async def send_json(
-  writer: asyncio.StreamWriter,
-  status: HTTPStatus,
-  payload: Any,
-  *,
-  extra_headers: dict[str, str] | None = None,
-) -> None:
-  """Serialize `payload` as UTF-8 JSON and write an HTTP/1.1 response."""
-  raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-  await send_bytes(
-    writer,
-    status,
-    raw,
-    "application/json; charset=utf-8",
-    extra_headers=extra_headers,
+  headers: Mapping[str, str] | None = None,
+) -> web.Response:
+  """Return a complete response with an explicit `Content-Type` header."""
+  return web.Response(
+    body=body,
+    status=int(status),
+    headers=_with_headers(
+      {"Content-Type": content_type, "Cache-Control": cache_control}, headers
+    ),
   )
 
 
-async def send_redirect(
-  writer: asyncio.StreamWriter,
+def redirect_response(
   location: str,
   *,
-  status: HTTPStatus = HTTPStatus.FOUND,
-  extra_headers: dict[str, str] | None = None,
-) -> None:
-  """Write an HTTP 302 redirect response."""
-  hdr_lines = [
-    f"HTTP/1.1 {status.value} {status.phrase}",
-    f"Location: {location}",
-    "Cache-Control: no-store",
-    "Access-Control-Allow-Origin: *",
-    "Content-Length: 0",
-    "Connection: close",
-  ]
-  if extra_headers:
-    for k, v in extra_headers.items():
-      hdr_lines.append(f"{k}: {v}")
-  writer.write(("\r\n".join(hdr_lines) + "\r\n\r\n").encode("latin-1"))
-  await writer.drain()
+  status: int = HTTPStatus.FOUND,
+  headers: Mapping[str, str] | None = None,
+) -> web.Response:
+  """Return an HTTP redirect (default `302 Found`) to `location`."""
+  return web.Response(
+    status=int(status),
+    headers=_with_headers(
+      {"Location": location, "Cache-Control": "no-store"}, headers
+    ),
+  )
 
 
-async def write_chunk(writer: asyncio.StreamWriter, data: bytes) -> None:
-  """Write a single HTTP/1.1 `Transfer-Encoding: chunked` frame."""
-  if not data:
-    return
-  writer.write(f"{len(data):X}\r\n".encode("ascii"))
-  writer.write(data)
-  writer.write(b"\r\n")
-  await writer.drain()
-
-
-async def serve_http_connection(
-  reader: asyncio.StreamReader,
-  writer: asyncio.StreamWriter,
-  handler: Callable[[HttpRequest, asyncio.StreamWriter], Awaitable[None]],
-  *,
-  logger: logging.Logger,
-  merge_form_query: bool = False,
-) -> None:
-  """Handle one HTTP/1.1 socket lifecycle, CORS preflight, error trapping, and teardown."""
+# -----------------------------------------------------------------------------
+# Application factory & site startup
+# -----------------------------------------------------------------------------
+@web.middleware
+async def _preflight_and_error_middleware(
+  request: web.Request, handler: _Handler
+) -> web.StreamResponse:
+  """Answer CORS preflights and convert errors into JSON responses."""
+  if request.method == "OPTIONS":
+    return web.Response(status=HTTPStatus.NO_CONTENT)
+  max_bytes = request.app.get(_MAX_BODY_KEY, DEFAULT_CLIENT_MAX_SIZE)
+  if request.content_length is not None and request.content_length > max_bytes:
+    return json_response(
+      {"error": "Request Entity Too Large"},
+      status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+      headers={"Connection": "close"},
+    )
   try:
-    try:
-      req = await read_http_request(reader, merge_form_query=merge_form_query)
-    except ValueError:
-      await send_json(writer, HTTPStatus.BAD_REQUEST, {"error": "Bad request"})
-      return
-    if req is None:
-      return
-    if req.method == "OPTIONS":
-      await send_bytes(writer, HTTPStatus.NO_CONTENT, b"", "text/plain")
-      return
-    await handler(req, writer)
-  except (
-    asyncio.TimeoutError,
-    asyncio.IncompleteReadError,
-    ConnectionResetError,
-    BrokenPipeError,
-  ):
-    pass
+    return await handler(request)
+  except web.HTTPException as exc:
+    if exc.status < 400:
+      raise
+    message = (
+      f"Not found: {request.path}"
+      if exc.status == HTTPStatus.NOT_FOUND
+      else exc.reason
+    )
+    return json_response({"error": message}, status=exc.status)
   except asyncio.CancelledError:
     raise
   except Exception as exc:
-    logger.exception("Unhandled HTTP server error: %s", exc)
-    with contextlib.suppress(Exception):
-      await send_json(
-        writer, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
-      )
-  finally:
-    try:
-      if not writer.is_closing():
-        writer.close()
-        await writer.wait_closed()
-    except Exception:
-      pass
+    logger.exception("Unhandled HTTP server error on %s: %s", request.path, exc)
+    return json_response(
+      {"error": "Internal server error"},
+      status=HTTPStatus.INTERNAL_SERVER_ERROR,
+    )
+
+
+async def _add_cors_headers(
+  _request: web.Request, response: web.StreamResponse
+) -> None:
+  response.headers.setdefault("Access-Control-Allow-Origin", "*")
+  response.headers.setdefault(
+    "Access-Control-Allow-Methods", "GET, POST, PUT, HEAD, OPTIONS"
+  )
+
+
+def create_web_app(
+  *, client_max_size: int = DEFAULT_CLIENT_MAX_SIZE
+) -> web.Application:
+  """Create an `aiohttp` application with Bellhop's shared middleware."""
+  app = web.Application(
+    client_max_size=client_max_size,
+    middlewares=[_preflight_and_error_middleware],
+  )
+  app[_MAX_BODY_KEY] = client_max_size
+  app.on_response_prepare.append(_add_cors_headers)
+  return app
+
+
+async def start_site(
+  app: web.Application, host: str, port: int
+) -> tuple[web.AppRunner, int]:
+  """Start serving `app` on `host:port`, returning the runner and bound port."""
+  runner = web.AppRunner(app, access_log=None, handle_signals=False)
+  await runner.setup()
+  site = web.TCPSite(runner, host=host, port=port)
+  await site.start()
+  bound = port
+  for addr in runner.addresses:
+    if isinstance(addr, tuple) and len(addr) >= 2:
+      bound = int(addr[1])
+      break
+  return runner, bound

@@ -6,8 +6,8 @@ import gzip
 import json
 from pathlib import Path
 
-import httpx
 import pytest
+from aiohttp import web
 
 from bellhop.cli import main as cli_main
 from bellhop.config import (
@@ -25,6 +25,7 @@ from bellhop.mapping_state import (
 from bellhop.models import LineupChannel, XtreamAccountInfo, XtreamStream
 from bellhop.xtream import XtreamCatalog, load_catalog_from_json
 from bellhop.xtream_exporter import export_xtream_playlist_and_guide
+from tests.http_mock import MockHttpServer
 
 SAMPLE_XMLTV = """\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -114,15 +115,15 @@ async def test_phase6_xtream_export_collapsed_hd_and_passthrough_epg(
   gzipped_body = gzip.compress(SAMPLE_XMLTV.encode("utf-8"))
   probed_urls: list[str] = []
 
-  def mock_epg(req: httpx.Request) -> httpx.Response:
+  def mock_epg(req: web.Request) -> web.Response:
     probed_urls.append(str(req.url))
-    assert req.url.path == "/xmltv.php"
-    assert req.url.params.get("username") == "sub_user"
-    assert req.url.params.get("password") == "secret_pw"
-    return httpx.Response(
-      200,
-      headers={"content-type": "application/gzip"},
-      content=gzipped_body,
+    assert req.path == "/xmltv.php"
+    assert req.query.get("username") == "sub_user"
+    assert req.query.get("password") == "secret_pw"
+    return web.Response(
+      status=200,
+      headers={"Content-Type": "application/gzip"},
+      body=gzipped_body,
     )
 
   cfg = AppConfig(
@@ -145,9 +146,7 @@ async def test_phase6_xtream_export_collapsed_hd_and_passthrough_epg(
   doc = reconcile_rough_mapping(None, lineup, catalog, cfg)
   mappings = mapping_document_to_mapped_channels(doc, lineup)
 
-  async with httpx.AsyncClient(
-    transport=httpx.MockTransport(mock_epg)
-  ) as client:
+  async with MockHttpServer(mock_epg) as mock, mock.new_session() as client:
     res = await export_xtream_playlist_and_guide(
       lineup,
       mappings,

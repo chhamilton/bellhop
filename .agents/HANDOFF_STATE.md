@@ -9,6 +9,7 @@ Last updated: `2026-11-19`
 - **Coding Style, Strict Typing & Tests:**
   - **Python:** Google Python Style Guide (2-space indentation, spaces only / zero tabs, 80-char wrapping via `ruff`), `mypy --strict` (`0` issues across all files, `0` `# type: ignore` comments).
   - **Frontend:** Strictly typed TypeScript (`src/bellhop_web/frontend/{types.d.ts,prefs.ts,app.ts}`, `strict: true` + `noUncheckedIndexedAccess: true`) compiled to `src/bellhop_web/static/{prefs.js,app.js}` via `tsc`, with Node unit tests (`tests/frontend/prefs.test.mjs`).
+  - **HTTP Stack (`aiohttp`):** Unified across both server (`aiohttp.web` in `http_utils.py`, `server.py`, `xtream_server.py`, `serve.py`) and client (`aiohttp.ClientSession` across `xtream.py`, `validator.py`, `epg_loader.py`, `epg_refresh.py`, `tvguide.py`, `schedules_direct.py`, `server.py`), replacing both `httpx` and the earlier custom `asyncio.StreamReader` HTTP parser.
   - **Docker Packaging:** Multi-stage Alpine `Dockerfile` (`node:22-alpine` → `python:3.13-alpine`), `docker/entrypoint.sh` (`TZ`, `PUID`/`PGID`, auto-seeding `/config/config.yaml`), `docker/config.docker.yaml`, `.env.example`, `docker-compose.example.yml`, and `tests/test_docker_e2e.py`.
   - **Test Suite:** `pytest -v` enforces Python unit/integration/E2E tests, `mypy --strict`, `ruff check/format`, tab-free sources, `tsc --noEmit` + compiled asset sync, Node frontend unit tests, and Docker entrypoint/container E2E tests.
 - **Curated Bell Fibe Montréal Lineup (`data/lineups/bell_fibe_montreal.yaml`):**

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import datetime, timezone
 from typing import Any
 
-import httpx
+import aiohttp
 
 from bellhop.lineup_loader import CableLineup
 from bellhop.providers.base import (
@@ -90,7 +91,7 @@ class TvGuideLineupProvider(LineupProvider):
     *,
     base_url: str = DEFAULT_TVGUIDE_BASE_URL,
     timeout_sec: float = 25.0,
-    client: httpx.AsyncClient | None = None,
+    client: aiohttp.ClientSession | None = None,
   ) -> None:
     self.base_url = base_url.rstrip("/")
     self.timeout_sec = timeout_sec
@@ -107,29 +108,28 @@ class TvGuideLineupProvider(LineupProvider):
   async def _get_json(self, path: str) -> dict[str, Any]:
     url = f"{self.base_url}/{path.lstrip('/')}"
     owns = self._external_client is None
-    client = self._external_client or httpx.AsyncClient(
+    client = self._external_client or aiohttp.ClientSession(
       headers=TVGUIDE_HEADERS,
-      timeout=httpx.Timeout(self.timeout_sec),
-      follow_redirects=True,
+      timeout=aiohttp.ClientTimeout(total=self.timeout_sec),
     )
     try:
-      resp = await client.get(url)
-      if resp.status_code == 404:
-        raise LineupBackendError(
-          f"TV Guide resource not found (HTTP 404): {url}"
-        )
-      resp.raise_for_status()
-      data = resp.json()
+      async with client.get(url) as resp:
+        if resp.status == 404:
+          raise LineupBackendError(
+            f"TV Guide resource not found (HTTP 404): {url}"
+          )
+        resp.raise_for_status()
+        data = await resp.json(content_type=None)
       if not isinstance(data, dict):
         raise LineupBackendError(f"Unexpected non-object JSON from {url}")
       return data
-    except httpx.HTTPError as exc:
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
       raise LineupBackendError(
         f"TV Guide API request failed ({url}): {exc}"
       ) from exc
     finally:
       if owns:
-        await client.aclose()
+        await client.close()
 
   async def discover_lineups(
     self,

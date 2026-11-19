@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import httpx
 import pytest
+from aiohttp import web
 
 from bellhop.catalog_fetcher import (
   compute_catalog_diff,
@@ -36,6 +36,7 @@ from bellhop.models import LineupChannel, XtreamAccountInfo, XtreamStream
 from bellhop.playlist import render_m3u8
 from bellhop.validator import StreamValidator
 from bellhop.xtream import XtreamCatalog
+from tests.http_mock import MockHttpServer
 
 
 def _ts_payload(packets: int = 50) -> bytes:
@@ -142,35 +143,33 @@ async def test_daily_iptv_fetcher_cadence_and_diff(tmp_path: Path) -> None:
 
   calls = {"n": 0}
 
-  def api_handler(request: httpx.Request) -> httpx.Response:
+  def api_handler(request: web.Request) -> web.Response:
     calls["n"] += 1
-    action = request.url.params.get("action")
+    action = request.query.get("action")
     if action is None:
-      return httpx.Response(
-        200,
-        json={
+      return web.json_response(
+        {
           "user_info": {
             "username": "u",
             "auth": 1,
             "status": "Active",
             "max_connections": "1",
           }
-        },
+        }
       )
     if action == "get_live_categories":
-      return httpx.Response(
-        200, json=[{"category_id": "1", "category_name": "CA| FR"}]
+      return web.json_response(
+        [{"category_id": "1", "category_name": "CA| FR"}]
       )
-    return httpx.Response(
-      200,
-      json=[
+    return web.json_response(
+      [
         {
           "stream_id": 10,
           "name": "CA FR: RDS HD",
           "category_id": "1",
           "epg_channel_id": "RDS.ca",
         }
-      ],
+      ]
     )
 
   cfg = AppConfig(
@@ -184,9 +183,7 @@ async def test_daily_iptv_fetcher_cadence_and_diff(tmp_path: Path) -> None:
     state=StateConfig(state_dir=Path("state")),
   )
 
-  async with httpx.AsyncClient(
-    transport=httpx.MockTransport(api_handler)
-  ) as client:
+  async with MockHttpServer(api_handler) as mock, mock.new_session() as client:
     r1 = await fetch_daily_iptv_catalog(cfg, client=client)
     assert not r1.from_cache
     assert r1.streams_with_native_epg == 1
@@ -494,47 +491,48 @@ async def test_candidate_only_validation_and_native_epg_m3u8(
   probed_urls: list[str] = []
   ts_data = _ts_payload(40)
 
-  def mock_stream(req: httpx.Request) -> httpx.Response:
+  def mock_stream(req: web.Request) -> web.Response:
     probed_urls.append(str(req.url))
-    if req.url.path.endswith("/901.ts"):
-      return httpx.Response(503, text="Offline")
-    if req.url.path.endswith("/902.ts"):
-      return httpx.Response(
-        200, headers={"Content-Type": "video/mp2t"}, content=ts_data
+    if req.path.endswith("/901.ts"):
+      return web.Response(status=503, text="Offline")
+    if req.path.endswith("/902.ts"):
+      return web.Response(
+        status=200, headers={"Content-Type": "video/mp2t"}, body=ts_data
       )
-    return httpx.Response(404)
+    return web.Response(status=404)
 
-  validator = StreamValidator(
-    cfg,
-    catalog.account,
-    transport=httpx.MockTransport(mock_stream),
-  )
-  count = await validate_mapping_candidates(
-    doc, lineup, cfg, catalog.account, validator=validator
-  )
-  assert count == 2
-  assert len(probed_urls) == 2
-  assert doc.slots[1101].preferred_stream_id == 902
-  assert doc.slots[1101].preferred_source == "validated"
+  async with MockHttpServer(mock_stream) as mock:
+    validator = StreamValidator(
+      cfg,
+      catalog.account,
+      session_factory=mock.session_factory,
+    )
+    count = await validate_mapping_candidates(
+      doc, lineup, cfg, catalog.account, validator=validator
+    )
+    assert count == 2
+    assert len(probed_urls) == 2
+    assert doc.slots[1101].preferred_stream_id == 902
+    assert doc.slots[1101].preferred_source == "validated"
 
-  # Re-reconcile on next day with no changes + run validate_mapping_candidates(only_changed=True):
-  # should perform ZERO probes because 1101 is validated & unchanged!
-  doc_day2 = reconcile_rough_mapping(doc, lineup, catalog, cfg)
-  validator2 = StreamValidator(
-    cfg,
-    catalog.account,
-    transport=httpx.MockTransport(mock_stream),
-  )
-  count2 = await validate_mapping_candidates(
-    doc_day2,
-    lineup,
-    cfg,
-    catalog.account,
-    only_changed=True,
-    validator=validator2,
-  )
-  assert count2 == 0
-  assert len(probed_urls) == 2
+    # Re-reconcile on next day with no changes + run validate_mapping_candidates(only_changed=True):
+    # should perform ZERO probes because 1101 is validated & unchanged!
+    doc_day2 = reconcile_rough_mapping(doc, lineup, catalog, cfg)
+    validator2 = StreamValidator(
+      cfg,
+      catalog.account,
+      session_factory=mock.session_factory,
+    )
+    count2 = await validate_mapping_candidates(
+      doc_day2,
+      lineup,
+      cfg,
+      catalog.account,
+      only_changed=True,
+      validator=validator2,
+    )
+    assert count2 == 0
+    assert len(probed_urls) == 2
 
   # Phase (5): M3U8 uses provider's native epg_channel_id ("ICITeleMontreal.ca") so xmltv.php binds!
   mapped_list = mapping_document_to_mapped_channels(doc_day2, lineup)

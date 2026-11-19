@@ -66,7 +66,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 from urllib.parse import urlparse
 
-import httpx
+import aiohttp
 
 from bellhop.config import AppConfig
 from bellhop.epg_loader import (
@@ -531,7 +531,7 @@ async def export_xtream_playlist_and_guide(
   account: XtreamAccountInfo | None = None,
   output_dir: Path | None = None,
   verify_epg: bool | None = None,
-  client: httpx.AsyncClient | None = None,
+  client: aiohttp.ClientSession | None = None,
 ) -> XtreamExportResult:
   """Phase (6): Verify upstream XMLTV passthrough and export Xtream API JSON playlists."""
   dest_dir = config.resolve_path(output_dir or config.output.xtream_dir)

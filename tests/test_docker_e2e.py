@@ -24,16 +24,17 @@ import time
 from pathlib import Path
 from typing import Any
 
-import httpx
 import pytest
 import yaml
 
 from bellhop.config import load_config
+from bellhop_web.http_utils import UPSTREAM_ERRORS
 from tests.fake_xtream_server import (
   FakeProgram,
   FakeStreamDef,
   FakeXtreamServer,
 )
+from tests.http_mock import TestHttpClient
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -309,7 +310,7 @@ channels:
     )
 
     base_url = f"http://127.0.0.1:{port}"
-    async with httpx.AsyncClient(
+    async with TestHttpClient(
       base_url=base_url, follow_redirects=False, timeout=5.0
     ) as client:
       # Poll the exact Docker HEALTHCHECK endpoint until ready.
@@ -323,7 +324,7 @@ channels:
             assert data["authenticated"] is False
             ready = True
             break
-        except httpx.HTTPError:
+        except UPSTREAM_ERRORS:
           await asyncio.sleep(0.1)
       assert ready, "bellhop serve did not become healthy in time"
 
@@ -512,7 +513,7 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
     )
     assert start.returncode == 0, f"Container start failed:\n{start.stderr}"
 
-    async with httpx.AsyncClient(
+    async with TestHttpClient(
       base_url=f"http://127.0.0.1:{host_port}",
       follow_redirects=False,
       timeout=10.0,
@@ -525,7 +526,7 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
           if r.status_code == 200 and r.json()["auth_required"] is True:
             ready = True
             break
-        except httpx.HTTPError:
+        except UPSTREAM_ERRORS:
           await asyncio.sleep(0.25)
       if not ready:
         logs = subprocess.run(
