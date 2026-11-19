@@ -6,9 +6,9 @@
 FROM node:22-alpine AS frontend-builder
 
 WORKDIR /build
-COPY package.json tsconfig.json ./
+COPY package.json package-lock.json tsconfig.json ./
 COPY src/bellhop_web/frontend ./src/bellhop_web/frontend
-RUN npm install --no-audit --no-fund \
+RUN npm ci --no-audit --no-fund \
   && npx tsc --noEmit \
   && npx tsc
 
@@ -17,26 +17,29 @@ RUN npm install --no-audit --no-fund \
 # -----------------------------------------------------------------------------
 FROM python:3.13-alpine AS runtime
 
+ARG INSTALL_FFMPEG=1
+
 LABEL org.opencontainers.image.title="Bellhop" \
       org.opencontainers.image.description="Declarative IPTV lineup pipeline, Web TV Guide & single-tuner player, and passthrough Xtream Codes API server"
 
 # Install timezone database (for TZ), privilege drop helper (PUID/PGID),
-# CA certificates, and ffmpeg/ffprobe for optional Phase (4) codec validation.
+# CA certificates, and optional ffmpeg/ffprobe (`--build-arg INSTALL_FFMPEG=0` skips it).
 RUN apk add --no-cache \
       ca-certificates \
-      ffmpeg \
       su-exec \
-      tzdata
+      tzdata \
+  && if [ "${INSTALL_FFMPEG}" = "1" ]; then apk add --no-cache ffmpeg; fi
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml requirements.lock README.md ./
 COPY src ./src
 COPY data ./data
 COPY docker ./docker
 COPY --from=frontend-builder /build/src/bellhop_web/static/*.js ./src/bellhop_web/static/
 
-RUN pip install --no-cache-dir . \
+RUN pip install --no-cache-dir -r requirements.lock \
+  && pip install --no-cache-dir --no-deps . \
   && mkdir -p /usr/local/libexec /config /data/state /data/cache /data/output/xtream \
   && mv /usr/local/bin/bellhop /usr/local/libexec/bellhop \
   && cp /app/docker/bellhop-shim.sh /usr/local/bin/bellhop \

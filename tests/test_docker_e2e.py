@@ -68,6 +68,11 @@ def test_dockerfile_compose_and_env_contract(
   dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
   assert "FROM node:22-alpine AS frontend-builder" in dockerfile
   assert "FROM python:3.13-alpine AS runtime" in dockerfile
+  assert "COPY package.json package-lock.json tsconfig.json ./" in dockerfile
+  assert "npm ci --no-audit --no-fund" in dockerfile
+  assert "ARG INSTALL_FFMPEG=1" in dockerfile
+  assert "pip install --no-cache-dir -r requirements.lock" in dockerfile
+  assert "pip install --no-cache-dir --no-deps ." in dockerfile
   for pkg in ("tzdata", "su-exec", "ffmpeg", "ca-certificates"):
     assert pkg in dockerfile
   for mount in ("/config", "/data/state", "/data/cache", "/data/output"):
@@ -169,6 +174,71 @@ def test_dockerfile_compose_and_env_contract(
   assert str(cfg.state.state_dir) == "/data/state"
   assert str(cfg.xtream.cache_dir) == "/data/cache"
   assert str(cfg.output.xtream_dir) == "/data/output/xtream"
+
+
+def test_requirements_lock_and_vendored_player_provenance() -> None:
+  """Verify pinned `requirements.lock` and `static/vendor/VERSIONS.md` digests."""
+  import hashlib
+  import importlib.metadata as md
+  import re
+
+  lock_path = REPO_ROOT / "requirements.lock"
+  assert lock_path.is_file()
+  locked: dict[str, str] = {}
+  for raw_line in lock_path.read_text(encoding="utf-8").splitlines():
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+      continue
+    spec_part = line.split(";", 1)[0].strip()
+    assert "==" in spec_part, f"Unpinned entry in requirements.lock: {line}"
+    pkg_name, pkg_ver = spec_part.split("==", 1)
+    norm_name = re.sub(r"[-_.]+", "-", pkg_name.strip()).lower()
+    locked[norm_name] = pkg_ver.strip()
+    # If marker applies to the running interpreter, verify .venv matches lockfile.
+    if ";" not in line or (sys.version_info < (3, 11)):
+      installed_ver = md.version(pkg_name.strip())
+      assert installed_ver == pkg_ver.strip(), (
+        f"requirements.lock pins {pkg_name}=={pkg_ver}, "
+        f"but .venv has {installed_ver}"
+      )
+
+  for required_pkg in (
+    "aiohttp",
+    "pyyaml",
+    "python-dotenv",
+    "rich",
+    "ruamel-yaml",
+  ):
+    assert required_pkg in locked, (
+      f"Missing top-level runtime dependency {required_pkg} in requirements.lock"
+    )
+
+  vendor_dir = REPO_ROOT / "src" / "bellhop_web" / "static" / "vendor"
+  versions_md = (vendor_dir / "VERSIONS.md").read_text(encoding="utf-8")
+  assert "Apache-2.0" in versions_md
+
+  rows = re.findall(
+    r"^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*([^|]+?)\s*\|"
+    r"\s*([^|]+?)\s*\|\s*`(\d+)`\s*\|\s*`([0-9a-f]{64})`\s*\|$",
+    versions_md,
+    re.MULTILINE,
+  )
+  by_file = {
+    fname: (ver, int(size_s), sha)
+    for fname, _lib, ver, _lic, _url, size_s, sha in rows
+  }
+  assert set(by_file) == {"mpegts.js", "hls.min.js"}
+
+  for fname, (ver, expected_bytes, expected_sha) in by_file.items():
+    raw_bytes = (vendor_dir / fname).read_bytes()
+    actual_sha = hashlib.sha256(raw_bytes).hexdigest()
+    assert len(raw_bytes) == expected_bytes, (
+      f"{fname} byte size mismatch: expected {expected_bytes}, got {len(raw_bytes)}"
+    )
+    assert actual_sha == expected_sha, (
+      f"{fname} SHA-256 mismatch: expected {expected_sha}, got {actual_sha}"
+    )
+    assert ver in raw_bytes.decode("utf-8", errors="replace")
 
 
 @pytest.mark.asyncio

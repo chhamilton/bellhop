@@ -17,7 +17,11 @@ echo "==> Installing editable package (bellhop) + dev dependencies (mypy, ruff, 
 
 if [[ -f "package.json" && -x ".venv/bin/npm" ]]; then
   echo "==> Installing TypeScript frontend toolchain..."
-  PATH="$ROOT_DIR/.venv/bin:$PATH" .venv/bin/npm install --no-audit --no-fund
+  if [[ -f "package-lock.json" ]]; then
+    PATH="$ROOT_DIR/.venv/bin:$PATH" .venv/bin/npm ci --no-audit --no-fund
+  else
+    PATH="$ROOT_DIR/.venv/bin:$PATH" .venv/bin/npm install --no-audit --no-fund
+  fi
   .venv/bin/node ./node_modules/typescript/bin/tsc --noEmit
   .venv/bin/node ./node_modules/typescript/bin/tsc
 fi
