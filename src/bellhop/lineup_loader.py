@@ -12,6 +12,17 @@ import yaml
 from bellhop.models import LineupChannel
 
 DEFAULT_BELL_FIBE_MTL_LINEUP_ID = "CAN-BELLFIBE-MTL-X"
+BELL_FIBE_MTL_TVGUIDE_ID = "TVG-9100000607"
+
+
+def is_bell_fibe_lineup(*, lineup_id: str = "", provider: str = "") -> bool:
+  """Return True when the lineup uses Bell Fibe dial numbering for logo lookup."""
+  lid = lineup_id.strip().upper()
+  prov = provider.strip().lower()
+  return (
+    lid in {DEFAULT_BELL_FIBE_MTL_LINEUP_ID, BELL_FIBE_MTL_TVGUIDE_ID}
+    or "bell fibe" in prov
+  )
 
 
 def _load_official_logo_index(base_dir: Path | None = None) -> dict[int, str]:
@@ -73,11 +84,20 @@ class CableLineup:
     official_logos: dict[int, str] | None = None,
   ) -> CableLineup:
     excluded = excluded_channels or set()
-    logos = (
-      official_logos
-      if official_logos is not None
-      else _load_official_logo_index()
-    )
+    resolved_id = str(data.get("lineup_id") or DEFAULT_BELL_FIBE_MTL_LINEUP_ID)
+    resolved_provider = str(data.get("provider", "Cable Provider"))
+    if official_logos is not None:
+      logos = (
+        official_logos
+        if is_bell_fibe_lineup(
+          lineup_id=resolved_id, provider=resolved_provider
+        )
+        else {}
+      )
+    elif is_bell_fibe_lineup(lineup_id=resolved_id, provider=resolved_provider):
+      logos = _load_official_logo_index()
+    else:
+      logos = {}
     channels: list[LineupChannel] = []
     for entry in data.get("channels", []):
       ch = LineupChannel.from_dict(entry)
@@ -90,8 +110,8 @@ class CableLineup:
       channels.append(ch)
     channels.sort(key=lambda c: c.chno)
     return cls(
-      lineup_id=str(data.get("lineup_id") or DEFAULT_BELL_FIBE_MTL_LINEUP_ID),
-      provider=str(data.get("provider", "Cable Provider")),
+      lineup_id=resolved_id,
+      provider=resolved_provider,
       market=str(data.get("market", "")),
       postal_prefix=str(data.get("postal_prefix", "")),
       retrieved_at=str(data.get("retrieved_at", "")),

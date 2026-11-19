@@ -287,14 +287,17 @@ class TvGuideLineupProvider(LineupProvider):
         )
       )
 
+    canonical_id = f"TVG-{provider_id}"
     channels = normalize_provider_slots(
       raw_slots,
       postal_code=postal_code,
+      market=market,
+      provider_name=provider_name,
+      lineup_id=canonical_id,
       excluded_channels=excluded_channels,
       pair_sd_hd=True,
     )
 
-    canonical_id = f"TVG-{provider_id}"
     postal_prefix = (
       postal_code.strip()[:3].upper()
       if postal_code.strip()

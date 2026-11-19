@@ -421,15 +421,19 @@ class SchedulesDirectLineupProvider(LineupProvider):
         )
       )
 
+    provider_label = str(meta.get("lineup") or canonical_id).strip()
+    transport = str(meta.get("transport") or "Cable").strip()
+    sd_location = str(meta.get("location") or "").strip()
     channels = normalize_provider_slots(
       raw_slots,
       postal_code=postal_code,
+      market=sd_location,
+      provider_name=provider_label,
+      lineup_id=canonical_id,
       excluded_channels=excluded_channels,
       pair_sd_hd=True,
     )
 
-    provider_label = str(meta.get("lineup") or canonical_id).strip()
-    transport = str(meta.get("transport") or "Cable").strip()
     postal_prefix = (
       postal_code.strip()[:3].upper() if postal_code.strip() else ""
     )
