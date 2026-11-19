@@ -20,7 +20,8 @@ FROM python:3.13-alpine AS runtime
 ARG INSTALL_FFMPEG=1
 
 LABEL org.opencontainers.image.title="Bellhop" \
-      org.opencontainers.image.description="Declarative IPTV lineup pipeline, Web TV Guide & single-tuner player, and passthrough Xtream Codes API server"
+      org.opencontainers.image.description="Self-hosted live TV curator, EPG server, and browser TV guide" \
+      org.opencontainers.image.licenses="Apache-2.0"
 
 # Install timezone database (for TZ), privilege drop helper (PUID/PGID),
 # CA certificates, and optional ffmpeg/ffprobe (`--build-arg INSTALL_FFMPEG=0` skips it).
@@ -32,7 +33,7 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-COPY pyproject.toml requirements.lock README.md ./
+COPY pyproject.toml requirements.lock README.md LICENSE NOTICE ./
 COPY src ./src
 COPY data ./data
 COPY docker ./docker

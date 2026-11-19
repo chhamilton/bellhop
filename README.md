@@ -190,3 +190,9 @@ Run `./.agents/scripts/bootstrap.sh` to create `.venv`, install all Python runti
 .venv/bin/pytest -m "not docker"
 .venv/bin/pytest -m real_outputs --run-real-outputs
 ```
+
+---
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). Third-party browser media player attributions are listed in [NOTICE](NOTICE) and [VERSIONS.md](src/bellhop_web/static/vendor/VERSIONS.md).

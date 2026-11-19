@@ -1,12 +1,14 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "bellhop"
 version = "0.1.0"
-description = "Bellhop — Stateful 6-phase IPTV lineup & stream validation pipeline, single-tuner Web TV Guide, and passthrough Xtream Codes API server."
+description = "Bellhop — Self-hosted live TV curator, EPG server, and browser TV guide."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
 dependencies = [
     "aiohttp>=3.11.0",
