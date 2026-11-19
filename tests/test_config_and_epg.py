@@ -219,6 +219,110 @@ serve:
       apply_public_config_update(legacy_cfg, bad)
 
 
+def test_apply_public_config_update_preserves_comments_and_env_placeholders(
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  repo_root = Path(__file__).resolve().parents[1]
+
+  # 1. Full `config.example.yaml` round-trip: every comment line survives save.
+  example_text = (repo_root / "config.example.yaml").read_text(encoding="utf-8")
+  example_comments = [
+    line.strip()
+    for line in example_text.splitlines()
+    if line.strip().startswith("#")
+  ]
+  assert len(example_comments) >= 40
+
+  cfg_example_copy = tmp_path / "config.yaml"
+  cfg_example_copy.write_text(example_text, encoding="utf-8")
+
+  loaded = load_config(cfg_example_copy)
+  ui_payload: dict[str, object] = dict(export_public_config(loaded))
+  ui_payload["upstream_xtream"] = {
+    **dict(export_public_config(loaded)["upstream_xtream"]),
+    "stream_format": "m3u8",
+  }
+  updated_cfg, _ = apply_public_config_update(cfg_example_copy, ui_payload)
+  assert updated_cfg.xtream.stream_format == "m3u8"
+
+  saved_example_text = cfg_example_copy.read_text(encoding="utf-8")
+  saved_comments = [
+    line.strip()
+    for line in saved_example_text.splitlines()
+    if line.strip().startswith("#")
+  ]
+  assert saved_comments == example_comments
+  # Double-quoted scalar style, `null` representation, and comments survive:
+  assert 'stream_format: "m3u8"' in saved_example_text
+  assert (
+    '# Stream output format: "ts" (MPEG-TS, lowest latency) or "m3u8" (HLS)'
+    in saved_example_text
+  )
+  assert "host: null" in saved_example_text
+
+  # 2. Docker config with `${ENV}` placeholders on both secrets AND `server_url`:
+  #    saving unrelated Settings in the Web UI keeps `${XTREAM_SERVER_URL}` intact!
+  monkeypatch.setenv("XTREAM_SERVER_URL", "http://env-provider.example:8080")
+  monkeypatch.setenv("XTREAM_USERNAME", "env_xt_user")
+  monkeypatch.setenv("XTREAM_PASSWORD", "env_xt_pass")
+  monkeypatch.setenv("BELLHOP_WEB_USERNAME", "env_web_admin")
+  monkeypatch.setenv("BELLHOP_WEB_PASSWORD", "env_web_pass")
+  monkeypatch.setenv("BELLHOP_SERVE_USERNAME", "env_srv_user")
+  monkeypatch.setenv("BELLHOP_SERVE_PASSWORD", "env_srv_pass")
+
+  docker_template = (repo_root / "docker" / "config.docker.yaml").read_text(
+    encoding="utf-8"
+  )
+  docker_cfg_path = tmp_path / "docker_config.yaml"
+  docker_cfg_path.write_text(docker_template, encoding="utf-8")
+
+  before_docker = load_config(docker_cfg_path)
+  assert before_docker.xtream.server_url == "http://env-provider.example:8080"
+
+  # Browser receives resolved `server_url` from GET /api/config and sends it back unchanged
+  # alongside an edited pipeline knob (`upgrade_hysteresis_score: 7.5`).
+  public_doc = export_public_config(before_docker)
+  save_body: dict[str, object] = {
+    "upstream_xtream": dict(public_doc["upstream_xtream"]),
+    "xtream_server": dict(public_doc["xtream_server"]),
+    "pipeline": {
+      **dict(public_doc["pipeline"]),
+      "matching": {"upgrade_hysteresis_score": 7.5},
+    },
+  }
+  after_docker, _ = apply_public_config_update(docker_cfg_path, save_body)
+  assert after_docker.state.upgrade_hysteresis_score == 7.5
+
+  raw_disk = docker_cfg_path.read_text(encoding="utf-8")
+  for placeholder in (
+    "${XTREAM_SERVER_URL}",
+    "${XTREAM_USERNAME}",
+    "${XTREAM_PASSWORD}",
+    "${BELLHOP_WEB_USERNAME}",
+    "${BELLHOP_WEB_PASSWORD}",
+    "${BELLHOP_SERVE_USERNAME}",
+    "${BELLHOP_SERVE_PASSWORD}",
+    "${SD_USERNAME}",
+    "${SD_PASSWORD}",
+  ):
+    assert placeholder in raw_disk
+  assert "http://env-provider.example:8080" not in raw_disk
+  assert "# 1. HOST & INFRASTRUCTURE" in raw_disk
+  assert "# 2. OPERATIONAL SETTINGS" in raw_disk
+
+  # Explicitly changing `server_url` to a new URL DOES replace `${XTREAM_SERVER_URL}`.
+  changed_url_cfg, _ = apply_public_config_update(
+    docker_cfg_path,
+    {"upstream_xtream": {"server_url": "http://explicit-new.example:8080"}},
+  )
+  assert changed_url_cfg.xtream.server_url == "http://explicit-new.example:8080"
+  assert (
+    'server_url: "http://explicit-new.example:8080"'
+    in docker_cfg_path.read_text(encoding="utf-8")
+  )
+
+
 @pytest.mark.asyncio
 async def test_verify_epg_endpoint_plain_gzip_local_and_errors(
   tmp_path: Path,

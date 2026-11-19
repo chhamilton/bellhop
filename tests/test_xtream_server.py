@@ -926,6 +926,7 @@ async def test_settings_api_inspect_update_and_strict_credential_exclusion(
   cfg_path = tmp_path / "config.yaml"
   cfg_path.write_text(
     f"""\
+# Tier-1 infrastructure settings (must survive PUT /api/config)
 paths:
   cache_dir: "{cache_dir}"
   state_dir: "{state_dir}"
@@ -941,11 +942,12 @@ web_server:
   username: "web_admin"
   password: "web_secret_pass"
 
+# Tier-2 operational settings
 upstream_xtream:
   server_url: "http://upstream.example"
   username: "upstream_secret_user"
   password: "upstream_secret_pass"
-  stream_format: "ts"
+  stream_format: "ts"  # inline format comment
   request_timeout_sec: 30.0
   refresh_hours: 24.0
 
@@ -1158,7 +1160,14 @@ pipeline:
       assert srv.xtream_app.public_host == "tv.local"
       assert srv.xtream_app.server_protocol == "https"
 
-      # Reload from disk: ALL credentials, web_server settings, and filesystem paths were preserved!
+      # Reload from disk: ALL credentials, web_server settings, paths, AND comments were preserved!
+      saved_yaml = cfg_path.read_text(encoding="utf-8")
+      assert (
+        "# Tier-1 infrastructure settings (must survive PUT /api/config)"
+        in saved_yaml
+      )
+      assert "# Tier-2 operational settings" in saved_yaml
+      assert "# inline format comment" in saved_yaml
       reloaded = load_config(cfg_path)
       assert reloaded.serve.web_host == "127.0.0.1"
       assert reloaded.serve.web_port == 0
