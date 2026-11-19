@@ -23,7 +23,7 @@
           </div>
           <div class="brand-sub">
             <span id="lineup-id-badge" class="meta-pill">LIVE GUIDE</span>
-            <span id="channel-counter" class="meta-text">Loading channels…</span>
+            <span id="channel-counter" class="meta-text" aria-live="polite">Loading channels…</span>
             <span class="meta-dot">•</span>
             <span id="live-clock" class="meta-clock">--:--</span>
           </div>
@@ -39,10 +39,11 @@
           <input
             id="search-input"
             type="search"
+            aria-label="Search channels"
             placeholder="Search channel name, # (e.g. 1108), callsign, or show… (/)"
             autocomplete="off"
           />
-          <button id="search-clear" class="icon-clear" title="Clear search" hidden>&times;</button>
+          <button id="search-clear" class="icon-clear" type="button" title="Clear search" aria-label="Clear search" hidden>&times;</button>
         </div>
 
         <button
@@ -119,17 +120,17 @@
         <nav id="category-list" class="category-list"></nav>
       </aside>
 
-      <main id="guide-main" class="guide-main">
-        <div id="empty-state" class="empty-state" hidden>
+      <main id="guide-main" class="guide-main" aria-label="TV Guide">
+        <div id="empty-state" class="empty-state" role="status" hidden>
           <p>No channels match your current category or search filter.</p>
-          <button id="reset-filters-btn" class="action-btn">Reset Filters</button>
+          <button id="reset-filters-btn" class="action-btn" type="button">Reset Filters</button>
         </div>
 
         <!-- View 1: Rich Channel Cards grouped by Category -->
-        <section id="cards-view" class="cards-sections"></section>
+        <section id="cards-view" class="cards-sections" aria-label="Channel cards"></section>
 
         <!-- View 2: Multi-Hour 2D Scrollable EPG Timeline Grid -->
-        <section id="timeline-view" class="timeline-wrapper" hidden>
+        <section id="timeline-view" class="timeline-wrapper" aria-label="Program timeline" hidden>
           <div id="timeline-canvas" class="timeline-canvas">
             <div id="timeline-header" class="timeline-header"></div>
             <div id="timeline-body" class="timeline-body"></div>
@@ -140,7 +141,7 @@
   </div>
 
   <!-- Live Video Player Modal Overlay -->
-  <div id="player-overlay" class="player-overlay" hidden aria-modal="true" role="dialog">
+  <div id="player-overlay" class="player-overlay" hidden aria-modal="true" role="dialog" aria-labelledby="player-name">
     <div id="player-backdrop" class="player-backdrop"></div>
     <div class="player-modal">
       <div class="player-topbar">
@@ -173,7 +174,7 @@
             </svg>
             <span>Fullscreen</span>
           </button>
-          <button id="close-player-btn" class="modal-close-btn" title="Close Player (Esc)">&times;</button>
+          <button id="close-player-btn" class="modal-close-btn" type="button" title="Close Player (Esc)" aria-label="Close player">&times;</button>
         </div>
       </div>
 
@@ -190,7 +191,7 @@
         </div>
         <div id="video-spinner" class="video-overlay-msg">
           <div class="spinner"></div>
-          <div id="video-status-text">Tuning live stream…</div>
+          <div id="video-status-text" aria-live="polite">Tuning live stream…</div>
         </div>
         <div id="video-error" class="video-overlay-msg error" hidden>
           <p id="video-error-text">Stream error</p>
@@ -232,15 +233,15 @@
             <span class="settings-security-note">Web Guide server bind/auth, directories, and credentials are managed in config.yaml only.</span>
           </div>
         </div>
-        <button id="close-settings-btn" class="modal-close-btn" title="Close Settings (Esc)">&times;</button>
+        <button id="close-settings-btn" class="modal-close-btn" type="button" title="Close Settings (Esc)" aria-label="Close settings">&times;</button>
       </div>
 
-      <div id="settings-tabs" class="settings-tabs" role="tablist">
-        <button class="settings-tab active" type="button" data-settings-tab="xtream_server">Xtream Server</button>
-        <button class="settings-tab" type="button" data-settings-tab="upstream_xtream">Upstream Xtream</button>
-        <button class="settings-tab" type="button" data-settings-tab="lineup">Lineup &amp; Matching</button>
-        <button class="settings-tab" type="button" data-settings-tab="validation">Validation</button>
-        <button class="settings-tab" type="button" data-settings-tab="epg_output">EPG &amp; Outputs</button>
+      <div id="settings-tabs" class="settings-tabs" role="tablist" aria-label="Settings sections">
+        <button class="settings-tab active" type="button" role="tab" aria-selected="true" data-settings-tab="xtream_server">Xtream Server</button>
+        <button class="settings-tab" type="button" role="tab" aria-selected="false" data-settings-tab="upstream_xtream">Upstream Xtream</button>
+        <button class="settings-tab" type="button" role="tab" aria-selected="false" data-settings-tab="lineup">Lineup &amp; Matching</button>
+        <button class="settings-tab" type="button" role="tab" aria-selected="false" data-settings-tab="validation">Validation</button>
+        <button class="settings-tab" type="button" role="tab" aria-selected="false" data-settings-tab="epg_output">EPG &amp; Outputs</button>
       </div>
 
       <form id="settings-form" class="settings-form">

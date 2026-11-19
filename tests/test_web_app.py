@@ -1015,3 +1015,89 @@ async def test_trusted_reverse_proxy_xff_resolution_and_allowlist(
   finally:
     await runner_b.cleanup()
     await app_unlisted.shutdown()
+
+
+def test_wcag_aa_contrast_landmarks_and_keyboard_a11y_contracts() -> None:
+  import re
+
+  static_dir = (
+    Path(__file__).resolve().parents[1] / "src" / "bellhop_web" / "static"
+  )
+  index_html = (static_dir / "index.html").read_text(encoding="utf-8")
+  styles_css = (static_dir / "styles.css").read_text(encoding="utf-8")
+  app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+
+  # 1. Landmarks, live regions, dialog labels, and tablist roles in index.html
+  assert (
+    'id="guide-main" class="guide-main" aria-label="TV Guide"' in index_html
+  )
+  assert (
+    'id="cards-view" class="cards-sections" aria-label="Channel cards"'
+    in index_html
+  )
+  assert (
+    'id="timeline-view" class="timeline-wrapper" aria-label="Program timeline"'
+    in index_html
+  )
+  assert (
+    'id="player-overlay"' in index_html
+    and 'aria-labelledby="player-name"' in index_html
+  )
+  assert (
+    'id="channel-counter" class="meta-text" aria-live="polite"' in index_html
+  )
+  assert 'role="tab"' in index_html and 'aria-selected="true"' in index_html
+  assert 'aria-label="Close player"' in index_html
+  assert 'aria-label="Close settings"' in index_html
+
+  # 2. Focus trap, focus restore & Timeline keyboard navigation in compiled app.js
+  assert "trapFocusInContainer" in app_js
+  assert "restoreFocus" in app_js
+  assert "ArrowRight" in app_js and "ArrowLeft" in app_js
+  assert ".tl-ch-cell:focus-visible" in styles_css
+
+  # 3. WCAG 2.1 AA contrast >= 4.5:1 for muted/empty category text in both themes
+  def _hex_to_rgb(hex_str: str) -> tuple[int, int, int]:
+    h = hex_str.strip().lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+  def _rel_lum(rgb: tuple[int, int, int]) -> float:
+    def _chan(c: int) -> float:
+      v = c / 255.0
+      return v / 12.92 if v <= 0.04045 else float(((v + 0.055) / 1.055) ** 2.4)
+
+    return (
+      0.2126 * _chan(rgb[0]) + 0.7152 * _chan(rgb[1]) + 0.0722 * _chan(rgb[2])
+    )
+
+  def _contrast(fg_hex: str, bg_hex: str) -> float:
+    l1, l2 = sorted(
+      (_rel_lum(_hex_to_rgb(fg_hex)), _rel_lum(_hex_to_rgb(bg_hex))),
+      reverse=True,
+    )
+    return (l1 + 0.05) / (l2 + 0.05)
+
+  dark_block, light_block = styles_css.split(':root[data-theme="light"]', 1)
+
+  def _var(block: str, name: str) -> str:
+    m = re.search(rf"{re.escape(name)}:\s*(#[0-9a-fA-F]{{6}})", block)
+    assert m is not None, f"Missing hex token {name}"
+    return m.group(1)
+
+  dark_bg = _var(dark_block, "--bg-surface")
+  for tok in (
+    "--cat-count-empty-text",
+    "--cat-item-empty-text",
+    "--cat-active-empty-text",
+  ):
+    ratio = _contrast(_var(dark_block, tok), dark_bg)
+    assert ratio >= 4.5, f"Dark {tok} contrast {ratio:.2f} < 4.5"
+
+  light_bg = _var(light_block, "--bg-surface")
+  for tok in (
+    "--cat-count-empty-text",
+    "--cat-item-empty-text",
+    "--cat-active-empty-text",
+  ):
+    ratio = _contrast(_var(light_block, tok), light_bg)
+    assert ratio >= 4.5, f"Light {tok} contrast {ratio:.2f} < 4.5"
