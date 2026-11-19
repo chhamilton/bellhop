@@ -1,0 +1,25 @@
+Bellhop
+Copyright 2026 Chris Hamilton and contributors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this product except in compliance with the License.
+You may obtain a copy of the License at:
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+-------------------------------------------------------------------------------
+Bundled Third-Party Components (`src/bellhop_web/static/vendor/`)
+-------------------------------------------------------------------------------
+
+This distribution bundles the following unmodified browser media playback
+libraries under the Apache License, Version 2.0 (see
+`src/bellhop_web/static/vendor/VERSIONS.md` for pinned versions and SHA-256
+digests):
+
+- mpegts.js (v1.7.3) — https://github.com/xqq/mpegts.js
+  Copyright (C) xqq and contributors. Licensed under the Apache License,
+  Version 2.0.
+
+- hls.js (v1.5.17) — https://github.com/video-dev/hls.js
+  Copyright (C) Dailymotion and hls.js contributors. Licensed under the
+  Apache License, Version 2.0.
