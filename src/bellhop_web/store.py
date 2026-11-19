@@ -44,58 +44,22 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
 
+from bellhop_web.api_contracts import (
+  GuideCategoryDict as GuideCategoryDict,
+)
+from bellhop_web.api_contracts import (
+  ProgramItemDict as ProgramItemDict,
+)
+from bellhop_web.api_contracts import (
+  PublicChannelDict as PublicChannelDict,
+)
 from bellhop_web.export_bundle import (
   ExportBundleReader,
   as_str_dict,
   parse_m3u8_fallback,
 )
-
-
-class ProgramItemDict(TypedDict, total=False):
-  """Serialized program schedule entry returned in `/api/lineup` and `/api/epg/<chno>`."""
-
-  id: str
-  channel_id: str
-  title: str
-  sub_title: str
-  description: str
-  category: str
-  start_timestamp: int
-  stop_timestamp: int
-  progress_pct: float
-  is_live: bool
-
-
-class GuideCategoryDict(TypedDict):
-  """Serialized lineup category returned in `/api/lineup`."""
-
-  category_id: str
-  category_name: str
-  channel_count: int
-
-
-class PublicChannelDict(TypedDict):
-  """Browser-safe channel payload returned in `/api/lineup` (`direct_source` never exposed)."""
-
-  chno: int
-  sd_chno: int | None
-  name: str
-  callsign: str | None
-  logo: str
-  category_id: str
-  category_name: str
-  language: str
-  quality_tier: str
-  epg_channel_id: str
-  has_native_epg: bool
-  stream_id: int
-  stream_url: str
-  hls_url: str
-  now_playing: ProgramItemDict | None
-  up_next: ProgramItemDict | None
-  schedule: list[ProgramItemDict]
 
 
 def _as_dict(val: object) -> dict[str, Any]:

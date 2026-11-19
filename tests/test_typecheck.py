@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from bellhop_web.api_contracts import render_typescript_api_contracts
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -86,6 +88,19 @@ def test_ruff_google_style_and_no_tabs() -> None:
 
 
 def test_typescript_strict_and_compiled_assets_in_sync(tmp_path: Path) -> None:
+  contracts_dts = (
+    REPO_ROOT / "src" / "bellhop_web" / "frontend" / "api_contracts.d.ts"
+  )
+  assert contracts_dts.is_file(), (
+    "Missing generated frontend/api_contracts.d.ts"
+  )
+  assert contracts_dts.read_text(encoding="utf-8") == (
+    render_typescript_api_contracts()
+  ), (
+    "src/bellhop_web/frontend/api_contracts.d.ts is out of sync with "
+    "src/bellhop_web/api_contracts.py"
+  )
+
   node_bin = _resolve_venv_tool("node")
   tsc_js = REPO_ROOT / "node_modules" / "typescript" / "bin" / "tsc"
   if node_bin is None or not tsc_js.is_file():

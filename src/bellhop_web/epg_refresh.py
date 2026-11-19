@@ -41,6 +41,7 @@ from typing import TypedDict
 
 import aiohttp
 
+from bellhop_web.api_contracts import EpgStatusDict as EpgStatusDict
 from bellhop_web.http_utils import (
   ClientSessionFactory,
   default_session_factory,
@@ -55,24 +56,6 @@ from bellhop_web.store import (
 )
 
 logger = logging.getLogger("bellhop_web.epg")
-
-
-class EpgStatusDict(TypedDict):
-  """Serialized EPG refresh & coverage telemetry returned by `/api/lineup` and `/api/health`."""
-
-  enabled: bool
-  configured: bool
-  refreshing: bool
-  state: str
-  last_updated: float | None
-  last_attempt: float | None
-  last_reason: str
-  last_error: str | None
-  program_count: int
-  active_program_count: int
-  channels_with_epg: int
-  max_stop_timestamp: int
-  refresh_hours: float | None
 
 
 class CachedProgramDict(TypedDict):
