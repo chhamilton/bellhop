@@ -51,8 +51,8 @@ Executed by `PipelineRunner` (`src/bellhop/runner.py`) and driven exclusively by
    - Verifies upstream `xmltv.php` reachability with a lightweight ~4 KB probe and exports `bellhop_xtream_playlist.json`, `get_live_streams.json`, and `get_live_categories.json` to `output/xtream/` (hot-reloaded automatically by running servers).
 
 ### 2. Unified Runtime Server (`bellhop serve`)
-- **Co-Existing or Split Listeners (`src/bellhop/serve.py`):**
-  - By default, both the Bellhop Web Guide UI and the Passthrough Xtream Codes API share a single port (`0.0.0.0:8080`) with clean route isolation. Setting `xtream_server.port` (or `host`) in `config.yaml` binds the Xtream server on its own dedicated listener.
+- **Co-Existing or Split `aiohttp.web` Listeners (`src/bellhop/serve.py`):**
+  - Built on `aiohttp` (`aiohttp.web` server + `aiohttp.ClientSession` upstream client). By default, both the Bellhop Web Guide UI and the Passthrough Xtream Codes API share a single `aiohttp.web` application listener (`0.0.0.0:8080`) with clean route isolation, CORS preflight handling, and request body size limits. Setting `xtream_server.port` (or `host`) in `config.yaml` binds the Xtream server on its own dedicated listener.
 - **Bellhop Web TV Guide & Single-Tuner Proxy (`src/bellhop_web/`):**
   - **Views & Filtering:** Category-grouped **Cards** and a 4-hour 2D sticky **Timeline** EPG grid (with continuous `NOW` indicator across category banners), live search, a **With Guide** toggle to hide channels without EPG data, category-relative counts with subtle color cues, and stateful URL query parameters (`?cat=&epg=1&q=&view=timeline&offset=&mode=hls&ch=`).
   - **Theming, Branding & Client Settings (`src/bellhop_web/frontend/`):** Strictly typed TypeScript frontend (`types.d.ts`, `prefs.ts`, `app.ts` compiled to `src/bellhop_web/static/*.js`) featuring the Bellhop Play Bell SVG logo & multi-size favicon, complementary **Dark / Light Mode** with a Sun/Moon toggle on both `/` and `/login`, and an extensible JSON `localStorage` client settings store (`bellhop.settings` via `window.BellhopSettings`).
@@ -159,7 +159,7 @@ docker compose exec bellhop bellhop run --skip validate
 
 Run `./.agents/scripts/bootstrap.sh` to create `.venv`, install all Python runtime + dev dependencies, install the TypeScript compiler, build frontend JS, and run the full test suite:
 
-- **Python Runtime (`pyproject.toml`):** Python `>=3.10`, `httpx`, `pyyaml`, `python-dotenv`, `rich` (plus optional system `ffmpeg`/`ffprobe` for Phase 4 codec probing).
+- **Python Runtime (`pyproject.toml`):** Python `>=3.10`, `aiohttp`, `pyyaml`, `python-dotenv`, `rich` (plus optional system `ffmpeg`/`ffprobe` for Phase 4 codec probing).
 - **Python Dev (`pip install -e ".[dev]"`):** `mypy`, `types-PyYAML`, `ruff`, `pytest`, `pytest-asyncio`, `nodejs-wheel` (provides self-contained `node` + `npm` inside `.venv`).
 - **Frontend Dev (`package.json`):** `typescript` (compiles `src/bellhop_web/frontend/*.ts` → `src/bellhop_web/static/*.js`).
 

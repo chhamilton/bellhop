@@ -9,7 +9,7 @@ description = "Bellhop — Stateful 6-phase IPTV lineup & stream validation pipe
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "httpx>=0.27.0",
+    "aiohttp>=3.11.0",
     "pyyaml>=6.0.1",
     "python-dotenv>=1.0.1",
     "rich>=13.7.0",

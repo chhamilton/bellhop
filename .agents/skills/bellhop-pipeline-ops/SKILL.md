@@ -36,7 +36,7 @@ description: >-
 1. Subclass `LineupProvider` in `src/bellhop/providers/base.py`.
 2. Implement `supports(lineup_id, backend_hint)`, `discover_lineups(...)`, and `retrieve_lineup(...)`.
 3. Convert raw channel rows to `RawProviderSlot` and pass through `normalize_provider_slots()` (`src/bellhop/providers/normalizer.py`) so SD/HD pairing, alias cleanup, category/language inference, and sibling exclusion rules (`RDS` vs `RDS 2`) apply automatically.
-4. Register the provider in `build_default_providers()` (`src/bellhop/lineup_retriever.py`) and add MockTransport tests in `tests/test_lineup_providers.py`.
+4. Register the provider in `build_default_providers()` (`src/bellhop/lineup_retriever.py`) and add `MockHttpServer` tests in `tests/test_lineup_providers.py`.
 
 ## Detailed Scoring & Provider Reference
 Read [provider-and-matcher-quirks.md](./references/provider-and-matcher-quirks.md) when tuning candidate scoring weights, handling `cf.smoothroad.site` edge cases, or debugging TV Guide / Schedules Direct wire formats.

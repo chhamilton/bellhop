@@ -10,7 +10,7 @@ description: >-
 # Bellhop Web Guide, Passthrough Xtream Server & Single-Tuner Proxy Guide
 
 ## Runtime Architecture (`src/bellhop/serve.py`, `src/bellhop/xtream_server.py`, `src/bellhop_web/`)
-- **`http_utils.py` (`src/bellhop_web/http_utils.py`):** Shared async HTTP/1.1 parser (`serve_http_connection`), response writers (`send_bytes`, `send_json`, `send_redirect`, `write_chunk`), and bind/LAN URL helpers (`detect_device_ip`, `resolve_bind_host`, `build_access_urls`).
+- **`http_utils.py` (`src/bellhop_web/http_utils.py`):** Shared `aiohttp.web` application factory (`create_web_app` with CORS, `OPTIONS` preflight, JSON error middleware, and `256 KiB` body limit), response helpers (`json_response`, `bytes_response`, `redirect_response`, `start_site`), `ClientSessionFactory` / `upstream_url`, and bind/LAN URL helpers (`detect_device_ip`, `resolve_bind_host`, `build_access_urls`).
 - **`store.py` & `epg_refresh.py` (`src/bellhop_web/`):**
   - `LineupGuideStore` hot-reloads `output/xtream/` on file `mtime` changes (with M3U8 & `.xml`/`.xml.gz` fallbacks) and redacts `direct_source` from public API payloads.
   - `EpgRefreshService` dynamically fetches the passthrough `xmltv_url` in the background, parses mapped channels via `asyncio.to_thread`, evicts stale listings, and persists `cache/bellhop_web/epg_cache.json`.

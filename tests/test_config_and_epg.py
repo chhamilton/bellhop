@@ -5,8 +5,8 @@ from __future__ import annotations
 import gzip
 from pathlib import Path
 
-import httpx
 import pytest
+from aiohttp import web
 
 from bellhop.config import (
   AppConfig,
@@ -16,6 +16,7 @@ from bellhop.config import (
   load_config,
 )
 from bellhop.epg_loader import build_passthrough_xmltv_url, verify_epg_endpoint
+from tests.http_mock import MockHttpServer
 
 
 def test_two_tier_config_with_credentials_yaml_and_env_interpolation(
@@ -247,20 +248,22 @@ async def test_verify_epg_endpoint_plain_gzip_local_and_errors(
   # 3. Remote streaming probe: gzipped XMLTV, non-XML HTML body, and HTTP 503
   mode = {"kind": "gzip"}
 
-  def mock_epg(req: httpx.Request) -> httpx.Response:
+  def mock_epg(_req: web.Request) -> web.Response:
     if mode["kind"] == "gzip":
-      return httpx.Response(
-        200,
-        headers={"content-type": "application/gzip"},
-        content=gzip.compress(
+      return web.Response(
+        status=200,
+        headers={"Content-Type": "application/gzip"},
+        body=gzip.compress(
           b'<?xml version="1.0"?><tv generator-info-name="test"></tv>'
         ),
       )
     if mode["kind"] == "html":
-      return httpx.Response(
-        200, headers={"content-type": "text/html"}, text="<html>Denied</html>"
+      return web.Response(
+        status=200,
+        content_type="text/html",
+        text="<html>Denied</html>",
       )
-    return httpx.Response(503, text="Service Unavailable")
+    return web.Response(status=503, text="Service Unavailable")
 
   remote_cfg = AppConfig(
     project_root=tmp_path,
@@ -272,9 +275,7 @@ async def test_verify_epg_endpoint_plain_gzip_local_and_errors(
     "http://epg.example/xmltv.php?username=u&password=***"
   )
 
-  async with httpx.AsyncClient(
-    transport=httpx.MockTransport(mock_epg)
-  ) as client:
+  async with MockHttpServer(mock_epg) as mock, mock.new_session() as client:
     ok_gz = await verify_epg_endpoint(remote_cfg, client=client)
     assert ok_gz.verified is True
     assert ok_gz.format_detected == "xmltv_gzip"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import httpx
+import aiohttp
 
 from bellhop.lineup_loader import CableLineup
 from bellhop.providers.base import (
@@ -108,7 +109,7 @@ class SchedulesDirectLineupProvider(LineupProvider):
     token_cache_path: Path | None = None,
     auto_add_lineup: bool = False,
     timeout_sec: float = 25.0,
-    client: httpx.AsyncClient | None = None,
+    client: aiohttp.ClientSession | None = None,
   ) -> None:
     self.username = username.strip()
     self.password = password.strip()
@@ -174,7 +175,7 @@ class SchedulesDirectLineupProvider(LineupProvider):
     except OSError:
       pass
 
-  async def _authenticate(self, client: httpx.AsyncClient) -> str:
+  async def _authenticate(self, client: aiohttp.ClientSession) -> str:
     if not self.has_credentials:
       raise LineupBackendError(
         "Schedules Direct credentials missing. Provide `schedules_direct.username` and "
@@ -182,28 +183,29 @@ class SchedulesDirectLineupProvider(LineupProvider):
         "env vars, or --sd-username / --sd-password."
       )
 
-    resp = await client.post(
+    async with client.post(
       f"{self.base_url}/token",
       json={
         "username": self.username,
         "password": hash_sd_password(self.password),
       },
-    )
-    try:
-      data = resp.json()
-    except ValueError as exc:
-      raise LineupBackendError(
-        f"Schedules Direct /token returned invalid JSON (HTTP {resp.status_code})"
-      ) from exc
+    ) as resp:
+      status = resp.status
+      try:
+        data = await resp.json(content_type=None)
+      except ValueError as exc:
+        raise LineupBackendError(
+          f"Schedules Direct /token returned invalid JSON (HTTP {status})"
+        ) from exc
 
+    if not isinstance(data, dict):
+      raise LineupBackendError(
+        f"Schedules Direct /token returned non-object JSON (HTTP {status})"
+      )
     code = int(data.get("code", 0) or 0)
     token = str(data.get("token") or "").strip()
-    if resp.status_code >= 400 or code != 0 or not token:
-      msg = (
-        data.get("message")
-        or data.get("response")
-        or f"HTTP {resp.status_code}"
-      )
+    if status >= 400 or code != 0 or not token:
+      msg = data.get("message") or data.get("response") or f"HTTP {status}"
       raise LineupBackendError(
         f"Schedules Direct authentication failed (code={code}): {msg}"
       )
@@ -219,10 +221,9 @@ class SchedulesDirectLineupProvider(LineupProvider):
     params: dict[str, str] | None = None,
   ) -> Any:
     owns = self._external_client is None
-    client = self._external_client or httpx.AsyncClient(
+    client = self._external_client or aiohttp.ClientSession(
       headers={"User-Agent": SD_USER_AGENT, "Accept": "application/json"},
-      timeout=httpx.Timeout(self.timeout_sec),
-      follow_redirects=True,
+      timeout=aiohttp.ClientTimeout(total=self.timeout_sec),
     )
     try:
       token = self._load_cached_token()
@@ -230,51 +231,63 @@ class SchedulesDirectLineupProvider(LineupProvider):
         token = await self._authenticate(client)
 
       url = f"{self.base_url}/{path.lstrip('/')}"
-      resp = await client.request(
+      async with client.request(
         method,
         url,
         params=params,
         headers={"token": token},
-      )
+      ) as resp:
+        need_reauth = resp.status in (401, 403)
+        data: Any = None
+        if not need_reauth:
+          data = await resp.json(content_type=None)
+          if isinstance(data, dict) and int(data.get("code", 0) or 0) in {
+            4003,
+            4004,
+            4001,
+          }:
+            need_reauth = True
+          else:
+            if isinstance(data, dict) and int(data.get("code", 0) or 0) != 0:
+              code = int(data["code"])
+              msg = (
+                data.get("message")
+                or data.get("response")
+                or f"SD error {code}"
+              )
+              raise LineupBackendError(
+                f"Schedules Direct API error (code={code}): {msg}"
+              )
+            resp.raise_for_status()
+            return data
 
       # Re-authenticate once if token expired (SD code 4003 / HTTP 403)
-      need_reauth = resp.status_code in (401, 403)
-      if not need_reauth and resp.headers.get("content-type", "").startswith(
-        "application/json"
-      ):
-        body_peek = resp.json()
-        if isinstance(body_peek, dict) and int(
-          body_peek.get("code", 0) or 0
-        ) in {4003, 4004, 4001}:
-          need_reauth = True
-
-      if need_reauth:
-        self._token = None
-        token = await self._authenticate(client)
-        resp = await client.request(
-          method,
-          url,
-          params=params,
-          headers={"token": token},
-        )
-
-      data = resp.json()
-      if isinstance(data, dict) and int(data.get("code", 0) or 0) != 0:
-        code = int(data["code"])
-        msg = data.get("message") or data.get("response") or f"SD error {code}"
-        raise LineupBackendError(
-          f"Schedules Direct API error (code={code}): {msg}"
-        )
-
-      resp.raise_for_status()
-      return data
-    except httpx.HTTPError as exc:
+      self._token = None
+      token = await self._authenticate(client)
+      async with client.request(
+        method,
+        url,
+        params=params,
+        headers={"token": token},
+      ) as resp2:
+        data = await resp2.json(content_type=None)
+        if isinstance(data, dict) and int(data.get("code", 0) or 0) != 0:
+          code = int(data["code"])
+          msg = (
+            data.get("message") or data.get("response") or f"SD error {code}"
+          )
+          raise LineupBackendError(
+            f"Schedules Direct API error (code={code}): {msg}"
+          )
+        resp2.raise_for_status()
+        return data
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
       raise LineupBackendError(
         f"Schedules Direct HTTP error ({path}): {exc}"
       ) from exc
     finally:
       if owns:
-        await client.aclose()
+        await client.close()
 
   async def discover_lineups(
     self,

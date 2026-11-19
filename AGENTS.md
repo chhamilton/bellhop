@@ -3,7 +3,7 @@
 ## Project Overview
 This repository implements **Bellhop**, installed via a single `bellhop` CLI (`bellhop run` & `bellhop serve`) from `pyproject.toml` and organized into two clean Python packages:
 1. **`bellhop` (`src/bellhop/`)** — A declarative, stateful 6-phase pipeline (`PipelineRunner`) that maps a raw Xtream Codes IPTV catalog (~16,600+ live streams) onto an official cable/fiber TV lineup (currently **Bell Fibe TV — Montréal, QC**, scalable to any US/Canadian provider via TV Guide or Schedules Direct), validates **only** matched candidate streams, exports Extended **M3U8** + **Xtream JSON** playlists with passthrough EPG metadata, and serves the unified Web Guide + Passthrough Xtream Codes API server via `bellhop serve` (`UnifiedServeServer`).
-2. **`bellhop_web` (`src/bellhop_web/`)** — The decoupled async HTTP/1.1 web guide UI, TypeScript frontend (`frontend/` → `static/`), cookie auth (`bellhop_session`), dynamic passthrough EPG cache (`cache/bellhop_web/epg_cache.json`), and **single-tuner relay** (`TunerSessionManager`), hosted by `bellhop serve` without importing `bellhop.*`.
+2. **`bellhop_web` (`src/bellhop_web/`)** — The decoupled `aiohttp.web` guide UI, TypeScript frontend (`frontend/` → `static/`), cookie auth (`bellhop_session`), dynamic passthrough EPG cache (`cache/bellhop_web/epg_cache.json`), and **single-tuner relay** (`TunerSessionManager`), hosted by `bellhop serve` without importing `bellhop.*`.
 
 Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persistent service with internal scheduling**, explicit sync controls, **multi-lineup / multi-playlist support**, and optional proxied stream relay.
 
@@ -28,7 +28,7 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
    - Do **not** mask passwords with `***` inside `state/channel_mapping.json`, `output/bellhop.m3u8`, or `output/xtream/get_live_streams.json`: Xtream stream URLs require embedded credentials to play (masking caused `HTTP 513` upstream errors). Redaction belongs only in UI/API serialization (`AppConfig.to_dict(redact_secrets=True)` and `WebChannel.to_public_dict()`, which exposes `/api/stream/<chno>.ts`), while `/api/config` (`export_public_config`) omits credentials, `web_server`, and paths altogether.
 
 4. **Package Boundary (`bellhop` vs `bellhop_web`) & Strict Typing**
-   - Keep `src/bellhop_web/` cleanly decoupled from `bellhop.*` imports (shared low-level HTTP/1.1 & bind-address helpers live in `src/bellhop_web/http_utils.py`). The single runtime CLI entry point is `bellhop` (`bellhop run` / `bellhop serve`).
+   - Keep `src/bellhop_web/` cleanly decoupled from `bellhop.*` imports (shared `aiohttp` server/client & bind-address helpers live in `src/bellhop_web/http_utils.py`). The single runtime CLI entry point is `bellhop` (`bellhop run` / `bellhop serve`).
    - Maintain `mypy --strict` across `src/` and `tests/` with zero `# type: ignore` suppressions; prefer explicit `@dataclass(slots=True)` structs and `TypedDict`s over nested `dict[str, Any]`.
 
 5. **Coding Style Preferences (Google Python Style & Strict TypeScript Frontend)**
@@ -65,7 +65,7 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
 │   │   ├── xtream_server.py     # Passthrough Xtream Codes & M3U HTTP API server (`302` upstream)
 │   │   └── serve.py             # `UnifiedServeServer` co-hosting Web Guide + Xtream API (shared or split ports)
 │   └── bellhop_web/
-│       ├── http_utils.py        # Shared async HTTP/1.1 parser, response writers & LAN bind helpers
+│       ├── http_utils.py        # Shared `aiohttp` server/client factories, middleware & LAN bind helpers
 │       ├── auth.py              # HMAC-SHA256 `bellhop_session` cookie auth & `/login?next=...` page
 │       ├── epg_refresh.py       # Dynamic passthrough XMLTV fetcher & `cache/bellhop_web/epg_cache.json`
 │       ├── store.py             # Hot-reloading reader for `output/xtream/` (with M3U8/XMLTV fallbacks)

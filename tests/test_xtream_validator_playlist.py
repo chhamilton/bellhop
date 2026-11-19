@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import httpx
 import pytest
+from aiohttp import web
 
 from bellhop.cli import main
 from bellhop.config import (
@@ -31,6 +31,7 @@ from bellhop.validator import (
   has_mpegts_sync,
 )
 from bellhop.xtream import fetch_xtream_catalog
+from tests.http_mock import MockHttpServer
 
 
 def _make_mpegts_payload(packets: int = 60) -> bytes:
@@ -44,13 +45,12 @@ def _make_mpegts_payload(packets: int = 60) -> bytes:
 async def test_fetch_xtream_catalog_and_cache(tmp_path: Path) -> None:
   calls = {"count": 0}
 
-  def handler(request: httpx.Request) -> httpx.Response:
+  def handler(request: web.Request) -> web.Response:
     calls["count"] += 1
-    action = request.url.params.get("action")
+    action = request.query.get("action")
     if action is None:
-      return httpx.Response(
-        200,
-        json={
+      return web.json_response(
+        {
           "user_info": {
             "username": "demo",
             "password": "secret_password",
@@ -61,17 +61,15 @@ async def test_fetch_xtream_catalog_and_cache(tmp_path: Path) -> None:
             "allowed_output_formats": ["ts", "m3u8"],
           },
           "server_info": {"server_protocol": "http", "port": "8080"},
-        },
+        }
       )
     if action == "get_live_categories":
-      return httpx.Response(
-        200,
-        json=[{"category_id": "12", "category_name": "Canada | French"}],
+      return web.json_response(
+        [{"category_id": "12", "category_name": "Canada | French"}]
       )
     if action == "get_live_streams":
-      return httpx.Response(
-        200,
-        json=[
+      return web.json_response(
+        [
           {
             "num": 1,
             "name": "QC | RDS FHD",
@@ -81,9 +79,9 @@ async def test_fetch_xtream_catalog_and_cache(tmp_path: Path) -> None:
             "epg_channel_id": "RDS.ca",
             "category_id": "12",
           }
-        ],
+        ]
       )
-    return httpx.Response(400)
+    return web.Response(status=400)
 
   cfg = AppConfig(
     project_root=tmp_path,
@@ -96,9 +94,7 @@ async def test_fetch_xtream_catalog_and_cache(tmp_path: Path) -> None:
     ),
   )
 
-  async with httpx.AsyncClient(
-    transport=httpx.MockTransport(handler)
-  ) as client:
+  async with MockHttpServer(handler) as mock, mock.new_session() as client:
     cat1 = await fetch_xtream_catalog(cfg, client=client)
     assert not cat1.from_cache
     assert cat1.account.max_connections == 2
@@ -123,41 +119,41 @@ async def test_validator_candidate_fallback_and_hls(tmp_path: Path) -> None:
   ts_bytes = _make_mpegts_payload(55)
   assert has_mpegts_sync(ts_bytes)
 
-  def stream_handler(request: httpx.Request) -> httpx.Response:
-    path = request.url.path
+  def stream_handler(request: web.Request) -> web.Response:
+    path = request.path
     if path.endswith("/1001.ts"):
       # Dead stream #1
-      return httpx.Response(502, text="Bad Gateway")
+      return web.Response(status=502, text="Bad Gateway")
     if path.endswith("/1002.ts"):
       # Working MPEG-TS stream #2
-      return httpx.Response(
-        200,
+      return web.Response(
+        status=200,
         headers={"Content-Type": "video/mp2t"},
-        content=ts_bytes,
+        body=ts_bytes,
       )
     if path.endswith("/2001.m3u8"):
       manifest = (
         "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=4000000\nhls/variant.m3u8\n"
       )
-      return httpx.Response(
-        200,
+      return web.Response(
+        status=200,
         headers={"Content-Type": "application/vnd.apple.mpegurl"},
         text=manifest,
       )
     if path.endswith("/hls/variant.m3u8"):
       media = "#EXTM3U\n#EXTINF:4.0,\nseg0.ts\n"
-      return httpx.Response(
-        200,
+      return web.Response(
+        status=200,
         headers={"Content-Type": "application/vnd.apple.mpegurl"},
         text=media,
       )
     if path.endswith("/hls/seg0.ts"):
-      return httpx.Response(
-        200,
+      return web.Response(
+        status=200,
         headers={"Content-Type": "video/mp2t"},
-        content=ts_bytes,
+        body=ts_bytes,
       )
-    return httpx.Response(404)
+    return web.Response(status=404)
 
   cfg = AppConfig(
     project_root=tmp_path,
@@ -206,31 +202,33 @@ async def test_validator_candidate_fallback_and_hls(tmp_path: Path) -> None:
     name="CA | CTV Montreal HLS",
     direct_source="http://panel.example:8080/live/u/p/2001.m3u8",
   )
-  # Test direct HLS URL by clearing xtream server_url on a second validator or via .m3u8 format
-  validator = StreamValidator(
-    cfg, account, transport=httpx.MockTransport(stream_handler)
-  )
-  await validator.validate_mappings([m_rds])
+  async with MockHttpServer(stream_handler) as mock:
+    validator = StreamValidator(
+      cfg, account, session_factory=mock.session_factory
+    )
+    await validator.validate_mappings([m_rds])
 
-  assert m_rds.probes_attempted == 2
-  assert m_rds.selected is not None
-  assert m_rds.selected.stream.stream_id == 1002
-  assert (
-    m_rds.probe is not None and m_rds.probe.ok and m_rds.probe.ts_sync_verified
-  )
+    assert m_rds.probes_attempted == 2
+    assert m_rds.selected is not None
+    assert m_rds.selected.stream.stream_id == 1002
+    assert (
+      m_rds.probe is not None
+      and m_rds.probe.ok
+      and m_rds.probe.ts_sync_verified
+    )
 
-  # Also verify HLS playlist -> variant -> segment traversal
-  cfg.xtream.stream_format = "m3u8"
-  m_ctv = MappedChannel(
-    channel=ch_ctv,
-    candidates=[MatchCandidate(stream=s_hls, score=92.0)],
-  )
-  hls_validator = StreamValidator(
-    cfg, account, transport=httpx.MockTransport(stream_handler)
-  )
-  await hls_validator.validate_mappings([m_ctv])
-  assert m_ctv.selected is not None
-  assert m_ctv.probe is not None and m_ctv.probe.ok and m_ctv.probe.is_hls
+    # Also verify HLS playlist -> variant -> segment traversal
+    cfg.xtream.stream_format = "m3u8"
+    m_ctv = MappedChannel(
+      channel=ch_ctv,
+      candidates=[MatchCandidate(stream=s_hls, score=92.0)],
+    )
+    hls_validator = StreamValidator(
+      cfg, account, session_factory=mock.session_factory
+    )
+    await hls_validator.validate_mappings([m_ctv])
+    assert m_ctv.selected is not None
+    assert m_ctv.probe is not None and m_ctv.probe.ok and m_ctv.probe.is_hls
 
 
 def test_playlist_numbering_modes_and_password_redaction(

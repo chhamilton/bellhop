@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import httpx
+import aiohttp
 
 from bellhop.config import AppConfig
 from bellhop.models import XtreamStream
@@ -183,7 +183,7 @@ async def fetch_daily_iptv_catalog(
   force_refresh: bool = False,
   dry_run: bool = False,
   input_json: Path | None = None,
-  client: httpx.AsyncClient | None = None,
+  client: aiohttp.ClientSession | None = None,
 ) -> CatalogFetchResult:
   """Fetch IPTV live channels on a daily cadence (default 24h), tracking catalog diffs."""
   xt = config.xtream

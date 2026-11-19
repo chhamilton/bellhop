@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -9,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import httpx
+import aiohttp
 
 from bellhop.config import AppConfig
 from bellhop.models import XtreamAccountInfo, XtreamStream
@@ -106,7 +107,7 @@ async def fetch_xtream_catalog(
   config: AppConfig,
   *,
   force_refresh: bool = False,
-  client: httpx.AsyncClient | None = None,
+  client: aiohttp.ClientSession | None = None,
 ) -> XtreamCatalog:
   """Fetch account metadata, live categories, and live streams from Xtream Codes API."""
   xt = config.xtream
@@ -133,47 +134,40 @@ async def fetch_xtream_catalog(
 
   owns_client = client is None
   if owns_client:
-    client = httpx.AsyncClient(
-      timeout=httpx.Timeout(xt.request_timeout_sec),
+    client = aiohttp.ClientSession(
+      timeout=aiohttp.ClientTimeout(total=xt.request_timeout_sec),
       headers={"User-Agent": DEFAULT_USER_AGENT},
-      follow_redirects=True,
     )
 
   assert client is not None
   try:
     # 1. Authenticate & inspect account limits (auto-negotiating http/https if scheme omitted)
-    auth_resp: httpx.Response | None = None
+    account_payload: Any = None
     last_exc: Exception | None = None
     for cand_base in candidates:
       try:
-        resp = await client.get(
+        async with client.get(
           f"{cand_base}/player_api.php", params=base_params
-        )
-        resp.raise_for_status()
-        auth_resp = resp
-        # Preserve final scheme+host(:port) if server redirected (note: httpx URL.netloc is bytes)
-        netloc_str = (
-          resp.url.netloc.decode("ascii")
-          if isinstance(resp.url.netloc, bytes)
-          else str(resp.url.netloc)
-        )
-        base_url = f"{resp.url.scheme}://{netloc_str}"
-        xt.server_url = base_url
-        break
-      except (httpx.HTTPError, ValueError) as exc:
+        ) as resp:
+          resp.raise_for_status()
+          account_payload = await resp.json(content_type=None)
+          # Preserve final scheme+host(:port) if server redirected
+          base_url = str(resp.url.origin())
+          xt.server_url = base_url
+          break
+      except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
         last_exc = exc
 
-    if auth_resp is None:
-      if isinstance(last_exc, httpx.HTTPStatusError):
+    if account_payload is None:
+      if isinstance(last_exc, aiohttp.ClientResponseError):
         raise XtreamError(
-          f"Xtream API HTTP {last_exc.response.status_code} error from {base_url}"
+          f"Xtream API HTTP {last_exc.status} error from {base_url}"
         ) from last_exc
       raise XtreamError(
         f"Network error contacting Xtream server {xt.server_url}: {last_exc}"
       ) from last_exc
 
     api_url = f"{base_url}/player_api.php"
-    account_payload = auth_resp.json()
     if not isinstance(account_payload, dict):
       raise XtreamError(
         "Unexpected non-JSON-object response from player_api.php"
@@ -192,12 +186,12 @@ async def fetch_xtream_catalog(
       )
 
     # 2. Fetch live categories
-    cat_resp = await client.get(
+    async with client.get(
       api_url,
       params={**base_params, "action": "get_live_categories"},
-    )
-    cat_resp.raise_for_status()
-    cat_raw = cat_resp.json()
+    ) as cat_resp:
+      cat_resp.raise_for_status()
+      cat_raw = await cat_resp.json(content_type=None)
     categories: dict[str, str] = {}
     if isinstance(cat_raw, list):
       for entry in cat_raw:
@@ -207,12 +201,12 @@ async def fetch_xtream_catalog(
           ).strip()
 
     # 3. Fetch live streams
-    streams_resp = await client.get(
+    async with client.get(
       api_url,
       params={**base_params, "action": "get_live_streams"},
-    )
-    streams_resp.raise_for_status()
-    streams_raw = streams_resp.json()
+    ) as streams_resp:
+      streams_resp.raise_for_status()
+      streams_raw = await streams_resp.json(content_type=None)
     if not isinstance(streams_raw, list):
       raise XtreamError(
         "Unexpected response for action=get_live_streams (expected JSON list)."
@@ -237,11 +231,11 @@ async def fetch_xtream_catalog(
       streams=streams,
       from_cache=False,
     )
-  except httpx.HTTPStatusError as exc:
+  except aiohttp.ClientResponseError as exc:
     raise XtreamError(
-      f"Xtream API HTTP {exc.response.status_code} error from {base_url}"
+      f"Xtream API HTTP {exc.status} error from {base_url}"
     ) from exc
-  except httpx.RequestError as exc:
+  except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
     raise XtreamError(
       f"Network error contacting Xtream server {base_url}: {exc}"
     ) from exc
@@ -251,7 +245,7 @@ async def fetch_xtream_catalog(
     ) from exc
   finally:
     if owns_client:
-      await client.aclose()
+      await client.close()
 
 
 def load_catalog_from_json(json_path: Path) -> XtreamCatalog:

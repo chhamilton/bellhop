@@ -6,9 +6,10 @@ import time
 from dataclasses import dataclass
 from typing import TypedDict
 
-import httpx
+import aiohttp
 
 from bellhop.config import AppConfig
+from bellhop_web.http_utils import UPSTREAM_ERRORS, upstream_url
 
 DEFAULT_EPG_USER_AGENT = "Bellhop/0.1 (VLC/3.0.20 LibVLC/3.0.20)"
 
@@ -84,7 +85,7 @@ async def verify_epg_endpoint(
   config: AppConfig,
   *,
   timeout_sec: float = 15.0,
-  client: httpx.AsyncClient | None = None,
+  client: aiohttp.ClientSession | None = None,
 ) -> EpgVerificationResult:
   """Verify the upstream XMLTV endpoint is reachable and returns XMLTV without downloading it."""
   if config.epg.xmltv_file is not None:
@@ -117,31 +118,32 @@ async def verify_epg_endpoint(
 
   owns_client = client is None
   if owns_client:
-    client = httpx.AsyncClient(
-      timeout=httpx.Timeout(timeout_sec, connect=min(10.0, timeout_sec)),
+    client = aiohttp.ClientSession(
+      timeout=aiohttp.ClientTimeout(
+        total=timeout_sec, connect=min(10.0, timeout_sec)
+      ),
       headers={"User-Agent": DEFAULT_EPG_USER_AGENT},
-      follow_redirects=True,
     )
 
   assert client is not None
   t0 = time.perf_counter()
   try:
-    async with client.stream("GET", full_url) as resp:
+    async with client.get(upstream_url(full_url)) as resp:
       latency_ms = (time.perf_counter() - t0) * 1000.0
-      ctype = resp.headers.get("content-type", "")
-      if resp.status_code != 200:
+      ctype = resp.headers.get("Content-Type", "")
+      if resp.status != 200:
         return EpgVerificationResult(
           url=full_url,
           url_redacted=redacted_url,
           verified=False,
-          status_code=resp.status_code,
+          status_code=resp.status,
           content_type=ctype,
           latency_ms=latency_ms,
-          error=f"HTTP {resp.status_code}",
+          error=f"HTTP {resp.status}",
         )
 
       sample_buf = bytearray()
-      async for chunk in resp.aiter_bytes(chunk_size=4096):
+      async for chunk in resp.content.iter_chunked(4096):
         sample_buf.extend(chunk)
         if len(sample_buf) >= 4096:
           break
@@ -152,7 +154,7 @@ async def verify_epg_endpoint(
           url=full_url,
           url_redacted=redacted_url,
           verified=False,
-          status_code=resp.status_code,
+          status_code=resp.status,
           content_type=ctype,
           latency_ms=latency_ms,
           error="Response body is not valid XMLTV or gzipped XMLTV",
@@ -162,12 +164,12 @@ async def verify_epg_endpoint(
         url=full_url,
         url_redacted=redacted_url,
         verified=True,
-        status_code=resp.status_code,
+        status_code=resp.status,
         content_type=ctype,
         format_detected=fmt,
         latency_ms=latency_ms,
       )
-  except httpx.HTTPError as exc:
+  except UPSTREAM_ERRORS as exc:
     return EpgVerificationResult(
       url=full_url,
       url_redacted=redacted_url,
@@ -177,4 +179,4 @@ async def verify_epg_endpoint(
     )
   finally:
     if owns_client:
-      await client.aclose()
+      await client.close()

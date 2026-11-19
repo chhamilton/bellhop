@@ -11,7 +11,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 
-import httpx
+import aiohttp
 
 from bellhop.config import AppConfig
 from bellhop.models import (
@@ -19,6 +19,11 @@ from bellhop.models import (
   ProbeResult,
   XtreamAccountInfo,
   XtreamStream,
+)
+from bellhop_web.http_utils import (
+  ClientSessionFactory,
+  default_session_factory,
+  upstream_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,13 +116,15 @@ class StreamValidator:
     config: AppConfig,
     account: XtreamAccountInfo | None = None,
     *,
-    transport: httpx.AsyncBaseTransport | None = None,
+    session_factory: ClientSessionFactory | None = None,
   ) -> None:
     self.config = config
     self.val_cfg = config.validation
     self.concurrency = effective_concurrency(config, account)
     self._semaphore = asyncio.Semaphore(self.concurrency)
-    self._transport = transport
+    self._session_factory: ClientSessionFactory = (
+      session_factory or default_session_factory
+    )
     self._probe_cache: dict[int, ProbeResult] = {}
     self._inflight: dict[int, asyncio.Future[ProbeResult]] = {}
     self.ffprobe_path: str | None = (
@@ -153,15 +160,14 @@ class StreamValidator:
     on_channel_done: ProgressCallback | None = None,
   ) -> list[MappedChannel]:
     """Validate ranked candidates per channel, stopping at the first working stream."""
-    timeout = httpx.Timeout(
-      self.val_cfg.http_timeout_sec,
+    timeout = aiohttp.ClientTimeout(
+      total=None,
       connect=min(5.0, self.val_cfg.http_timeout_sec),
+      sock_read=self.val_cfg.http_timeout_sec,
     )
-    async with httpx.AsyncClient(
+    async with self._session_factory(
       timeout=timeout,
       headers={"User-Agent": STREAM_USER_AGENT, "Icy-MetaData": "0"},
-      follow_redirects=True,
-      transport=self._transport,
     ) as client:
       total = len(mappings)
       completed = 0
@@ -193,7 +199,7 @@ class StreamValidator:
   async def _validate_single_channel(
     self,
     mapped: MappedChannel,
-    client: httpx.AsyncClient,
+    client: aiohttp.ClientSession,
   ) -> None:
     if not mapped.candidates:
       return
@@ -224,7 +230,7 @@ class StreamValidator:
   async def probe_stream(
     self,
     stream: XtreamStream,
-    client: httpx.AsyncClient,
+    client: aiohttp.ClientSession,
     *,
     allow_audio_only: bool = False,
   ) -> ProbeResult:
@@ -272,7 +278,7 @@ class StreamValidator:
   async def _execute_two_stage_probe(
     self,
     stream: XtreamStream,
-    client: httpx.AsyncClient,
+    client: aiohttp.ClientSession,
     *,
     allow_audio_only: bool = False,
   ) -> ProbeResult:
@@ -295,7 +301,7 @@ class StreamValidator:
     self,
     stream_id: int,
     url: str,
-    client: httpx.AsyncClient,
+    client: aiohttp.ClientSession,
     *,
     _hls_depth: int = 0,
   ) -> ProbeResult:
@@ -304,10 +310,10 @@ class StreamValidator:
     min_bytes = self.val_cfg.min_bytes_to_read
 
     try:
-      async with client.stream("GET", url) as resp:
+      async with client.get(upstream_url(url)) as resp:
         latency_ms = (time.perf_counter() - t0) * 1000.0
-        status = resp.status_code
-        content_type = resp.headers.get("content-type", "")
+        status = resp.status
+        content_type = resp.headers.get("Content-Type", "")
         final_url = str(resp.url)
 
         if status not in (200, 206):
@@ -336,9 +342,9 @@ class StreamValidator:
           )
           or (
             not path_lower.endswith(".m3u8")
-            and resp.headers.get("last-modified") is not None
-            and resp.headers.get("etag") is not None
-            and resp.headers.get("content-length") is not None
+            and resp.headers.get("Last-Modified") is not None
+            and resp.headers.get("ETag") is not None
+            and resp.headers.get("Content-Length") is not None
           )
         ):
           return ProbeResult(
@@ -362,7 +368,7 @@ class StreamValidator:
         )
 
         async def _read_initial() -> None:
-          async for chunk in resp.aiter_bytes(chunk_size=4096):
+          async for chunk in resp.content.iter_chunked(4096):
             if chunk:
               buf.extend(chunk)
               if len(buf) >= read_limit:
@@ -382,7 +388,7 @@ class StreamValidator:
         error="Stream read timed out",
         checked_at=checked_at,
       )
-    except httpx.HTTPError as exc:
+    except aiohttp.ClientError as exc:
       return ProbeResult(
         stream_id=stream_id,
         url=url,

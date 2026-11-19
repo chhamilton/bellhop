@@ -39,8 +39,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
-import httpx
+import aiohttp
 
+from bellhop_web.http_utils import (
+  ClientSessionFactory,
+  default_session_factory,
+  upstream_url,
+)
 from bellhop_web.store import (
   LineupGuideStore,
   LineupSnapshot,
@@ -277,12 +282,14 @@ class EpgRefreshService:
     store: LineupGuideStore,
     config: EpgRefreshConfig,
     *,
-    transport: httpx.AsyncBaseTransport | None = None,
+    session_factory: ClientSessionFactory | None = None,
   ) -> None:
     self.store = store
     self.config = config
-    self._transport = transport
-    self._client: httpx.AsyncClient | None = None
+    self._session_factory: ClientSessionFactory = (
+      session_factory or default_session_factory
+    )
+    self._client: aiohttp.ClientSession | None = None
     self._task: asyncio.Task[None] | None = None
     self._stop_event = asyncio.Event()
     self._refresh_lock = asyncio.Lock()
@@ -532,18 +539,19 @@ class EpgRefreshService:
     task.add_done_callback(_clear_done)
     return True
 
+  def _new_session(self) -> aiohttp.ClientSession:
+    return self._session_factory(
+      timeout=aiohttp.ClientTimeout(
+        total=max(30.0, self.config.request_timeout_sec),
+        connect=15.0,
+        sock_read=max(30.0, self.config.request_timeout_sec),
+      ),
+      headers={"User-Agent": DEFAULT_EPG_USER_AGENT},
+    )
+
   async def start(self) -> None:
     if self._client is None:
-      self._client = httpx.AsyncClient(
-        timeout=httpx.Timeout(
-          self.config.request_timeout_sec,
-          connect=15.0,
-          read=max(30.0, self.config.request_timeout_sec),
-        ),
-        headers={"User-Agent": DEFAULT_EPG_USER_AGENT},
-        follow_redirects=True,
-        transport=self._transport,
-      )
+      self._client = self._new_session()
     if self._last_updated is None:
       self.hydrate_from_cache()
     if not self.config.enabled:
@@ -568,7 +576,7 @@ class EpgRefreshService:
         await self._in_flight
     self._in_flight = None
     if self._client is not None:
-      await self._client.aclose()
+      await self._client.close()
       self._client = None
 
   async def refresh_now(
@@ -666,18 +674,6 @@ class EpgRefreshService:
         if not effective_url:
           raise RuntimeError("No upstream XMLTV passthrough URL available.")
 
-        if self._client is None:
-          self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(
-              self.config.request_timeout_sec,
-              connect=15.0,
-              read=max(30.0, self.config.request_timeout_sec),
-            ),
-            headers={"User-Agent": DEFAULT_EPG_USER_AGENT},
-            follow_redirects=True,
-            transport=self._transport,
-          )
-
         # Stream into a short-lived temp file, extract only mapped channels, then delete it
         self.config.cache_file.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(
@@ -690,14 +686,19 @@ class EpgRefreshService:
           "Fetching live XMLTV guide from upstream passthrough (reason=%s)...",
           reason,
         )
+        owns_client = self._client is None
+        client = (
+          self._client if self._client is not None else self._new_session()
+        )
         try:
           with open(fd, "wb") as out_fh:
-            async with self._client.stream("GET", effective_url) as resp:
+            async with client.get(upstream_url(effective_url)) as resp:
               resp.raise_for_status()
-              async for chunk in resp.aiter_bytes(chunk_size=65536):
+              async for chunk in resp.content.iter_chunked(65536):
                 out_fh.write(chunk)
-        except Exception:
-          raise
+        finally:
+          if owns_client:
+            await client.close()
 
         programs = await asyncio.to_thread(
           parse_xmltv_for_channels,

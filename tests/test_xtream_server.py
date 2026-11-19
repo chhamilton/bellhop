@@ -7,7 +7,6 @@ import json
 import time
 from pathlib import Path
 
-import httpx
 import pytest
 
 from bellhop.config import load_config
@@ -19,6 +18,7 @@ from tests.fake_xtream_server import (
   FakeStreamDef,
   FakeXtreamServer,
 )
+from tests.http_mock import TestHttpClient
 
 
 def _write_mini_lineup(path: Path) -> None:
@@ -155,7 +155,7 @@ serve:
     serve_base = f"http://127.0.0.1:{unified_srv.bound_port}"
 
     try:
-      async with httpx.AsyncClient(
+      async with TestHttpClient(
         base_url=serve_base, timeout=10.0, follow_redirects=False
       ) as client:
         # Unified /health check
@@ -433,7 +433,7 @@ serve:
         assert int(head_m3u.headers["content-length"]) > 0
 
       # Follow redirects end-to-end: XMLTV and live TS bytes come directly from upstream
-      async with httpx.AsyncClient(
+      async with TestHttpClient(
         base_url=serve_base, timeout=10.0, follow_redirects=True
       ) as follow_client:
         xml_live = await follow_client.get(
@@ -559,7 +559,7 @@ serve:
   srv = UnifiedServeServer.from_config(cfg_custom)
   await srv.start()
   try:
-    async with httpx.AsyncClient(
+    async with TestHttpClient(
       base_url=f"http://127.0.0.1:{srv.bound_port}", timeout=5.0
     ) as client:
       health = (await client.get("/health")).json()
@@ -654,7 +654,7 @@ serve:
     assert srv.web_bound_port == web_p
     assert srv.xtream_bound_port == xt_p
 
-    async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+    async with TestHttpClient(timeout=5.0, follow_redirects=False) as client:
       web_base = f"http://127.0.0.1:{web_p}"
       xt_base = f"http://127.0.0.1:{xt_p}"
 
@@ -770,7 +770,7 @@ serve:
   base = f"http://127.0.0.1:{srv.bound_port}"
 
   try:
-    async with httpx.AsyncClient(
+    async with TestHttpClient(
       base_url=base, timeout=5.0, follow_redirects=False
     ) as client:
       # 1. Unauthenticated browser request redirects to /login preserving stateful query string
@@ -846,7 +846,7 @@ serve:
     # 6. Visiting a specific deep-link URL with an invalid/expired token clears the bad cookie,
     #    redirects to /login?next=..., and form login redirects back to the exact original URL
     deep_target = "/?cat=1&q=T%C3%A9l%C3%A9&view=timeline&ch=1108"
-    async with httpx.AsyncClient(
+    async with TestHttpClient(
       base_url=base, timeout=5.0, follow_redirects=False
     ) as bad_client:
       bad_client.cookies.set("bellhop_session", "invalid.tampered.token")
@@ -998,7 +998,7 @@ pipeline:
     return keys
 
   try:
-    async with httpx.AsyncClient(base_url=base, timeout=5.0) as client:
+    async with TestHttpClient(base_url=base, timeout=5.0) as client:
       # 1. Unauthenticated /api/config is blocked with 401
       assert (await client.get("/api/config")).status_code == 401
       assert (await client.put("/api/config", json={})).status_code == 401

@@ -6,8 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 
-import httpx
 import pytest
+from aiohttp import web
 
 from bellhop.config import (
   AppConfig,
@@ -29,18 +29,18 @@ from bellhop.providers import (
   YamlLineupProvider,
   hash_sd_password,
 )
+from tests.http_mock import MockHttpServer
 
 
 @pytest.mark.asyncio
 async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
   tmp_path: Path,
 ) -> None:
-  def tvguide_handler(req: httpx.Request) -> httpx.Response:
-    path = req.url.path
+  def tvguide_handler(req: web.Request) -> web.Response:
+    path = req.path
     if path.endswith("/serviceproviders/country/CAN/web"):
-      return httpx.Response(
-        200,
-        json={
+      return web.json_response(
+        {
           "data": {
             "country": "CAN",
             "items": [
@@ -67,12 +67,11 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
               },
             ],
           }
-        },
+        }
       )
     if path.endswith("/serviceproviders/zipcode/10001/web"):
-      return httpx.Response(
-        200,
-        json={
+      return web.json_response(
+        {
           "data": {
             "zipcode": "10001",
             "items": [
@@ -85,12 +84,11 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
               }
             ],
           }
-        },
+        }
       )
     if path.endswith("/serviceprovider/9100000607/web"):
-      return httpx.Response(
-        200,
-        json={
+      return web.json_response(
+        {
           "data": {
             "item": {
               "id": 9100000607,
@@ -100,12 +98,11 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
               "type": "cable",
             }
           }
-        },
+        }
       )
     if path.endswith("/serviceprovider/9100000607/sources/web"):
-      return httpx.Response(
-        200,
-        json={
+      return web.json_response(
+        {
           "data": {
             "items": [
               {
@@ -150,14 +147,18 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
               },
             ]
           }
-        },
+        }
       )
-    return httpx.Response(404)
+    return web.Response(status=404)
 
-  async with httpx.AsyncClient(
-    transport=httpx.MockTransport(tvguide_handler)
-  ) as client:
-    tvg = TvGuideLineupProvider(client=client)
+  async with (
+    MockHttpServer(tvguide_handler) as mock,
+    mock.new_session() as client,
+  ):
+    tvg = TvGuideLineupProvider(
+      base_url=f"{mock.base_url}/tvschedules/tvguide",
+      client=client,
+    )
 
     # 1. Discover Canadian providers narrowed automatically by H2Y Montreal FSA
     ca_headends = await tvg.discover_lineups(
@@ -238,34 +239,33 @@ async def test_schedules_direct_provider_auth_reauth_auto_add_and_retrieval(
 
   state = {"token_calls": 0, "added_lineup": False}
 
-  def sd_handler(req: httpx.Request) -> httpx.Response:
-    path = req.url.path
+  async def sd_handler(req: web.Request) -> web.Response:
+    path = req.path
     if path.endswith("/token") and req.method == "POST":
-      body = json.loads(req.content.decode("utf-8"))
+      body = await req.json()
       assert body["username"] == "sd_user"
       assert body["password"] == expected_sha1
       state["token_calls"] += 1
-      return httpx.Response(
-        200,
-        json={
+      return web.json_response(
+        {
           "code": 0,
           "message": "OK",
           "token": f"tok_{state['token_calls']}",
-        },
+        }
       )
 
     tok = req.headers.get("token")
     if tok == "expired_tok":
-      return httpx.Response(
-        403, json={"code": 4003, "message": "INVALID_USER / EXPIRED_TOKEN"}
+      return web.json_response(
+        {"code": 4003, "message": "INVALID_USER / EXPIRED_TOKEN"},
+        status=403,
       )
 
     if path.endswith("/headends") and req.method == "GET":
-      assert req.url.params.get("country") == "CAN"
-      assert req.url.params.get("postalcode") == "H2Y1C6"
-      return httpx.Response(
-        200,
-        json=[
+      assert req.query.get("country") == "CAN"
+      assert req.query.get("postalcode") == "H2Y1C6"
+      return web.json_response(
+        [
           {
             "headend": "0005993",
             "transport": "Cable",
@@ -278,25 +278,24 @@ async def test_schedules_direct_provider_auth_reauth_auto_add_and_retrieval(
               }
             ],
           }
-        ],
+        ]
       )
 
     if path.endswith("/lineups/CAN-0005993-X") and req.method == "PUT":
       state["added_lineup"] = True
-      return httpx.Response(200, json={"code": 0, "response": "OK"})
+      return web.json_response({"code": 0, "response": "OK"})
 
     if path.endswith("/lineups/CAN-0005993-X") and req.method == "GET":
       if not state["added_lineup"]:
-        return httpx.Response(
-          400,
-          json={
+        return web.json_response(
+          {
             "code": 2100,
             "message": "Lineup CAN-0005993-X not in user account.",
           },
+          status=400,
         )
-      return httpx.Response(
-        200,
-        json={
+      return web.json_response(
+        {
           "map": [
             {"stationID": "19001", "channel": "108"},
             {"stationID": "64201", "channel": "1108"},
@@ -334,9 +333,9 @@ async def test_schedules_direct_provider_auth_reauth_auto_add_and_retrieval(
             "modified": "2026-11-01T00:00:00Z",
             "transport": "Cable",
           },
-        },
+        }
       )
-    return httpx.Response(404)
+    return web.Response(status=404)
 
   token_file = tmp_path / "state" / "sd_token.json"
   # Pre-seed an expired token to verify automatic re-authentication on 4003/403!
@@ -348,12 +347,11 @@ async def test_schedules_direct_provider_auth_reauth_auto_add_and_retrieval(
     encoding="utf-8",
   )
 
-  async with httpx.AsyncClient(
-    transport=httpx.MockTransport(sd_handler)
-  ) as client:
+  async with MockHttpServer(sd_handler) as mock, mock.new_session() as client:
     sd = SchedulesDirectLineupProvider(
       username="sd_user",
       password="my_sd_password",
+      base_url=f"{mock.base_url}/20141201",
       token_cache_path=token_file,
       auto_add_lineup=True,
       client=client,

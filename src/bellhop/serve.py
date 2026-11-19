@@ -1,17 +1,18 @@
-"""Unified `bellhop serve` HTTP server combining the Bellhop Web Guide (`bellhop_web`) and Xtream Codes API.
+"""Unified `bellhop serve` HTTP server combining the Web Guide and Xtream API.
 
-Both internal servers can share a single bind address & port (co-existing without route
-collisions) OR optionally run on separate ports / bind addresses from the same process.
+Both internal applications can share a single `aiohttp` listener (co-existing
+without route collisions) OR bind dedicated ports / interfaces inside the same
+asyncio event loop.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from http import HTTPStatus
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-import httpx
+from aiohttp import web
 
 from bellhop.config import (
   AppConfig,
@@ -28,27 +29,26 @@ from bellhop.xtream_server import (
 from bellhop_web.auth import WebAuthConfig, WebAuthManager
 from bellhop_web.epg_refresh import EpgRefreshConfig, EpgRefreshService
 from bellhop_web.http_utils import (
-  HttpRequest,
-  bound_server_port,
-  send_json,
-  serve_http_connection,
+  ClientSessionFactory,
+  create_web_app,
+  json_response,
+  start_site,
 )
 from bellhop_web.server import WebGuideApp
 from bellhop_web.store import LineupGuideStore
 
 logger = logging.getLogger("bellhop.serve")
 
+_Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
+
 
 class UnifiedServeServer:
-  """Async HTTP/1.1 router hosting `WebGuideApp` and `XtreamPassthroughServer`.
+  """aiohttp server hosting `WebGuideApp` and `XtreamPassthroughServer`.
 
-  - When both servers resolve to the same `(bind_host, port)`, a single shared listener
-    routes `/`, `/index.html`, `/static/*`, `/api/*` to `WebGuideApp` and Xtream routes
-    (`/player_api.php`, `/player.php`, `/panel_api.php`, `/xmltv.php`, `/epg.xml`,
-    `/get.php`, `/playlist.m3u*`, `/live/*`, `/<user>/<pass>/<id>[.<ext>]`, etc.)
-    to `XtreamPassthroughServer`.
-  - When configured on different ports or bind addresses, each server binds its own
-    listener inside the same asyncio event loop.
+  - When both servers resolve to the same `(bind_host, port)`, a single shared
+    `aiohttp.web.Application` mounts both route sets without collisions.
+  - When configured on different ports or bind addresses, each server starts
+    its own `web.AppRunner` inside the same asyncio event loop.
   """
 
   def __init__(
@@ -76,17 +76,17 @@ class UnifiedServeServer:
     self.server_protocol = server_protocol
     self._force_separate = separate_listeners
 
-    self._web_server: asyncio.Server | None = None
-    self._xtream_server: asyncio.Server | None = None
-    self._servers: list[asyncio.Server] = []
+    self._runners: list[web.AppRunner] = []
+    self._web_bound_port: int | None = None
+    self._xtream_bound_port: int | None = None
 
   @classmethod
   def from_config(
     cls,
     config: AppConfig,
     *,
-    upstream_transport: httpx.AsyncBaseTransport | None = None,
-    epg_transport: httpx.AsyncBaseTransport | None = None,
+    session_factory: ClientSessionFactory | None = None,
+    epg_session_factory: ClientSessionFactory | None = None,
     separate_listeners: bool = False,
   ) -> UnifiedServeServer:
     xtream_dir = config.resolve_path(config.output.xtream_dir)
@@ -119,7 +119,7 @@ class UnifiedServeServer:
         xmltv_file=xmltv_override,
         cache_file=epg_cache_file,
       ),
-      transport=epg_transport,
+      session_factory=epg_session_factory or session_factory,
     )
     web_auth = WebAuthManager(
       WebAuthConfig(
@@ -134,7 +134,7 @@ class UnifiedServeServer:
     web_app = WebGuideApp(
       web_store,
       settle_sec=max(0, config.serve.web.settle_ms) / 1000.0,
-      upstream_transport=upstream_transport,
+      session_factory=session_factory,
       epg_refresher=epg_refresher,
       auth=web_auth,
     )
@@ -169,7 +169,7 @@ class UnifiedServeServer:
       new_cfg, restart_required = apply_public_config_update(
         config_target, updates
       )
-      # Apply live-updatable operational knobs immediately (host-level web_server is untouched)
+      # Apply live-updatable operational knobs immediately (host-level web_server is untouched).
       if web_app.epg_refresher is not None:
         web_app.epg_refresher.config.refresh_hours = new_cfg.epg.refresh_hours
         web_app.epg_refresher.config.request_timeout_sec = (
@@ -213,11 +213,19 @@ class UnifiedServeServer:
 
   @property
   def web_bound_port(self) -> int:
-    return bound_server_port(self._web_server, self.web_port)
+    return (
+      self._web_bound_port
+      if self._web_bound_port is not None
+      else self.web_port
+    )
 
   @property
   def xtream_bound_port(self) -> int:
-    return bound_server_port(self._xtream_server, self.xtream_port)
+    return (
+      self._xtream_bound_port
+      if self._xtream_bound_port is not None
+      else self.xtream_port
+    )
 
   @property
   def bound_port(self) -> int:
@@ -248,6 +256,20 @@ class UnifiedServeServer:
       self.xtream_app.username and self.xtream_app.password
     )
 
+  def _build_listener_app(
+    self, *, serve_web: bool, serve_xtream: bool
+  ) -> web.Application:
+    app = create_web_app()
+    app.router.add_get(
+      "/health",
+      self._make_health_handler(serve_web=serve_web, serve_xtream=serve_xtream),
+    )
+    if serve_web:
+      self.web_app.add_routes(app)
+    if serve_xtream:
+      self.xtream_app.add_routes(app, include_health=False)
+    return app
+
   async def start(self) -> UnifiedServeServer:
     if not self.web_enabled and not self.xtream_enabled:
       raise ValueError(
@@ -257,167 +279,94 @@ class UnifiedServeServer:
     if self.web_enabled:
       await self.web_app.startup()
 
-    self._servers = []
+    self._runners = []
     if self.shared_listener:
-      srv = await asyncio.start_server(
-        lambda r, w: self._handle_connection(
-          r, w, serve_web=True, serve_xtream=True
-        ),
-        host=self.web_bind_host,
-        port=self.web_port,
-      )
-      self._web_server = srv
-      self._xtream_server = srv
-      self._servers.append(srv)
-      bound = self.web_bound_port
+      app = self._build_listener_app(serve_web=True, serve_xtream=True)
+      runner, bound = await start_site(app, self.web_bind_host, self.web_port)
+      self._runners.append(runner)
+      self._web_bound_port = bound
+      self._xtream_bound_port = bound
       self.web_port = bound
       self.xtream_port = bound
       self.xtream_app.port = bound
     else:
       if self.web_enabled:
-        web_srv = await asyncio.start_server(
-          lambda r, w: self._handle_connection(
-            r, w, serve_web=True, serve_xtream=False
-          ),
-          host=self.web_bind_host,
-          port=self.web_port,
+        web_only = self._build_listener_app(serve_web=True, serve_xtream=False)
+        web_runner, web_bound = await start_site(
+          web_only, self.web_bind_host, self.web_port
         )
-        self._web_server = web_srv
-        self._servers.append(web_srv)
-        self.web_port = self.web_bound_port
+        self._runners.append(web_runner)
+        self._web_bound_port = web_bound
+        self.web_port = web_bound
 
       if self.xtream_enabled:
-        xt_srv = await asyncio.start_server(
-          lambda r, w: self._handle_connection(
-            r, w, serve_web=False, serve_xtream=True
-          ),
-          host=self.xtream_bind_host,
-          port=self.xtream_port,
+        xt_only = self._build_listener_app(serve_web=False, serve_xtream=True)
+        xt_runner, xt_bound = await start_site(
+          xt_only, self.xtream_bind_host, self.xtream_port
         )
-        self._xtream_server = xt_srv
-        self._servers.append(xt_srv)
-        self.xtream_port = self.xtream_bound_port
-        self.xtream_app.port = self.xtream_port
+        self._runners.append(xt_runner)
+        self._xtream_bound_port = xt_bound
+        self.xtream_port = xt_bound
+        self.xtream_app.port = xt_bound
 
     return self
 
   async def stop(self) -> None:
-    servers = list(self._servers)
-    self._servers = []
-    self._web_server = None
-    self._xtream_server = None
-    for srv in servers:
-      srv.close()
-    for srv in servers:
-      await srv.wait_closed()
+    runners = list(self._runners)
+    self._runners = []
+    self._web_bound_port = None
+    self._xtream_bound_port = None
+    for runner in runners:
+      await runner.cleanup()
     if self.web_enabled:
       await self.web_app.shutdown()
 
   async def serve_forever(self) -> None:
     await self.start()
     try:
-      await asyncio.gather(*(srv.serve_forever() for srv in self._servers))
+      await asyncio.Event().wait()
     finally:
       await self.stop()
 
-  @staticmethod
-  def _is_web_guide_path(path: str) -> bool:
-    return (
-      path in ("/", "/index.html", "/login", "/favicon.ico", "/favicon.svg")
-      or path.startswith("/static/")
-      or path.startswith("/api/")
-    )
-
-  async def _handle_connection(
-    self,
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-    *,
-    serve_web: bool,
-    serve_xtream: bool,
-  ) -> None:
-    async def _on_req(req: HttpRequest, w: asyncio.StreamWriter) -> None:
-      if req.path == "/health" and req.method == "GET":
-        await self._handle_health(
-          w, serve_web=serve_web, serve_xtream=serve_xtream
-        )
-        return
-
-      if self._is_web_guide_path(req.path):
-        if serve_web:
-          await self.web_app.dispatch(
-            req.method,
-            req.path,
-            req.query,
-            w,
-            headers=req.headers,
-            body=req.body,
-            raw_target=req.raw_target,
-          )
-        else:
-          await send_json(
-            w, HTTPStatus.NOT_FOUND, {"error": f"Not found: {req.path}"}
-          )
+  def _make_health_handler(
+    self, *, serve_web: bool, serve_xtream: bool
+  ) -> _Handler:
+    async def _handle_health(_request: web.Request) -> web.StreamResponse:
+      if self.web_enabled:
+        snap = self.web_app.store.get_snapshot()
+        total_progs, active_progs, _ = snap.epg_coverage_stats()
+        lineup_id = snap.lineup_id
+        provider = snap.provider
+        market = snap.market
+        channel_count = len(snap.channels)
+        category_count = len(snap.categories)
+        active_tuner = self.web_app.tuner.active_info
       else:
-        if serve_xtream:
-          await self.xtream_app.dispatch(
-            req.method, req.path, req.query, req.headers, w
-          )
-        else:
-          await send_json(
-            w, HTTPStatus.NOT_FOUND, {"error": f"Not found: {req.path}"}
-          )
+        xt_snap = self.xtream_app.store.get_snapshot()
+        total_progs, active_progs = 0, 0
+        lineup_id = xt_snap.lineup_id
+        provider = xt_snap.provider
+        market = xt_snap.market
+        channel_count = len(xt_snap.streams)
+        category_count = len(xt_snap.categories)
+        active_tuner = None
 
-    await serve_http_connection(
-      reader,
-      writer,
-      _on_req,
-      logger=logger,
-      merge_form_query=True,
-    )
+      return json_response(
+        {
+          "status": "ok",
+          "lineup_id": lineup_id,
+          "provider": provider,
+          "market": market,
+          "channel_count": channel_count,
+          "category_count": category_count,
+          "epg_program_count": total_progs,
+          "epg_active_program_count": active_progs,
+          "web_guide_enabled": serve_web,
+          "web_auth_enabled": serve_web and self.web_auth_enabled,
+          "xtream_api_enabled": serve_xtream and self.xtream_auth_configured,
+          "shared_listener": self.shared_listener,
+          "active_tuner": active_tuner,
+        }
+      )
 
-  async def _handle_health(
-    self,
-    writer: asyncio.StreamWriter,
-    *,
-    serve_web: bool,
-    serve_xtream: bool,
-  ) -> None:
-    if self.web_enabled:
-      snap = self.web_app.store.get_snapshot()
-      total_progs, active_progs, _ = snap.epg_coverage_stats()
-      lineup_id = snap.lineup_id
-      provider = snap.provider
-      market = snap.market
-      channel_count = len(snap.channels)
-      category_count = len(snap.categories)
-      active_tuner = self.web_app.tuner.active_info
-    else:
-      xt_snap = self.xtream_app.store.get_snapshot()
-      total_progs, active_progs = 0, 0
-      lineup_id = xt_snap.lineup_id
-      provider = xt_snap.provider
-      market = xt_snap.market
-      channel_count = len(xt_snap.streams)
-      category_count = len(xt_snap.categories)
-      active_tuner = None
-
-    await send_json(
-      writer,
-      HTTPStatus.OK,
-      {
-        "status": "ok",
-        "lineup_id": lineup_id,
-        "provider": provider,
-        "market": market,
-        "channel_count": channel_count,
-        "category_count": category_count,
-        "epg_program_count": total_progs,
-        "epg_active_program_count": active_progs,
-        "web_guide_enabled": serve_web,
-        "web_auth_enabled": serve_web and self.web_auth_enabled,
-        "xtream_api_enabled": serve_xtream and self.xtream_auth_configured,
-        "shared_listener": self.shared_listener,
-        "active_tuner": active_tuner,
-      },
-    )
+    return _handle_health
