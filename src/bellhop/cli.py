@@ -370,6 +370,7 @@ def _add_run_execution_args(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+  """Build the top-level `bellhop` (`run` / `serve`) CLI argument parser."""
   parser = argparse.ArgumentParser(
     prog="bellhop",
     description=(
@@ -683,6 +684,7 @@ async def _execute_cli_run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+  """Execute the `bellhop` CLI entry point and return an OS exit status code."""
   raw_argv = list(sys.argv[1:] if argv is None else argv)
   # Default to `run` subcommand when invoked as bare `bellhop` or `bellhop --skip validate`
   if not raw_argv or raw_argv[0] not in {"run", "serve", "-h", "--help"}:

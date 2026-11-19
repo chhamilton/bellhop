@@ -44,6 +44,7 @@ def hash_sd_password(password: str) -> str:
 
 
 def clean_sd_lineup_id(lineup_id: str) -> str | None:
+  """Validate and uppercase a Schedules Direct Gracenote lineup ID."""
   m = SD_LINEUP_ID_RE.match(lineup_id.strip())
   return m.group(1).upper() if m else None
 

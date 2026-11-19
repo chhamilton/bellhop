@@ -49,6 +49,8 @@ def _load_official_logo_index(base_dir: Path | None = None) -> dict[int, str]:
 
 @dataclass(slots=True)
 class CableLineup:
+  """Normalized cable, fiber, or OTA provider channel lineup."""
+
   provider: str
   market: str
   postal_prefix: str

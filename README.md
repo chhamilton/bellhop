@@ -55,12 +55,15 @@ Executed by `PipelineRunner` (`src/bellhop/runner.py`) and driven exclusively by
   - Built on `aiohttp` (`aiohttp.web` server + `aiohttp.ClientSession` upstream client). By default, both the Bellhop Web Guide UI and the Passthrough Xtream Codes API share a single `aiohttp.web` application listener (`0.0.0.0:8080`) with clean route isolation, CORS preflight handling, and request body size limits. Setting `xtream_server.port` (or `host`) in `config.yaml` binds the Xtream server on its own dedicated listener.
 - **Bellhop Web TV Guide & Single-Tuner Proxy (`src/bellhop_web/`):**
   - **Views & Filtering:** Category-grouped **Cards** and a 4-hour 2D sticky **Timeline** EPG grid (with continuous `NOW` indicator across category banners), live search, a **With Guide** toggle to hide channels without EPG data, category-relative counts with subtle color cues, and stateful URL query parameters (`?cat=&epg=1&q=&view=timeline&offset=&mode=hls&ch=`).
-  - **Theming, Branding & Client Settings (`src/bellhop_web/frontend/`):** Strictly typed TypeScript frontend (`types.d.ts`, `prefs.ts`, `app.ts` compiled to `src/bellhop_web/static/*.js`) featuring the Bellhop Play Bell SVG logo & multi-size favicon, complementary **Dark / Light Mode** with a Sun/Moon toggle on both `/` and `/login`, and an extensible JSON `localStorage` client settings store (`bellhop.settings` via `window.BellhopSettings`).
-  - **Single-Tuner Stream Relay (`TunerSessionManager`):** Proxies live MPEG-TS (`/api/stream/<chno>.ts` via `Transfer-Encoding: chunked`) and HLS (`/api/hls/<chno>/index.m3u8` with 60s edge-URL affinity), enforcing settle delays between channel switches and automatic failover across `fallback_sources`.
+  - **Theming, Branding & Client Settings (`src/bellhop_web/frontend/`):** Strictly typed ES2022 TypeScript modules (`api_contracts.d.ts`, `types.d.ts`, `prefs.ts`, `login.ts`, `guide_logic.ts`, `render.ts`, `player.ts`, `settings.ts`, `app.ts` compiled to `src/bellhop_web/static/*.js`) featuring the Bellhop Play Bell SVG logo & multi-size favicon, complementary **Dark / Light Mode** with a Sun/Moon toggle on both `/` and `/login`, incremental 30s EPG progress updates, modal focus trapping & Timeline keyboard navigation, and an extensible JSON `localStorage` client settings store (`bellhop.settings` via `window.BellhopSettings`).
+  - **Single-Tuner Stream Relay (`TunerSessionManager`):** Proxies live MPEG-TS (`/api/stream/<chno>.ts` via `Transfer-Encoding: chunked`) and HLS (`/api/hls/<chno>/index.m3u8` with 60s edge-URL affinity), enforcing settle delays between channel switches and automatic failover across `fallback_sources`. Upstream credentials never leave the server when viewing through the Web Guide.
   - **Dynamic Passthrough EPG Cache (`EpgRefreshService`):** Fetches upstream `xmltv.php` on demand (without consuming the live-stream tuner), parses mapped channels in a worker thread, and persists a compact cache in `cache/bellhop_web/epg_cache.json`.
-  - **Authentication & Scoped Settings UI:** Signed HMAC-SHA256 session cookies (`bellhop_session`) with centered Bellhop splash on `/login?next=...`, plus a **Settings** drawer (`GET/PUT /api/config`) exposing operational pipeline & Xtream settings while keeping `web_server`, filesystem paths, and credentials strictly server-side.
+  - **Authentication & Scoped Settings UI:** Signed HMAC-SHA256 session cookies (`bellhop_session`), per-IP failed-login throttling (`429` + `Retry-After`), strict `Content-Security-Policy` (`script-src 'self' blob:`), centered Bellhop splash on `/login?next=...`, and a **Settings** drawer (`GET/PUT /api/config`) preserving YAML comments and `${ENV}` placeholders via `ruamel.yaml` while keeping `web_server`, filesystem paths, and credentials strictly server-side.
 - **Passthrough Xtream Codes API (`src/bellhop/xtream_server.py`):**
   - Supports `/player_api.php`, `/player.php`, `/panel_api.php`, `/get.php` (`m3u` & `m3u_plus`, `ts` & `hls`/`m3u8`, `category_id` filters), `/playlist.m3u`, `/playlist.m3u8`, and HTTP `302` upstream redirects for `/xmltv.php`, `/epg.xml`, and `/live/<user>/<pass>/<id>[.<ext>]`.
+  - **Security Note on Passthrough Redirects:** While `/player_api.php` strips `direct_source` from JSON listings, the `302` passthrough redirects on `/live/...` and `/xmltv.php` necessarily include the upstream provider URL and credentials in the HTTP `Location` header returned to authenticated Xtream clients so video and XMLTV streams flow directly from the IPTV provider without double-proxying. Use dedicated `xtream_server` client credentials on trusted LANs/VPNs, or use the Web TV Guide for fully server-proxied playback.
+- **One-Way Package Boundary (`bellhop_web` ← `bellhop`):**
+  - `src/bellhop_web/` is kept strictly decoupled from `bellhop.*` imports (`test_bellhop_web_package_never_imports_bellhop`), isolating the HTTP/UI presentation, auth, contract-codegen, and single-tuner relay layer from pipeline/CLI internals.
 
 ---
 
@@ -85,7 +88,7 @@ All persistent state files, exported playlists, and HTTP API payloads are backed
 
 | Artifact / Endpoint | Typed Model / Schema | Key Structure Layout |
 |---|---|---|
-| `config.yaml` + `/api/config` | `AppConfig`, `PublicConfigPayload` ([config.py](src/bellhop/config.py)) | **Tier 1 (file-only):** `credentials_file`, `paths`, `web_server`. **Tier 2 (`/api/config`):** `{upstream_xtream, xtream_server, pipeline: {lineup, matching, validation, epg, output}}`. |
+| `config.yaml` + `/api/config` | `AppConfig`, `PublicConfigPayload` ([config/](src/bellhop/config/), [api_contracts.py](src/bellhop_web/api_contracts.py)) | **Tier 1 (file-only):** `credentials_file`, `paths`, `web_server`. **Tier 2 (`/api/config`):** `{upstream_xtream, xtream_server, pipeline: {lineup, matching, validation, epg, output}}`. |
 | `state/lineups/<id>.json` | `LineupRetrievalResult`, `CableLineup`, `LineupChannelDict` ([lineup_retriever.py](src/bellhop/lineup_retriever.py), [models.py](src/bellhop/models.py)) | `{saved_timestamp, lineup_id, backend, last_diff, lineup: {provider, market, channels: [LineupChannelDict]}}`. |
 | `state/catalogs/iptv_catalog_*.json` | `CatalogFetchResult`, `CatalogDiff`, `XtreamStream` ([catalog_fetcher.py](src/bellhop/catalog_fetcher.py)) | `{saved_timestamp, account, categories, stream_count, last_diff, streams: [...]}`. |
 | `state/channel_mapping.json` | `MappingDocument`, `ChannelMappingSlot`, `CandidateRecord`, `ProbeResultDict` ([mapping_state.py](src/bellhop/mapping_state.py)) | `{schema_version: 1, lineup_id, last_summary, slots: {"<chno>": {preferred_stream_id, preferred_source, change_status, candidates: [...]}}}`. |
@@ -159,27 +162,31 @@ docker compose exec bellhop bellhop run --skip validate
 
 Run `./.agents/scripts/bootstrap.sh` to create `.venv`, install all Python runtime + dev dependencies, install the TypeScript compiler, build frontend JS, and run the full test suite:
 
-- **Python Runtime (`pyproject.toml`):** Python `>=3.10`, `aiohttp`, `pyyaml`, `ruamel.yaml`, `python-dotenv`, `rich` (plus optional system `ffmpeg`/`ffprobe` for Phase 4 codec probing).
-- **Python Dev (`pip install -e ".[dev]"`):** `mypy`, `types-PyYAML`, `ruff`, `pytest`, `pytest-asyncio`, `nodejs-wheel` (provides self-contained `node` + `npm` inside `.venv`).
-- **Frontend Dev (`package.json`):** `typescript` (compiles `src/bellhop_web/frontend/*.ts` → `src/bellhop_web/static/*.js`).
+- **Python Runtime (`pyproject.toml` & pinned `requirements.lock`):** Python `>=3.10`, `aiohttp`, `pyyaml`, `ruamel.yaml`, `python-dotenv`, `rich` (plus optional system `ffmpeg`/`ffprobe` for Phase 4 codec probing; skippable in Docker via `--build-arg INSTALL_FFMPEG=0`).
+- **Python Dev (`pip install -e ".[dev]"`):** `mypy`, `types-PyYAML`, `ruff`, `pytest`, `pytest-asyncio`, `pytest-cov`, `nodejs-wheel` (provides self-contained `node` + `npm` inside `.venv`).
+- **Frontend Dev (`package.json` & `package-lock.json`):** `typescript` (compiles `src/bellhop_web/frontend/*.ts` → `src/bellhop_web/static/*.js`; vendored player versions & SHA-256 digests are recorded in [VERSIONS.md](src/bellhop_web/static/vendor/VERSIONS.md)).
 
 ---
 
 ## Coding Style, Type Checking & Tests
 
-- **Python Style (Google Python Style Guide):** Spaces only (zero tabs), **2-space indentation**, 80-character line wrapping, Google-style docstrings, and strict `mypy --strict` typing (zero `# type: ignore`), enforced by `[tool.ruff]` and `[tool.mypy]` in [pyproject.toml](pyproject.toml).
-- **Frontend TypeScript (`src/bellhop_web/frontend/`):** Edit `.ts` sources (2-space indent, `strict: true`, `noUncheckedIndexedAccess: true` in [tsconfig.json](tsconfig.json)) and compile to `src/bellhop_web/static/*.js` via `tsc`. Never hand-edit generated `static/app.js` or `static/prefs.js`.
-- **Automated Verification (`pytest`):** Runs all Python unit/integration/`FakeXtreamServer` E2E tests, `mypy --strict`, `ruff check` & `ruff format --check`, zero-tab enforcement, `tsc --noEmit` + compiled asset sync checks, and Node unit tests (`tests/frontend/prefs.test.mjs`):
+- **Python Style (Google Python Style Guide):** Spaces only (zero tabs), **2-space indentation**, 80-column soft wrapping via `ruff format` (`E501` exempted for long URLs/strings), Google-style docstrings enforced via `ruff` `pydocstyle` (`D` with `convention = "google"` across modules, packages, public classes, and public functions; `D102`/`D105`/`D107` exempted on self-explanatory methods/`__init__`), and strict `mypy --strict` typing (zero `# type: ignore`) configured in [pyproject.toml](pyproject.toml).
+- **Frontend TypeScript (`src/bellhop_web/frontend/`):** Edit `.ts` ES2022 module sources (2-space indent, `strict: true`, `noUncheckedIndexedAccess: true` in [tsconfig.json](tsconfig.json)) and compile to `src/bellhop_web/static/*.js` via `tsc`. Both `static/*.js` and generated `frontend/api_contracts.d.ts` are intentionally committed so `pip install .` requires no Node toolchain at runtime; `test_typescript_strict_and_compiled_assets_in_sync` enforces exact parity on every test run.
+- **Automated Verification (`pytest`):** Enforces `>= 85%` statement coverage (`pytest-cov`), `--strict-markers` (`docker`, `slow`, `real_outputs`), Python unit/contract/`FakeXtreamServer` & Alpine Docker E2E tests, `mypy --strict`, `ruff check` & `ruff format --check`, zero-tab checks, `tsc --noEmit` + asset sync, and Node unit tests (`tests/frontend/{prefs,guide}.test.mjs`):
 
 ```bash
-# Format & lint Python (Google style, 2-space indent):
+# Format & lint Python (Google style, 2-space indent, pydocstyle D):
 .venv/bin/ruff format src tests
 .venv/bin/ruff check src tests
 
 # Typecheck & compile TypeScript frontend -> src/bellhop_web/static/*.js:
 .venv/bin/node ./node_modules/typescript/bin/tsc
 
-# Run strict Python typecheck and complete test suite:
+# Run strict Python typecheck and complete test suite (with coverage & Docker E2E):
 .venv/bin/mypy
 .venv/bin/pytest -v
+
+# Fast hermetic non-Docker subset / opt-in local output check:
+.venv/bin/pytest -m "not docker"
+.venv/bin/pytest -m real_outputs --run-real-outputs
 ```
