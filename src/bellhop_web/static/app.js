@@ -664,14 +664,14 @@
                     const isLive = p.start_timestamp <= nowSec && nowSec < p.stop_timestamp;
                     const tip = `${p.title} (${timeFmt(p.start_timestamp)}–${timeFmt(p.stop_timestamp)})${p.description ? `\n${p.description}` : ""}`;
                     blocksHtml += `
-            <div class="tl-prog ${isLive ? "is-live" : ""}" style="left:${leftPx.toFixed(1)}px;width:${widthPx.toFixed(1)}px" title="${escapeHtml(tip)}" data-chno="${ch.chno}">
+            <div class="tl-prog ${isLive ? "is-live" : ""}" style="left:${leftPx.toFixed(1)}px;width:${widthPx.toFixed(1)}px" title="${escapeHtml(tip)}" data-chno="${ch.chno}" tabindex="0" role="button" aria-label="${escapeHtml(`${p.title} on ${ch.name}`)}">
               <div class="tl-prog-title">${escapeHtml(p.title)}</div>
               <div class="tl-prog-time">${timeFmt(p.start_timestamp)}–${timeFmt(p.stop_timestamp)}</div>
             </div>
           `;
                 }
                 if (!renderedAny) {
-                    blocksHtml += `<div class="tl-empty-hint" data-chno="${ch.chno}">Live broadcast — click to watch ${escapeHtml(ch.name)}</div>`;
+                    blocksHtml += `<div class="tl-empty-hint" data-chno="${ch.chno}" tabindex="0" role="button" aria-label="Watch ${escapeHtml(ch.name)}">Live broadcast — click to watch ${escapeHtml(ch.name)}</div>`;
                 }
                 const subLabel = ch.callsign
                     ? escapeHtml(ch.callsign)
@@ -680,7 +680,7 @@
                         : "LIVE");
                 rowsHtml += `
           <div class="tl-row">
-            <div class="tl-ch-cell" data-chno="${ch.chno}" title="${escapeHtml(`${ch.chno} ${ch.name}`)}">
+            <div class="tl-ch-cell" data-chno="${ch.chno}" tabindex="0" role="button" aria-label="Watch ${escapeHtml(ch.name)} (channel ${ch.chno})" title="${escapeHtml(`${ch.chno} ${ch.name}`)}">
               <span class="tl-ch-num">${ch.chno}</span>
               <div class="tl-logo">${renderLogoHtml(ch)}</div>
               <div class="tl-ch-meta">
@@ -997,10 +997,58 @@
             elStatusText.textContent = "Buffering live stream…";
         }
     });
+    let lastFocusedBeforePlayer = null;
+    let lastFocusedBeforeSettings = null;
+    const FOCUSABLE_SELECTOR = [
+        "button:not([disabled])",
+        "[href]",
+        "input:not([disabled]):not([type='hidden'])",
+        "select:not([disabled])",
+        "textarea:not([disabled])",
+        "video[controls]",
+        "[tabindex]:not([tabindex='-1'])",
+    ].join(",");
+    const getVisibleFocusable = (container) => Array.from(container.querySelectorAll(FOCUSABLE_SELECTOR)).filter((el) => !el.hidden && !el.closest("[hidden]"));
+    const trapFocusInContainer = (container, e) => {
+        if (e.key !== "Tab")
+            return;
+        const focusable = getVisibleFocusable(container);
+        if (focusable.length === 0) {
+            e.preventDefault();
+            return;
+        }
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (!first || !last)
+            return;
+        const active = document.activeElement;
+        if (e.shiftKey) {
+            if (!active || active === first || !container.contains(active)) {
+                e.preventDefault();
+                last.focus();
+            }
+        }
+        else if (!active || active === last || !container.contains(active)) {
+            e.preventDefault();
+            first.focus();
+        }
+    };
+    const restoreFocus = (saved, fallback) => {
+        const candidate = saved && saved.isConnected && !saved.closest("[hidden]")
+            ? saved
+            : fallback && fallback.isConnected && !fallback.closest("[hidden]")
+                ? fallback
+                : null;
+        candidate?.focus();
+    };
     const openChannelOverlay = (chno, { updateUrl = true, replaceUrl = false, fromDeepLink = false, } = {}) => {
         const ch = state.channels.find((c) => c.chno === Number(chno));
         if (!ch)
             return;
+        const wasHidden = elOverlay.hidden;
+        if (wasHidden && document.activeElement instanceof HTMLElement) {
+            lastFocusedBeforePlayer = document.activeElement;
+        }
         state.activeChannel = ch;
         elPlayerLogoWrap.innerHTML = renderLogoHtml(ch);
         elPlayerChno.textContent = String(ch.chno);
@@ -1016,6 +1064,9 @@
         }
         elOverlay.hidden = false;
         document.body.style.overflow = "hidden";
+        if (wasHidden) {
+            requireEl("close-player-btn").focus();
+        }
         if (updateUrl) {
             syncUrlFromState({ replace: replaceUrl });
         }
@@ -1033,11 +1084,16 @@
         }
         state.activeChannel = null;
         elOverlay.hidden = true;
-        document.body.style.overflow = "";
+        if (!elSettingsOverlay || elSettingsOverlay.hidden) {
+            document.body.style.overflow = "";
+        }
         destroyActivePlayers(true);
         if (updateUrl) {
             syncUrlFromState({ replace: replaceUrl });
         }
+        const toRestore = lastFocusedBeforePlayer;
+        lastFocusedBeforePlayer = null;
+        restoreFocus(toRestore);
     };
     const toggleFullscreen = async () => {
         try {
@@ -1161,6 +1217,44 @@
         }
     });
     elTimelineBody.addEventListener("click", handleChannelClick);
+    elTimelineBody.addEventListener("keydown", (e) => {
+        const el = e.target;
+        const item = el ? el.closest("[data-chno]") : null;
+        if (!item)
+            return;
+        if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openChannelOverlay(item.dataset["chno"]);
+            return;
+        }
+        const row = item.closest(".tl-row");
+        if (!row)
+            return;
+        if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+            const rowItems = Array.from(row.querySelectorAll(".tl-ch-cell, .tl-prog, .tl-empty-hint"));
+            const idx = rowItems.indexOf(item);
+            if (idx === -1)
+                return;
+            const next = rowItems[idx + (e.key === "ArrowRight" ? 1 : -1)];
+            if (next) {
+                e.preventDefault();
+                next.focus();
+            }
+            return;
+        }
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            const allRows = Array.from(elTimelineBody.querySelectorAll(".tl-row"));
+            const rIdx = allRows.indexOf(row);
+            if (rIdx === -1)
+                return;
+            const targetRow = allRows[rIdx + (e.key === "ArrowDown" ? 1 : -1)];
+            const targetCell = targetRow?.querySelector(".tl-ch-cell");
+            if (targetCell) {
+                e.preventDefault();
+                targetCell.focus();
+            }
+        }
+    });
     elTimelineHeader.addEventListener("click", (e) => {
         const el = e.target;
         const shiftBtn = el ? el.closest("[data-tl-shift]") : null;
@@ -1301,11 +1395,14 @@
         elSettingsTabs
             .querySelectorAll("[data-settings-tab]")
             .forEach((btn) => {
-            btn.classList.toggle("active", btn.dataset["settingsTab"] === activeSettingsTab);
+            const isActive = btn.dataset["settingsTab"] === activeSettingsTab;
+            btn.classList.toggle("active", isActive);
+            btn.setAttribute("aria-selected", isActive ? "true" : "false");
         });
         elSettingsBody
             .querySelectorAll("[data-settings-pane]")
             .forEach((pane) => {
+            pane.setAttribute("role", "tabpanel");
             pane.hidden = pane.dataset["settingsPane"] !== activeSettingsTab;
         });
     };
@@ -1571,8 +1668,13 @@
     const openSettingsDrawer = async () => {
         if (!elSettingsOverlay)
             return;
+        if (elSettingsOverlay.hidden &&
+            document.activeElement instanceof HTMLElement) {
+            lastFocusedBeforeSettings = document.activeElement;
+        }
         elSettingsOverlay.hidden = false;
         document.body.style.overflow = "hidden";
+        elSettingsCloseBtn?.focus();
         await loadSettingsIntoDrawer();
     };
     const closeSettingsDrawer = () => {
@@ -1582,6 +1684,9 @@
         if (elOverlay.hidden) {
             document.body.style.overflow = "";
         }
+        const toRestore = lastFocusedBeforeSettings;
+        lastFocusedBeforeSettings = null;
+        restoreFocus(toRestore, elSettingsBtn);
     };
     const checkSettingsAvailability = async () => {
         if (!elSettingsBtn)
@@ -1696,12 +1801,18 @@
                 e.preventDefault();
                 closeSettingsDrawer();
             }
+            else if (e.key === "Tab") {
+                trapFocusInContainer(elSettingsOverlay, e);
+            }
             return;
         }
         if (!elOverlay.hidden) {
             if (e.key === "Escape") {
                 e.preventDefault();
                 void closeOverlay();
+            }
+            else if (e.key === "Tab") {
+                trapFocusInContainer(elOverlay, e);
             }
             else if ((e.key === "f" || e.key === "F") && !inInput) {
                 e.preventDefault();
