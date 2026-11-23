@@ -237,6 +237,30 @@ SPINOFF_MODIFIER_TOKENS = frozenset(
   }
 )
 
+# Mainstream umbrella networks that operate separate "<Brand> News" or
+# "<Brand> International" sister channels (never collapse into one channel)
+MAJOR_SPINOFF_UMBRELLA_BRANDS = frozenset(
+  {
+    "abc",
+    "nbc",
+    "cbs",
+    "fox",
+    "pbs",
+    "cw",
+    "cbc",
+    "ctv",
+    "global",
+    "tva",
+    "bbc",
+    "sky",
+    "cnn",
+    "cnbc",
+    "msnbc",
+    "tsn",
+    "rds",
+  }
+)
+
 MONTREAL_MARKERS = frozenset(
   {
     "montreal",
@@ -393,6 +417,8 @@ TIMESHIFT_RE = re.compile(r"(?:^|\s)\+[123](?:\s|$|\])")
 LETTER_DIGIT_RE = re.compile(r"^([a-z]{2,})(\d+)$")
 GLUED_HD_SUFFIX_RE = re.compile(r"^([a-z]{4,})(fhd|uhd|hd)$")
 DECADE_OR_NUM_RE = re.compile(r"^\d+s?$")
+OTA_CALLSIGN_RE = re.compile(r"^(?:[cwk][a-z]{3}|[wk][a-z]{2})$")
+US_OTA_CALLSIGN_RE = re.compile(r"^[wk][a-z]{3}$")
 PAREN_CITY_RE = re.compile(r"\(([^()]+)\)")
 CALLSIGN_ROOT_RE = re.compile(r"-(?:e|w|c|f|p|tv|dt|hd)$", re.IGNORECASE)
 E_EXCLAMATION_RE = re.compile(r"(?<![a-z0-9])e!(?![a-z0-9])", re.IGNORECASE)
@@ -1083,6 +1109,14 @@ class ChannelMatcher:
           cs_epg = f"{cs_variant}{sfx}"
           if cs_epg in self._epg_index:
             candidate_indices.update(self._epg_index[cs_epg])
+      # US 4-letter OTA callsign on-air branding tail (e.g. WPIX -> "PIX" in "CW PIX 11")
+      if US_OTA_CALLSIGN_RE.match(cs_root):
+        cs_tail = cs_root[1:]
+        if (
+          cs_tail in self._token_index
+          and len(self._token_index[cs_tail]) <= 220
+        ):
+          candidate_indices.update(self._token_index[cs_tail])
 
     selective_cap = max(220, len(self._prepared) // 25)
     for _, _, a_toks in alias_specs:
@@ -1230,6 +1264,32 @@ class ChannelMatcher:
         weights.append(per_ch)
     return "".join(chars), weights
 
+  def _is_rare_specialty_brand(
+    self,
+    a_toks: tuple[str, ...],
+    c_toks: tuple[str, ...],
+    allowed_extra: AbstractSet[str],
+  ) -> bool:
+    """Return True when `a_toks`/`c_toks` share an ultra-rare non-umbrella brand (`df <= 3`)."""
+    alias_set = set(a_toks)
+    cand_set = set(c_toks)
+    if (alias_set | cand_set) & MAJOR_SPINOFF_UMBRELLA_BRANDS:
+      return False
+    if any(
+      len(t) >= 3
+      and t not in allowed_extra
+      and len(self._token_index.get(t, ())) <= 3
+      for t in cand_set
+    ):
+      return True
+    a_clean = "".join(t for t in a_toks if t != "&")
+    c_clean = "".join(t for t in c_toks if t != "&")
+    return (
+      len(a_clean) >= 5
+      and len(self._compound_index.get(a_clean, ())) <= 3
+      and c_clean.startswith(a_clean)
+    )
+
   def _weighted_edit_similarity(
     self,
     a_toks: tuple[str, ...],
@@ -1253,8 +1313,17 @@ class ChannelMatcher:
 
     alias_set = set(a_toks)
     cand_set = set(c_toks)
-    if (cand_set - alias_set) & effective_spinoff_tokens:
-      return 0.0
+    added_spinoffs = (cand_set - alias_set) & effective_spinoff_tokens
+    if added_spinoffs:
+      # Allow "international" or "news" feed suffixes ONLY on ultra-rare specialty brands
+      # (df <= 3 in catalog, e.g. "Aaj Tak" -> "AAJTAK INTERNATIONAL", "NTD" -> "NTD NEWS")
+      if not (
+        added_spinoffs <= {"international", "news"}
+        and self._is_rare_specialty_brand(a_toks, c_toks, allowed_extra)
+      ):
+        return 0.0
+      allowed_extra = set(allowed_extra) | added_spinoffs
+
     dropped_spinoffs = (alias_set - cand_set) & SPINOFF_MODIFIER_TOKENS
     if dropped_spinoffs:
       # Only allow omitting a redundant genre suffix ("Hollywood Suite 70s+ Movies" ->
@@ -1287,9 +1356,12 @@ class ChannelMatcher:
       ):
         if (
           lead_a in {"atn", "stc"}
-          and len(a_brand) >= 3
+          and len(a_brand) >= 2
           and a_brand[1:] == c_brand
-        ) or (
+          and len("".join(c_brand)) >= 4
+        ):
+          allowed_extra = set(allowed_extra) | {lead_a}
+        elif (
           min(len(lead_a), len(lead_c)) >= 5
           and difflib.SequenceMatcher(None, lead_a, lead_c).ratio() >= 0.86
         ):
@@ -1350,17 +1422,91 @@ class ChannelMatcher:
     # Signal A: Alias / Channel Identity Match
     best_alias_score = 0.0
     best_alias_reason = ""
+    cs_root = (
+      CALLSIGN_ROOT_RE.sub("", callsign_tok).strip("-")
+      if callsign_tok
+      else None
+    )
+    epg_stem = (
+      re.sub(
+        r"[^a-z0-9]+",
+        "",
+        strip_accents(prep.epg_id_lower.rsplit(".", 1)[0]),
+      )
+      if prep.epg_id_lower
+      else ""
+    )
     allowed_extra = set(BENIGN_QUALIFIER_TOKENS)
     for reg_key in target_regions:
       allowed_extra.update(TARGET_REGION_QUALIFIER_TOKENS.get(reg_key, ()))
-    if callsign_tok:
+    ch_name_toks = _strip_quality_tokens(
+      _tokenize_raw(channel.name, split_alnum=True)
+    )
+    has_station_brand_in_stream = any(
+      len(t) >= 2 and t not in allowed_extra and t in prep.full_tokens
+      for t in ch_name_toks
+    )
+    has_epg_callsign = bool(
+      cs_root and len(cs_root) >= 3 and epg_stem in {callsign_tok, cs_root}
+    )
+    raw_cs_token_hit = bool(
+      callsign_tok
+      and (
+        callsign_tok in prep.full_tokens
+        or (cs_root and len(cs_root) >= 3 and cs_root in prep.full_tokens)
+      )
+    )
+    # Guard 4-letter OTA callsigns that spell words/surnames ("CHAN" in "JACKIE CHAN ADVENTURES")
+    is_sole_callsign_core = bool(
+      cs_root
+      and (
+        prep.core_tokens == (cs_root,)
+        or prep.trimmed_core_tokens == (cs_root,)
+        or (callsign_tok and prep.core_tokens == (callsign_tok,))
+      )
+    )
+    has_direct_callsign = has_epg_callsign or (
+      raw_cs_token_hit
+      and (
+        not (cs_root and OTA_CALLSIGN_RE.match(cs_root))
+        or is_sole_callsign_core
+        or has_station_brand_in_stream
+      )
+    )
+    cs_tail = (
+      cs_root[1:] if (cs_root and US_OTA_CALLSIGN_RE.match(cs_root)) else None
+    )
+    has_ota_tail_brand = bool(
+      cs_tail and cs_tail in prep.full_tokens and has_station_brand_in_stream
+    )
+
+    if callsign_tok and has_direct_callsign:
       allowed_extra.add(callsign_tok)
+    if cs_root and has_direct_callsign:
+      allowed_extra.add(cs_root)
+    if has_ota_tail_brand and cs_tail:
+      allowed_extra.add(cs_tail)
     effective_spinoff_tokens = SPINOFF_MODIFIER_TOKENS - allowed_extra
 
-    cand_cores = (
+    # Strip OTA virtual channel numbers (1..69) on 4-letter OTA transmitter callsign matches
+    is_ota_callsign_hit = bool(
+      cs_root
+      and OTA_CALLSIGN_RE.match(cs_root)
+      and (has_direct_callsign or has_ota_tail_brand)
+    )
+    raw_cores = (
       (prep.core_tokens,)
       if prep.trimmed_core_tokens == prep.core_tokens
       else (prep.core_tokens, prep.trimmed_core_tokens)
+    )
+    cand_cores = (
+      tuple(
+        tuple(t for t in core if not (t.isdigit() and 1 <= int(t) <= 69))
+        or core
+        for core in raw_cores
+      )
+      if is_ota_callsign_hit
+      else raw_cores
     )
     for rank_idx, alias_raw, a_toks in alias_specs:
       specificity_bonus = max(0.0, 4.0 - rank_idx * 0.75)
@@ -1408,9 +1554,26 @@ class ChannelMatcher:
             for t in extra_tokens
             if t not in allowed_extra and t not in effective_spinoff_tokens
           ]
+          if (
+            unknown_extras
+            and cs_root
+            and OTA_CALLSIGN_RE.match(cs_root)
+            and a_toks in {(cs_root,), (callsign_tok,)}
+            and not has_direct_callsign
+          ):
+            continue
 
           if spinoff_hits:
-            cand_score = 18.0 - 15.0 * len(spinoff_hits)
+            if (
+              not unknown_extras
+              and set(spinoff_hits) <= {"international", "news"}
+              and self._is_rare_specialty_brand(
+                a_toks, candidate_core, allowed_extra
+              )
+            ):
+              cand_score = 57.0 + specificity_bonus - 2.0 * len(extra_tokens)
+            else:
+              cand_score = 18.0 - 15.0 * len(spinoff_hits)
           elif not unknown_extras:
             cand_score = 60.0 + specificity_bonus - 1.5 * len(extra_tokens)
           else:
@@ -1525,30 +1688,35 @@ class ChannelMatcher:
       reasons.append(best_alias_reason)
 
     # Signal B: Native Guide Data (EPG) preference — only boosts streams with name/callsign evidence
-    has_name_or_callsign = best_alias_score > 0 or (
-      callsign_tok is not None and callsign_tok in prep.full_tokens
+    has_name_or_callsign = (
+      best_alias_score > 0 or has_direct_callsign or has_ota_tail_brand
     )
     has_native_epg = False
     if (
       prep.epg_id_lower
       and has_name_or_callsign
-      and _is_plausible_native_epg(
-        prep.epg_id_lower,
-        tvg_id_lower=tvg_id_lower,
-        callsign_tok=callsign_tok,
-        alias_specs=alias_specs,
+      and (
+        has_direct_callsign
+        or _is_plausible_native_epg(
+          prep.epg_id_lower,
+          tvg_id_lower=tvg_id_lower,
+          callsign_tok=callsign_tok,
+          alias_specs=alias_specs,
+        )
       )
     ):
       has_native_epg = True
-      if tvg_id_lower and prep.epg_id_lower == tvg_id_lower:
+      if (tvg_id_lower and prep.epg_id_lower == tvg_id_lower) or (
+        cs_root and len(cs_root) >= 3 and epg_stem in {callsign_tok, cs_root}
+      ):
         score += 32.0
         reasons.append(f"native_epg_exact:{prep.stream.epg_channel_id}")
       else:
         score += 22.0
         reasons.append(f"native_epg:{prep.stream.epg_channel_id}")
 
-    # Signal C: Local Station Callsign Match (e.g. CBFT, CFCF, WVNY)
-    if callsign_tok and callsign_tok in prep.full_tokens:
+    # Signal C: Local Station Callsign Match (e.g. CBFT, CFCF, WVNY, ASN.ca, WPIX->PIX)
+    if has_direct_callsign or has_ota_tail_brand:
       if best_alias_score == 0:
         score += 56.0
       else:

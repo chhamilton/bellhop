@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from bellhop.matcher import ChannelMatcher, _is_plausible_native_epg
 from bellhop.models import LineupChannel, XtreamStream
+from bellhop.providers.normalizer import (
+  RawProviderSlot,
+  normalize_provider_slots,
+)
 
 
 def test_native_epg_plausibility_rejects_typos_and_accepts_matches() -> None:
@@ -322,3 +326,111 @@ def test_weighted_edit_distance_compounds_symbols_decades_and_multipass_claiming
   assert mapped[511] == []
   assert mapped[1300][0].stream.stream_id == 115
   assert mapped[1310][0].stream.stream_id == 115
+
+
+def test_callsign_epg_stem_ota_virtual_channel_tail_and_rare_feed_suffixes() -> (
+  None
+):
+  """Verify callsign EPG stem (`ASN.ca`), OTA tail (`WPIX`->`PIX 11`), `YTVW`, `ATN`, & rare feed suffixes."""
+  norm_slots = normalize_provider_slots(
+    [
+      RawProviderSlot(
+        chno=552,
+        raw_name="Youth Television Pacific",
+        callsign="YTVW",
+        country="CAN",
+      ),
+      RawProviderSlot(
+        chno=727,
+        raw_name="New Tang Dynasty Television",
+        callsign="NTDTV",
+        country="CAN",
+      ),
+      RawProviderSlot(
+        chno=793,
+        raw_name="ATN Aastha",
+        callsign="ATNASTH",
+        country="CAN",
+      ),
+      RawProviderSlot(
+        chno=795,
+        raw_name="ATN B4U Music",
+        callsign="ATNB4UM",
+        country="CAN",
+      ),
+      RawProviderSlot(
+        chno=808,
+        raw_name="Aaj Tak TV",
+        callsign="AAJTAK",
+        country="CAN",
+      ),
+      RawProviderSlot(
+        chno=1258,
+        raw_name="A Atlantic",
+        callsign="ASN-C",
+        country="CAN",
+      ),
+      RawProviderSlot(
+        chno=1277,
+        raw_name="CHAN Burnaby, British Columbia (Global)",
+        callsign="CHAN",
+        country="CAN",
+      ),
+      RawProviderSlot(
+        chno=1297,
+        raw_name="WPIX New York, New York (CW)",
+        callsign="WPIX",
+        country="USA",
+      ),
+      RawProviderSlot(
+        chno=220,
+        raw_name="WPTZ Plattsburg, New York (NBC)",
+        callsign="WPTZ",
+        country="USA",
+      ),
+      RawProviderSlot(
+        chno=221,
+        raw_name="WCAX Burlington, Vermont (CBS)",
+        callsign="WCAX",
+        country="USA",
+      ),
+    ],
+    postal_code="H2Y",
+    market="Montréal, QC",
+    provider_name="Bell Fibe TV",
+    lineup_id="TVG-9100000607",
+  )
+
+  streams = [
+    XtreamStream(stream_id=5520, name="CA: YTV"),
+    XtreamStream(stream_id=7270, name="AT&T: NTD NEWS ᴿᴬᵂ"),
+    XtreamStream(stream_id=7930, name="AT&T: AASTHA TV ᴿᴬᵂ"),
+    XtreamStream(stream_id=7950, name="AT&T: B4U MUSIC ᴿᴬᵂ"),
+    XtreamStream(stream_id=8080, name="AT&T: AAJTAK INTERNATIONAL ᴿᴬᵂ"),
+    XtreamStream(
+      stream_id=12580,
+      name="CA EN: CTV2 ATLANTIC HD",
+      epg_channel_id="ASN.ca",
+    ),
+    XtreamStream(stream_id=12770, name="US: JACKIE CHAN ADVENTURES 4K"),
+    XtreamStream(stream_id=12970, name="US: CW PIX 11 HD"),
+    XtreamStream(stream_id=2200, name="US: NBC 5 PLATTSBURGH NY (WPTZ) HD"),
+    XtreamStream(stream_id=2210, name="US: CBS NEWS HD"),
+  ]
+  matcher = ChannelMatcher(streams)
+  mapped = {
+    m.channel.chno: m.candidates for m in matcher.match_lineup(norm_slots)
+  }
+
+  assert mapped[552] and mapped[552][0].stream.stream_id == 5520
+  assert mapped[727] and mapped[727][0].stream.stream_id == 7270
+  assert mapped[793] and mapped[793][0].stream.stream_id == 7930
+  assert mapped[795] and mapped[795][0].stream.stream_id == 7950
+  assert mapped[808] and mapped[808][0].stream.stream_id == 8080
+  assert mapped[1258] and mapped[1258][0].stream.stream_id == 12580
+  # OTA callsign "CHAN" must not match surname inside "JACKIE CHAN ADVENTURES"
+  assert mapped[1277] == []
+  assert mapped[1297] and mapped[1297][0].stream.stream_id == 12970
+  assert mapped[220] and mapped[220][0].stream.stream_id == 2200
+  # Mainstream umbrella brands ("CBS") must NEVER collapse into "<Brand> News"
+  assert mapped[221] == []

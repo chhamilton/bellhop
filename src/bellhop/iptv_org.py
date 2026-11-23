@@ -135,7 +135,19 @@ COUNTRY_QUALIFIER_TOKENS: dict[str, frozenset[str]] = {
 }
 
 GENERIC_BROADCAST_TOKENS = frozenset(
-  {"channel", "network", "television", "tv", "chaine", "tele", "hd"}
+  {
+    "channel",
+    "network",
+    "television",
+    "tv",
+    "chaine",
+    "tele",
+    "hd",
+    "east",
+    "west",
+    "pacific",
+    "atlantic",
+  }
 )
 
 IPTV_ORG_SPINOFF_TOKENS = frozenset(

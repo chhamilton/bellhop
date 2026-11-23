@@ -448,10 +448,21 @@ def _clean_station_title(
     cs_clean = callsign.strip()
     cs_base = CALLSIGN_HD_SUFFIX_RE.sub("", cs_clean).strip("-")
     cs_root = CALLSIGN_DIR_SUFFIX_RE.sub("", cs_base).strip("-")
+    disp_low = display.lower()
+    if (
+      len(cs_root) >= 4
+      and cs_root[-1].upper() in {"E", "W"}
+      and any(d in disp_low for d in ("pacific", "west", "east"))
+    ):
+      cs_dir_trimmed = cs_root[:-1]
+    else:
+      cs_dir_trimmed = cs_root
     if len(cs_base) >= 3:
       aliases.append(cs_base)
     if cs_root != cs_base and len(cs_root) >= 3:
       aliases.append(cs_root)
+    if cs_dir_trimmed != cs_root and len(cs_dir_trimmed) >= 3:
+      aliases.append(cs_dir_trimmed)
     if cs_clean != cs_base and len(cs_clean) >= 3:
       aliases.append(cs_clean)
 
@@ -459,12 +470,13 @@ def _clean_station_title(
 
 
 def _extract_initialisms(title: str) -> list[str]:
-  """Derive 3–5 letter multi-word initialisms (`APTN`) and `<Word><Digit>` (`H2`) aliases."""
+  """Derive 3–5 letter multi-word initialisms (`APTN`, `YTV`) and `<Word><Digit>` (`H2`) aliases."""
   folded = _strip_accents(title)
   words = [
     w
     for w in re.findall(r"[A-Za-z0-9]+", folded)
     if w.lower() not in INITIALISM_SKIP_WORDS
+    and w.lower() not in {"east", "west", "pacific", "atlantic"}
   ]
   out: list[str] = []
   if (
@@ -475,6 +487,18 @@ def _extract_initialisms(title: str) -> list[str]:
     acronym = "".join(w[0] for w in words).upper()
     if 3 <= len(acronym) <= 5:
       out.append(acronym)
+    # If trailing word is "Television", also emit `<Init>TV` (e.g. "New Tang Dynasty" -> "NTD", "Youth Television" -> "YTV")
+    if words[-1].lower() == "television" and 3 <= len(words) - 1 <= 4:
+      stem_acr = "".join(w[0] for w in words[:-1]).upper()
+      if len(stem_acr) >= 3:
+        out.append(stem_acr)
+  elif (
+    len(words) == 2
+    and all(w[0].isalpha() for w in words)
+    and words[1].lower() == "television"
+    and len(words[0]) >= 4
+  ):
+    out.append(f"{words[0][0].upper()}TV")
   m_wd = WORD_SINGLE_DIGIT_RE.match(folded.strip())
   if m_wd:
     out.append(f"{m_wd.group(1)[0].upper()}{m_wd.group(2)}")
