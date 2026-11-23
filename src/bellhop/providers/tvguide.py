@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
 from bellhop.lineup_loader import CableLineup
+
+if TYPE_CHECKING:
+  from bellhop.iptv_org import IptvOrgIndex
 from bellhop.providers.base import (
   LineupBackendError,
   LineupProvider,
@@ -212,6 +215,7 @@ class TvGuideLineupProvider(LineupProvider):
     *,
     postal_code: str = "",
     excluded_channels: set[int] | None = None,
+    iptv_org_index: IptvOrgIndex | None = None,
   ) -> CableLineup:
     provider_id = parse_tvguide_provider_id(lineup_id)
     if not provider_id:
@@ -297,6 +301,7 @@ class TvGuideLineupProvider(LineupProvider):
       lineup_id=canonical_id,
       excluded_channels=excluded_channels,
       pair_sd_hd=True,
+      iptv_org_index=iptv_org_index,
     )
 
     postal_prefix = (
@@ -305,17 +310,22 @@ class TvGuideLineupProvider(LineupProvider):
       else (str(meta_item.get("zipcode") or "")[:5])
     )
 
+    meta_dict: dict[str, Any] = {
+      "backend": self.backend_name,
+      "tvguide_provider_id": int(provider_id),
+      "provider_type": meta_item.get("type", "cable"),
+      "raw_source_count": len(raw_slots),
+    }
+    if iptv_org_index is not None and not iptv_org_index.is_empty:
+      meta_dict["iptv_org_enriched"] = True
+      meta_dict["iptv_org_station_count"] = iptv_org_index.station_count
+
     return CableLineup(
       lineup_id=canonical_id,
       provider=provider_name,
       market=market,
       postal_prefix=postal_prefix,
       retrieved_at=datetime.now(timezone.utc).isoformat(),
-      metadata={
-        "backend": self.backend_name,
-        "tvguide_provider_id": int(provider_id),
-        "provider_type": meta_item.get("type", "cable"),
-        "raw_source_count": len(raw_slots),
-      },
+      metadata=meta_dict,
       channels=channels,
     )

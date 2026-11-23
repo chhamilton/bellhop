@@ -37,6 +37,8 @@ from pathlib import Path
 from typing import Any
 
 from bellhop.config import AppConfig
+from bellhop.dial_grouping import assign_dial_contiguous_groups
+from bellhop.iptv_org import IptvOrgClient, IptvOrgFetchResult, IptvOrgIndex
 from bellhop.lineup_loader import DEFAULT_BELL_FIBE_MTL_LINEUP_ID, CableLineup
 from bellhop.models import LineupChannel
 from bellhop.providers import (
@@ -48,6 +50,7 @@ from bellhop.providers import (
   YamlLineupProvider,
   parse_tvguide_provider_id,
 )
+from bellhop.providers.normalizer import populate_sibling_exclusions
 
 # Gracenote / Schedules Direct SD-JSON lineupId convention:
 # <ISO3_COUNTRY>-<HEADEND_CODE>-<DEVICE_TYPE>
@@ -294,12 +297,19 @@ def _snapshot_path_for(state_dir: Path, lineup_id: GracenoteLineupId) -> Path:
   return state_dir / "lineups" / f"{safe_name}.json"
 
 
+def _filter_excluded_audio(
+  channels: list[LineupChannel],
+) -> list[LineupChannel]:
+  return [c for c in channels if "music & audio" not in c.group.lower()]
+
+
 async def retrieve_cable_lineup(
   config: AppConfig,
   *,
   force_refresh: bool = False,
   dry_run: bool = False,
   providers: list[LineupProvider] | None = None,
+  iptv_org_client: IptvOrgClient | None = None,
 ) -> LineupRetrievalResult:
   """Retrieve target cable lineup on a monthly cadence (default 30 days), persisting state & diff."""
   raw_id_input = config.lineup.lineup_id
@@ -312,6 +322,20 @@ async def retrieve_cable_lineup(
     backend_hint=config.lineup.backend,
     providers=active_providers,
   )
+
+  iptv_org_res: IptvOrgFetchResult | None = None
+  iptv_org_index: IptvOrgIndex | None = None
+  if chosen_provider.backend_name != "yaml" and config.lineup.iptv_org.enabled:
+    active_iptv_org = iptv_org_client or IptvOrgClient(
+      cache_dir=config.resolve_path(config.xtream.cache_dir),
+      base_url=config.lineup.iptv_org.base_url,
+      recheck_hours=config.lineup.iptv_org.recheck_hours,
+    )
+    iptv_org_res = await active_iptv_org.fetch_index(
+      force_refresh=force_refresh,
+      dry_run=dry_run,
+    )
+    iptv_org_index = iptv_org_res.index
 
   state_dir = config.resolve_path(config.state.state_dir)
   snap_path = _snapshot_path_for(state_dir, parsed_id)
@@ -342,17 +366,28 @@ async def retrieve_cable_lineup(
       )
       cached_diff = LineupDiff.from_dict(raw.get("last_diff"))
 
-      if (
+      lineup_cache_fresh = (
         not force_refresh
         and refresh_sec > 0
         and age_sec <= refresh_sec
         and saved_ts >= source_mtime
         and saved_backend == chosen_provider.backend_name
-      ):
+      )
+      iptv_org_needs_reapply = (
+        chosen_provider.backend_name != "yaml"
+        and iptv_org_res is not None
+        and not iptv_org_res.index.is_empty
+        and (
+          iptv_org_res.updated
+          or not bool(previous_lineup.metadata.get("iptv_org_enriched"))
+        )
+      )
+
+      if lineup_cache_fresh and not iptv_org_needs_reapply:
         if config.lineup.exclude_audio:
-          previous_lineup.channels = [
-            c for c in previous_lineup.channels if c.group != "Music & Audio"
-          ]
+          previous_lineup.channels = _filter_excluded_audio(
+            previous_lineup.channels
+          )
         return LineupRetrievalResult(
           lineup_id=parsed_id,
           lineup=previous_lineup,
@@ -360,6 +395,61 @@ async def retrieve_cable_lineup(
           from_cache=True,
           age_days=round(age_sec / 86400.0, 2),
           diff=cached_diff,
+          snapshot_path=snap_path,
+        )
+
+      if (
+        lineup_cache_fresh
+        and iptv_org_needs_reapply
+        and iptv_org_index is not None
+      ):
+        re_grouped = CableLineup.from_dict(
+          previous_lineup.to_dict(),
+          excluded_channels=config.lineup.excluded_channels,
+        )
+        country_hint = (
+          "CAN"
+          if parsed_id.country == "TVG" and "QC" in re_grouped.market.upper()
+          else (
+            parsed_id.country if parsed_id.country in {"CAN", "USA"} else "CAN"
+          )
+        )
+        assign_dial_contiguous_groups(
+          re_grouped.channels,
+          iptv_org_index=iptv_org_index,
+          market=re_grouped.market,
+          country=country_hint,
+        )
+        populate_sibling_exclusions(re_grouped.channels)
+        re_grouped.metadata["iptv_org_enriched"] = True
+        re_grouped.metadata["iptv_org_station_count"] = (
+          iptv_org_index.station_count
+        )
+        re_diff = compute_lineup_diff(previous_lineup, re_grouped)
+        if not dry_run:
+          snap_path.parent.mkdir(parents=True, exist_ok=True)
+          payload = {
+            "saved_timestamp": saved_ts,
+            "retrieved_at": re_grouped.retrieved_at,
+            "lineup_id": parsed_id.raw_id,
+            "backend": chosen_provider.backend_name,
+            "last_diff": re_diff.to_dict(),
+            "lineup": re_grouped.to_dict(),
+          }
+          tmp_path = snap_path.with_suffix(".tmp")
+          tmp_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+          )
+          tmp_path.replace(snap_path)
+        if config.lineup.exclude_audio:
+          re_grouped.channels = _filter_excluded_audio(re_grouped.channels)
+        return LineupRetrievalResult(
+          lineup_id=parsed_id,
+          lineup=re_grouped,
+          backend=chosen_provider.backend_name,
+          from_cache=False,
+          age_days=round(age_sec / 86400.0, 2),
+          diff=re_diff,
           snapshot_path=snap_path,
         )
     except (OSError, ValueError, KeyError, TypeError):
@@ -370,6 +460,7 @@ async def retrieve_cable_lineup(
       raw_id_input,
       postal_code=config.lineup.postal_code,
       excluded_channels=config.lineup.excluded_channels,
+      iptv_org_index=iptv_org_index,
     )
   except LineupBackendError as exc:
     raise LineupRetrieverError(str(exc)) from exc
@@ -393,9 +484,7 @@ async def retrieve_cable_lineup(
     tmp_path.replace(snap_path)
 
   if config.lineup.exclude_audio:
-    fresh_lineup.channels = [
-      c for c in fresh_lineup.channels if c.group != "Music & Audio"
-    ]
+    fresh_lineup.channels = _filter_excluded_audio(fresh_lineup.channels)
 
   return LineupRetrievalResult(
     lineup_id=parsed_id,

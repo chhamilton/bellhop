@@ -6,6 +6,8 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
+from bellhop.dial_grouping import assign_dial_contiguous_groups
+from bellhop.iptv_org import IptvOrgIndex
 from bellhop.lineup_loader import (
   _load_official_logo_index,
   is_bell_fibe_lineup,
@@ -650,6 +652,7 @@ def normalize_provider_slots(
   lineup_id: str = "",
   excluded_channels: set[int] | None = None,
   pair_sd_hd: bool = True,
+  iptv_org_index: IptvOrgIndex | None = None,
 ) -> list[LineupChannel]:
   """Convert raw provider slots into deduplicated/paired `LineupChannel` objects."""
   excluded = excluded_channels or set()
@@ -781,8 +784,16 @@ def normalize_provider_slots(
       )
     )
 
+  primary_country = parsed_list[0].slot.country if parsed_list else "CAN"
+  assign_dial_contiguous_groups(
+    channels,
+    iptv_org_index=iptv_org_index,
+    market=market,
+    country=primary_country,
+  )
+
   # Infer automatic sibling exclusions (e.g., "RDS" excludes "2" and "info" if "RDS2" / "RDS Info" exist)
-  _populate_sibling_exclusions(channels)
+  populate_sibling_exclusions(channels)
   channels.sort(key=lambda c: c.chno)
   return channels
 
@@ -802,7 +813,8 @@ def _split_alnum_tokens(text: str) -> tuple[str, ...]:
   )
 
 
-def _populate_sibling_exclusions(channels: list[LineupChannel]) -> None:
+def populate_sibling_exclusions(channels: list[LineupChannel]) -> None:
+  """Populate sibling exclusion phrases (`RDS` vs `RDS 2`) across `channels`."""
   per_channel_phrases: list[tuple[LineupChannel, set[tuple[str, ...]]]] = []
   for ch in channels:
     phrases: set[tuple[str, ...]] = set()

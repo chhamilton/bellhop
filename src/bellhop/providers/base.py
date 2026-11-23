@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from bellhop.lineup_loader import CableLineup
+
+if TYPE_CHECKING:
+  from bellhop.iptv_org import IptvOrgIndex
 
 
 class LineupBackendError(RuntimeError):
@@ -61,5 +64,6 @@ class LineupProvider(ABC):
     *,
     postal_code: str = "",
     excluded_channels: set[int] | None = None,
+    iptv_org_index: IptvOrgIndex | None = None,
   ) -> CableLineup:
     """Retrieve and normalize a full channel lineup for `lineup_id`."""

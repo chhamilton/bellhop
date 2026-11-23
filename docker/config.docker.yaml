@@ -82,6 +82,10 @@ pipeline:
       password: "${SD_PASSWORD}"
       base_url: "https://json.schedulesdirect.org/20141201"
       auto_add_lineup: false
+    iptv_org:
+      enabled: true
+      base_url: "https://iptv-org.github.io/api"
+      recheck_hours: 24.0
 
   matching:
     upgrade_hysteresis_score: 5.0

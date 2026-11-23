@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from bellhop.lineup_loader import (
   DEFAULT_BELL_FIBE_MTL_LINEUP_ID,
   CableLineup,
   load_lineup,
 )
+
+if TYPE_CHECKING:
+  from bellhop.iptv_org import IptvOrgIndex
 from bellhop.providers.base import (
   LineupBackendError,
   LineupProvider,
@@ -77,7 +81,9 @@ class YamlLineupProvider(LineupProvider):
     *,
     postal_code: str = "",
     excluded_channels: set[int] | None = None,
+    iptv_org_index: IptvOrgIndex | None = None,
   ) -> CableLineup:
+    _ = iptv_org_index
     if not self.yaml_path.is_file():
       raise LineupBackendError(f"Lineup YAML file not found: {self.yaml_path}")
     raw_id = lineup_id.strip()

@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from bellhop.config.model import (
   AppConfig,
   EpgConfig,
+  IptvOrgConfig,
   LineupConfig,
   OutputConfig,
   SchedulesDirectConfig,
@@ -24,6 +25,7 @@ from bellhop.config.model import (
   ValidationConfig,
   XtreamConfig,
 )
+from bellhop.iptv_org import DEFAULT_IPTV_ORG_API_URL
 from bellhop.lineup_loader import DEFAULT_BELL_FIBE_MTL_LINEUP_ID
 from bellhop_web.http_utils import (
   DEFAULT_TRUSTED_PROXY_IPS,
@@ -224,6 +226,7 @@ def load_config(
 
   sd_cfg_raw = _subdict(lu_raw, "schedules_direct")
   tvg_cfg_raw = _subdict(lu_raw, "tvguide")
+  iptv_org_raw = _subdict(lu_raw, "iptv_org")
   collapse_sd = bool(lu_raw.get("collapse_sd_dupes", False))
   raw_num_mode = str(
     lu_raw.get("numbering_mode", "hd" if collapse_sd else "both")
@@ -283,6 +286,14 @@ def load_config(
         tvg_cfg_raw.get("base_url"),
         default="https://backend.tvguide.com/tvschedules/tvguide",
       )
+    ),
+    iptv_org=IptvOrgConfig(
+      enabled=bool(iptv_org_raw.get("enabled", True)),
+      base_url=_first_str(
+        iptv_org_raw.get("base_url"),
+        default=DEFAULT_IPTV_ORG_API_URL,
+      ),
+      recheck_hours=max(0.0, float(iptv_org_raw.get("recheck_hours", 24.0))),
     ),
   )
 

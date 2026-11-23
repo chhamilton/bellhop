@@ -11,11 +11,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
 from bellhop.lineup_loader import CableLineup
+
+if TYPE_CHECKING:
+  from bellhop.iptv_org import IptvOrgIndex
 from bellhop.providers.base import (
   LineupBackendError,
   LineupProvider,
@@ -352,6 +355,7 @@ class SchedulesDirectLineupProvider(LineupProvider):
     *,
     postal_code: str = "",
     excluded_channels: set[int] | None = None,
+    iptv_org_index: IptvOrgIndex | None = None,
   ) -> CableLineup:
     canonical_id = clean_sd_lineup_id(lineup_id)
     if not canonical_id:
@@ -433,11 +437,22 @@ class SchedulesDirectLineupProvider(LineupProvider):
       lineup_id=canonical_id,
       excluded_channels=excluded_channels,
       pair_sd_hd=True,
+      iptv_org_index=iptv_org_index,
     )
 
     postal_prefix = (
       postal_code.strip()[:3].upper() if postal_code.strip() else ""
     )
+
+    meta_dict: dict[str, Any] = {
+      "backend": self.backend_name,
+      "transport": transport,
+      "modified": meta.get("modified", ""),
+      "raw_station_count": len(stations_by_id),
+    }
+    if iptv_org_index is not None and not iptv_org_index.is_empty:
+      meta_dict["iptv_org_enriched"] = True
+      meta_dict["iptv_org_station_count"] = iptv_org_index.station_count
 
     return CableLineup(
       lineup_id=canonical_id,
@@ -445,11 +460,6 @@ class SchedulesDirectLineupProvider(LineupProvider):
       market=f"{country_prefix} ({transport})",
       postal_prefix=postal_prefix,
       retrieved_at=datetime.now(timezone.utc).isoformat(),
-      metadata={
-        "backend": self.backend_name,
-        "transport": transport,
-        "modified": meta.get("modified", ""),
-        "raw_station_count": len(stations_by_id),
-      },
+      metadata=meta_dict,
       channels=channels,
     )

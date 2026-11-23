@@ -112,6 +112,12 @@ pipeline:
       password: "${SD_PASSWORD}"
       base_url: "https://json.schedulesdirect.org/20141201"
       auto_add_lineup: false
+    iptv_org:
+      # Enriches dynamic lineups with `iptv-org` genres, languages, and `closed`/`replaced_by`
+      # transitions using HTTP ETag / Last-Modified conditional caching in `cache/iptv_org/`.
+      enabled: true
+      base_url: "https://iptv-org.github.io/api"
+      recheck_hours: 24.0
 
   matching:
     # Score advantage needed for a new candidate to replace an existing rough-matched stream

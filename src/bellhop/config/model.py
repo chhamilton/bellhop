@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bellhop.iptv_org import DEFAULT_IPTV_ORG_API_URL
 from bellhop.lineup_loader import DEFAULT_BELL_FIBE_MTL_LINEUP_ID
 from bellhop_web.http_utils import DEFAULT_TRUSTED_PROXY_IPS
 
@@ -62,6 +63,15 @@ class TvGuideConfig:
 
 
 @dataclass(slots=True)
+class IptvOrgConfig:
+  """Phase (1) `iptv-org` channel/feed metadata & HTTP ETag cache settings."""
+
+  enabled: bool = True
+  base_url: str = DEFAULT_IPTV_ORG_API_URL
+  recheck_hours: float = 24.0
+
+
+@dataclass(slots=True)
 class LineupConfig:
   """Phase (1) official cable/fiber lineup retrieval and numbering settings."""
 
@@ -79,6 +89,7 @@ class LineupConfig:
     default_factory=SchedulesDirectConfig
   )
   tvguide: TvGuideConfig = field(default_factory=TvGuideConfig)
+  iptv_org: IptvOrgConfig = field(default_factory=IptvOrgConfig)
 
 
 @dataclass(slots=True)
@@ -249,6 +260,11 @@ class AppConfig:
           "auto_add_lineup": self.lineup.schedules_direct.auto_add_lineup,
         },
         "tvguide": {"base_url": self.lineup.tvguide.base_url},
+        "iptv_org": {
+          "enabled": self.lineup.iptv_org.enabled,
+          "base_url": self.lineup.iptv_org.base_url,
+          "recheck_hours": self.lineup.iptv_org.recheck_hours,
+        },
       },
       "state": {
         "state_dir": str(self.state.state_dir),

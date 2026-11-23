@@ -29,6 +29,43 @@ def fake_clock() -> FakeClock:
   return FakeClock()
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_default_iptv_org(monkeypatch: pytest.MonkeyPatch) -> None:
+  """Prevent hermetic tests from hitting live `iptv-org.github.io` unless mocked."""
+  from bellhop.iptv_org import (
+    DEFAULT_IPTV_ORG_API_URL,
+    IptvOrgClient,
+    IptvOrgFetchResult,
+    IptvOrgIndex,
+  )
+
+  orig_fetch = IptvOrgClient.fetch_index
+
+  async def _guarded_fetch(
+    self: IptvOrgClient,
+    *,
+    force_refresh: bool = False,
+    dry_run: bool = False,
+    allow_offline_empty: bool = True,
+  ) -> IptvOrgFetchResult:
+    if self.base_url.rstrip("/") == DEFAULT_IPTV_ORG_API_URL.rstrip("/"):
+      return IptvOrgFetchResult(
+        index=IptvOrgIndex(),
+        updated=False,
+        from_cache=True,
+        channels_status="offline_empty",
+        feeds_status="offline_empty",
+      )
+    return await orig_fetch(
+      self,
+      force_refresh=force_refresh,
+      dry_run=dry_run,
+      allow_offline_empty=allow_offline_empty,
+    )
+
+  monkeypatch.setattr(IptvOrgClient, "fetch_index", _guarded_fetch)
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
   """Register `--run-real-outputs` for local non-hermetic output inspection."""
   parser.addoption(

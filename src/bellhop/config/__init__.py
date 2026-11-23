@@ -6,6 +6,7 @@ from bellhop.config.load import load_config
 from bellhop.config.model import (
   AppConfig,
   EpgConfig,
+  IptvOrgConfig,
   LineupConfig,
   OutputConfig,
   SchedulesDirectConfig,
@@ -36,6 +37,7 @@ from bellhop.config.public import (
 __all__ = [
   "AppConfig",
   "EpgConfig",
+  "IptvOrgConfig",
   "LineupConfig",
   "OutputConfig",
   "PublicConfigPayload",
