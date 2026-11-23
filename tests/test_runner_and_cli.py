@@ -145,3 +145,120 @@ pipeline:
     == 2
   )
   assert cli_main(["run", "-c", str(tmp_path / "missing.yaml"), "--quiet"]) == 2
+
+
+async def test_cached_catalog_expired_account_aborts_before_poisoning_mapping(
+  tmp_path: Path,
+) -> None:
+  """Verify Phase (4) checks `player_api.php` when catalog came from cache and preserves mapping on `Expired`."""
+  from aiohttp import web
+
+  from bellhop.xtream import XtreamError
+
+  status_box = {"status": "Active"}
+  stream_probes: list[str] = []
+
+  async def handle_api(request: web.Request) -> web.Response:
+    action = request.query.get("action", "")
+    if not action:
+      return web.json_response(
+        {
+          "user_info": {
+            "username": "alice",
+            "status": status_box["status"],
+            "auth": 1,
+            "active_cons": "0",
+            "max_connections": "1",
+          },
+          "server_info": {"server_protocol": "http"},
+        }
+      )
+    if action == "get_live_categories":
+      return web.json_response([{"category_id": "1", "category_name": "CA"}])
+    return web.json_response(
+      [
+        {
+          "stream_id": 501,
+          "name": "CA: YTV",
+          "category_id": "1",
+          "epg_channel_id": "YTV.ca",
+        }
+      ]
+    )
+
+  async def handle_stream(request: web.Request) -> web.Response:
+    stream_probes.append(request.path)
+    return web.Response(status=503, text="Expired placeholder")
+
+  app = web.Application()
+  app.router.add_get("/player_api.php", handle_api)
+  app.router.add_get("/live/{user}/{pw}/{sid}", handle_stream)
+  runner_srv = web.AppRunner(app)
+  await runner_srv.setup()
+  site = web.TCPSite(runner_srv, "127.0.0.1", 0)
+  await site.start()
+  try:
+    port = int(runner_srv.addresses[0][1])
+
+    mini_lineup = tmp_path / "lineup.yaml"
+    mini_lineup.write_text(
+      """\
+lineup_id: CAN-BELLFIBE-MTL-X
+provider: Bell Fibe TV
+market: Montréal, QC
+postal_prefix: H2Y
+channels:
+  - chno: 552
+    name: YTV
+    callsign: YTV
+    tvg_id: YTV.ca
+    group: Kids
+    language: en
+    regions: [ca]
+    aliases: [YTV]
+""",
+      encoding="utf-8",
+    )
+    state_dir = tmp_path / "state"
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+      f"""\
+paths:
+  state_dir: "{state_dir}"
+  cache_dir: "{tmp_path / "cache"}"
+  lineup_file: "{mini_lineup}"
+  m3u8_playlist_path: "{tmp_path / "output" / "bellhop.m3u8"}"
+  m3u8_report_path: "{tmp_path / "output" / "report.json"}"
+  xtream_output_dir: "{tmp_path / "output" / "xtream"}"
+upstream_xtream:
+  server_url: "http://127.0.0.1:{port}"
+  username: "alice"
+  password: "secret"
+pipeline:
+  lineup:
+    lineup_id: "CAN-BELLFIBE-MTL-X"
+  validation:
+    enabled: true
+  epg:
+    verify: false
+""",
+      encoding="utf-8",
+    )
+    cfg = load_config(cfg_path)
+    # Run 1: fetch active catalog + match (skip validate)
+    await PipelineRunner(cfg).run(PipelineRunOptions(skip_phases=["validate"]))
+
+    # Account expires while daily catalog snapshot is still fresh (<24h TTL)
+    status_box["status"] = "Expired"
+    with pytest.raises(XtreamError, match="Expired"):
+      await PipelineRunner(cfg).run()
+
+    # Zero live stream probes occurred, and candidate #501 was NOT poisoned as invalid!
+    assert stream_probes == []
+    saved = json.loads((state_dir / "channel_mapping.json").read_text())
+    assert (
+      saved["slots"]["552"]["candidates"][0]["validation_status"]
+      == "unvalidated"
+    )
+  finally:
+    await runner_srv.cleanup()

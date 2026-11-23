@@ -103,6 +103,78 @@ def _save_cached_catalog(
   tmp_file.replace(cache_file)
 
 
+async def fetch_xtream_account_info(
+  config: AppConfig,
+  *,
+  client: aiohttp.ClientSession | None = None,
+) -> XtreamAccountInfo:
+  """Verify live `player_api.php` account status without consuming a tuner slot."""
+  xt = config.xtream
+  if not xt.server_url or not xt.username or not xt.password:
+    raise XtreamError(
+      "Missing Xtream credentials. Configure upstream_xtream credentials in "
+      "credentials.yaml, config.yaml, or .env."
+    )
+
+  candidates = _candidate_base_urls(xt.server_url)
+  base_url = candidates[0]
+  base_params = {"username": xt.username, "password": xt.password}
+
+  owns_client = client is None
+  if owns_client:
+    client = aiohttp.ClientSession(
+      timeout=aiohttp.ClientTimeout(total=min(xt.request_timeout_sec, 15.0)),
+      headers={"User-Agent": DEFAULT_USER_AGENT},
+    )
+
+  assert client is not None
+  try:
+    account_payload: Any = None
+    last_exc: Exception | None = None
+    for cand_base in candidates:
+      try:
+        async with client.get(
+          f"{cand_base}/player_api.php", params=base_params
+        ) as resp:
+          resp.raise_for_status()
+          account_payload = await resp.json(content_type=None)
+          base_url = str(resp.url.origin())
+          xt.server_url = base_url
+          break
+      except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+        last_exc = exc
+
+    if account_payload is None:
+      if isinstance(last_exc, aiohttp.ClientResponseError):
+        raise XtreamError(
+          f"Xtream API HTTP {last_exc.status} error from {base_url}"
+        ) from last_exc
+      raise XtreamError(
+        f"Network error contacting Xtream server {xt.server_url}: {last_exc}"
+      ) from last_exc
+
+    if not isinstance(account_payload, dict):
+      raise XtreamError(
+        "Unexpected non-JSON-object response from player_api.php"
+      )
+
+    user_info = account_payload.get("user_info") or {}
+    if str(user_info.get("auth", "1")) == "0":
+      raise XtreamError(
+        "Xtream authentication failed (invalid username or password)."
+      )
+
+    account = XtreamAccountInfo.from_api_payload(account_payload)
+    if account.status.lower() not in {"active", "unknown", ""}:
+      raise XtreamError(
+        f"Xtream account is not active (status={account.status!r})."
+      )
+    return account
+  finally:
+    if owns_client:
+      await client.close()
+
+
 async def fetch_xtream_catalog(
   config: AppConfig,
   *,

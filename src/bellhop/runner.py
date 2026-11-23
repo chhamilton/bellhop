@@ -26,6 +26,7 @@ from bellhop.mapping_state import (
 from bellhop.models import MappedChannel
 from bellhop.playlist import write_m3u8, write_report
 from bellhop.validator import ProgressCallback, StreamValidator
+from bellhop.xtream import fetch_xtream_account_info
 from bellhop.xtream_exporter import (
   XtreamExportResult,
   export_xtream_playlist_and_guide,
@@ -335,6 +336,16 @@ class PipelineRunner:
 
       if not opts.dry_run and would_probe_slots > 0:
         account = catalog_res.catalog.account if catalog_res else None
+        xt = self.config.xtream
+        # If Phase (2) served a cached snapshot, verify `player_api.php` account
+        # status first so an expired/inactive account never poisons mapping state.
+        if (
+          self._custom_validator is None
+          and xt.seed_json is None
+          and bool(xt.server_url and xt.username and xt.password)
+          and (catalog_res is None or catalog_res.from_cache)
+        ):
+          account = await fetch_xtream_account_info(self.config)
         active_validator = self._custom_validator or StreamValidator(
           self.config, account
         )
