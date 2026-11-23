@@ -42,6 +42,9 @@ class ValidationConfig:
   min_bytes_to_read: int = 8192
   use_ffprobe: bool = True
   ffprobe_timeout_sec: float = 12.0
+  detect_black_screen: bool = True
+  black_sample_sec: float = 1.5
+  check_audio_language: bool = True
   max_candidates_per_channel: int = 5
 
 
@@ -281,6 +284,9 @@ class AppConfig:
         "min_bytes_to_read": self.validation.min_bytes_to_read,
         "use_ffprobe": self.validation.use_ffprobe,
         "ffprobe_timeout_sec": self.validation.ffprobe_timeout_sec,
+        "detect_black_screen": self.validation.detect_black_screen,
+        "black_sample_sec": self.validation.black_sample_sec,
+        "check_audio_language": self.validation.check_audio_language,
         "max_candidates_per_channel": self.validation.max_candidates_per_channel,
       },
       "epg": {

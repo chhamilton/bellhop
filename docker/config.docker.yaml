@@ -100,6 +100,9 @@ pipeline:
     min_bytes_to_read: 8192
     use_ffprobe: true
     ffprobe_timeout_sec: 12.0
+    detect_black_screen: true
+    black_sample_sec: 1.5
+    check_audio_language: true
     max_candidates_per_channel: 5
 
   epg:

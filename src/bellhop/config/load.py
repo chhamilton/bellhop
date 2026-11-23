@@ -219,6 +219,9 @@ def load_config(
     min_bytes_to_read=max(512, int(val_raw.get("min_bytes_to_read", 8192))),
     use_ffprobe=bool(val_raw.get("use_ffprobe", True)),
     ffprobe_timeout_sec=float(val_raw.get("ffprobe_timeout_sec", 12.0)),
+    detect_black_screen=bool(val_raw.get("detect_black_screen", True)),
+    black_sample_sec=max(0.5, float(val_raw.get("black_sample_sec", 1.5))),
+    check_audio_language=bool(val_raw.get("check_audio_language", True)),
     max_candidates_per_channel=max(
       1, int(val_raw.get("max_candidates_per_channel", 5))
     ),

@@ -1,13 +1,15 @@
-"""Two-stage async IPTV stream validator (HTTP/HLS/MPEG-TS check + optional ffprobe)."""
+"""Multi-stage async IPTV stream validator (HTTP/HLS/MPEG-TS, ffprobe audio/video, blackdetect)."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import re
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 
@@ -31,8 +33,160 @@ logger = logging.getLogger(__name__)
 STREAM_USER_AGENT = "VLC/3.0.20 LibVLC/3.0.20"
 TS_PACKET_SIZE = 188
 TS_SYNC_BYTE = 0x47
+AUDIO_LANG_MISMATCH_PREFIX = "Audio track language mismatch"
+BLACK_DURATION_RE = re.compile(r"black_duration:\s*([0-9]+(?:\.[0-9]+)?)")
+
+UNDETERMINED_LANG_CODES = frozenset(
+  {
+    "und",
+    "unk",
+    "mul",
+    "zxx",
+    "mis",
+    "nar",
+    "qaa",
+    "qab",
+    "qac",
+    "none",
+    "unknown",
+    "n/a",
+  }
+)
+
+ISO_LANG_TO_CANONICAL: dict[str, str] = {
+  "eng": "en",
+  "en": "en",
+  "fra": "fr",
+  "fre": "fr",
+  "fr": "fr",
+  "spa": "es",
+  "es": "es",
+  "ita": "it",
+  "it": "it",
+  "ara": "ar",
+  "ar": "ar",
+  "por": "pt",
+  "pt": "pt",
+  "deu": "de",
+  "ger": "de",
+  "de": "de",
+  "ell": "el",
+  "gre": "el",
+  "el": "el",
+  "zho": "zh",
+  "chi": "zh",
+  "cmn": "zh",
+  "yue": "zh",
+  "zh": "zh",
+  "hin": "hi",
+  "hi": "hi",
+  "pan": "pa",
+  "pa": "pa",
+  "urd": "ur",
+  "ur": "ur",
+  "tgl": "tl",
+  "fil": "tl",
+  "tl": "tl",
+  "rus": "ru",
+  "ru": "ru",
+  "ukr": "uk",
+  "uk": "uk",
+  "pol": "pl",
+  "pl": "pl",
+  "ron": "ro",
+  "rum": "ro",
+  "ro": "ro",
+  "tur": "tr",
+  "tr": "tr",
+  "vie": "vi",
+  "vi": "vi",
+  "jpn": "ja",
+  "ja": "ja",
+  "kor": "ko",
+  "ko": "ko",
+  "nld": "nl",
+  "dut": "nl",
+  "nl": "nl",
+  "heb": "he",
+  "he": "he",
+  "fas": "fa",
+  "per": "fa",
+  "fa": "fa",
+}
 
 ProgressCallback = Callable[[MappedChannel, int, int], None]
+
+
+def normalize_audio_language_code(raw_lang: str | None) -> str | None:
+  """Normalize an ISO-639-1/2/3 audio track language tag, ignoring `und`/`mul`."""
+  if not raw_lang:
+    return None
+  token = re.split(r"[-_]", raw_lang.strip().lower(), maxsplit=1)[0].strip()
+  if not token or token in UNDETERMINED_LANG_CODES:
+    return None
+  if token in ISO_LANG_TO_CANONICAL:
+    return ISO_LANG_TO_CANONICAL[token]
+  if len(token) in (2, 3) and token.isalpha():
+    return token
+  return None
+
+
+def check_audio_language_compatibility(
+  expected_lang: str | None,
+  audio_languages: Sequence[str],
+  *,
+  allow_audio_only: bool = False,
+) -> tuple[bool, bool]:
+  """Return `(is_compatible, is_verified_match)` for a slot language vs probed tracks."""
+  if allow_audio_only:
+    return (True, False)
+  expected = normalize_audio_language_code(expected_lang)
+  actual = [
+    normed
+    for raw in audio_languages
+    if (normed := normalize_audio_language_code(raw)) is not None
+  ]
+  if expected is None or not actual:
+    return (True, False)
+  if expected in actual:
+    return (True, True)
+  return (False, False)
+
+
+def clone_probe_with_language_mismatch(
+  probe: ProbeResult, expected_lang: str
+) -> ProbeResult:
+  """Return a slot-scoped failed `ProbeResult` describing an audio language mismatch."""
+  exp = normalize_audio_language_code(expected_lang) or expected_lang
+  tracks = ",".join(probe.audio_languages) or "unknown"
+  return replace(
+    probe,
+    ok=False,
+    error=f"{AUDIO_LANG_MISMATCH_PREFIX} ({tracks} != {exp})",
+  )
+
+
+def strip_slot_language_mismatch(probe: ProbeResult) -> ProbeResult:
+  """Recover intrinsic stream health if `probe` was rejected solely for slot language."""
+  if (
+    not probe.ok
+    and not probe.black_screen
+    and probe.error
+    and probe.error.startswith(AUDIO_LANG_MISMATCH_PREFIX)
+  ):
+    return replace(probe, ok=True, error=None)
+  return probe
+
+
+def parse_blackdetect_duration(stderr_text: str) -> float:
+  """Sum `black_duration:<sec>` intervals reported by `ffmpeg -vf blackdetect`."""
+  total = 0.0
+  for match in BLACK_DURATION_RE.finditer(stderr_text):
+    try:
+      total += float(match.group(1))
+    except ValueError:
+      continue
+  return total
 
 
 def effective_concurrency(
@@ -130,6 +284,11 @@ class StreamValidator:
     self.ffprobe_path: str | None = (
       shutil.which("ffprobe") if self.val_cfg.use_ffprobe else None
     )
+    self.ffmpeg_path: str | None = (
+      shutil.which("ffmpeg")
+      if (self.val_cfg.use_ffprobe and self.val_cfg.detect_black_screen)
+      else None
+    )
     if self.val_cfg.use_ffprobe and not self.ffprobe_path:
       logger.warning(
         "ffprobe not found on PATH; proceeding with Stage 1 HTTP/MPEG-TS/HLS stream checks only."
@@ -211,6 +370,10 @@ class StreamValidator:
       or "music" in mapped.channel.group.lower()
     )
 
+    pinned_id = self.config.lineup.pinned_streams.get(mapped.channel.chno)
+    if pinned_id is None and mapped.channel.sd_chno is not None:
+      pinned_id = self.config.lineup.pinned_streams.get(mapped.channel.sd_chno)
+
     for candidate in mapped.candidates[:max_tries]:
       mapped.probes_attempted += 1
       probe = await self.probe_stream(
@@ -218,11 +381,28 @@ class StreamValidator:
         client,
         allow_audio_only=allow_audio_only,
       )
-      last_probe = probe
-      if probe.ok:
-        mapped.selected = candidate
-        mapped.probe = probe
-        return
+      if not probe.ok:
+        last_probe = probe
+        continue
+
+      if (
+        self.val_cfg.check_audio_language
+        and candidate.stream.stream_id != pinned_id
+      ):
+        compat, _ = check_audio_language_compatibility(
+          mapped.channel.language,
+          probe.audio_languages,
+          allow_audio_only=allow_audio_only,
+        )
+        if not compat:
+          last_probe = clone_probe_with_language_mismatch(
+            probe, mapped.channel.language
+          )
+          continue
+
+      mapped.selected = candidate
+      mapped.probe = probe
+      return
 
     # Record last failed probe for diagnostics if all candidates failed
     mapped.probe = last_probe
@@ -294,6 +474,17 @@ class StreamValidator:
       await self._stage2_ffprobe_check(
         result, allow_audio_only=allow_audio_only
       )
+
+    if (
+      result.ok
+      and self.ffmpeg_path
+      and self.val_cfg.detect_black_screen
+      and not allow_audio_only
+      and result.video_codec
+    ):
+      if self.val_cfg.inter_probe_delay_sec > 0:
+        await asyncio.sleep(self.val_cfg.inter_probe_delay_sec)
+      await self._stage3_black_screen_check(result)
 
     return result
 
@@ -592,11 +783,24 @@ class StreamValidator:
       return
 
     streams = payload.get("streams") or []
-    video = next((s for s in streams if s.get("codec_type") == "video"), None)
-    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    video = next(
+      (
+        s
+        for s in streams
+        if isinstance(s, Mapping) and s.get("codec_type") == "video"
+      ),
+      None,
+    )
+    audio_streams = [
+      s
+      for s in streams
+      if isinstance(s, Mapping) and s.get("codec_type") == "audio"
+    ]
 
     if video:
-      probe.video_codec = video.get("codec_name")
+      probe.video_codec = (
+        str(video["codec_name"]) if video.get("codec_name") else None
+      )
       if video.get("width"):
         probe.width = int(video["width"])
       if video.get("height"):
@@ -604,9 +808,84 @@ class StreamValidator:
       probe.fps = _parse_fps(video.get("avg_frame_rate")) or _parse_fps(
         video.get("r_frame_rate")
       )
-    if audio:
-      probe.audio_codec = audio.get("codec_name")
+    if audio_streams:
+      first_codec = audio_streams[0].get("codec_name")
+      probe.audio_codec = str(first_codec) if first_codec else None
+      seen_langs: list[str] = []
+      for a_stream in audio_streams:
+        tags = a_stream.get("tags")
+        if isinstance(tags, Mapping):
+          raw_tag_lang: str | None = None
+          for k, v in tags.items():
+            if str(k).lower() == "language" and v:
+              raw_tag_lang = str(v)
+              break
+          norm_lang = normalize_audio_language_code(raw_tag_lang)
+          if norm_lang and norm_lang not in seen_langs:
+            seen_langs.append(norm_lang)
+      probe.audio_languages = seen_langs
 
     if not probe.video_codec and not (allow_audio_only and probe.audio_codec):
       probe.ok = False
       probe.error = "ffprobe found no decodable video stream"
+
+  async def _stage3_black_screen_check(self, probe: ProbeResult) -> None:
+    """Decode a short sample via `ffmpeg -vf blackdetect` and reject pure-black streams."""
+    assert self.ffmpeg_path is not None
+    sample_sec = max(0.5, float(self.val_cfg.black_sample_sec))
+    min_black_dur = round(sample_sec * 0.85, 2)
+    cmd = [
+      self.ffmpeg_path,
+      "-hide_banner",
+      "-nostats",
+      "-loglevel",
+      "info",
+      "-user_agent",
+      STREAM_USER_AGENT,
+      "-t",
+      f"{sample_sec:.2f}",
+      "-i",
+      probe.url,
+      "-an",
+      "-sn",
+      "-dn",
+      "-vf",
+      f"blackdetect=d={min_black_dur:.2f}:pix_th=0.10:pic_th=0.98",
+      "-f",
+      "null",
+      "-",
+    ]
+
+    proc: asyncio.subprocess.Process | None = None
+    try:
+      proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+      )
+      _stdout, stderr = await asyncio.wait_for(
+        proc.communicate(),
+        timeout=self.val_cfg.ffprobe_timeout_sec,
+      )
+    except asyncio.TimeoutError:
+      if proc is not None and proc.returncode is None:
+        proc.kill()
+        await proc.wait()
+      logger.warning(
+        "ffmpeg blackdetect timed out on stream #%s; keeping Stage 2 result.",
+        probe.stream_id,
+      )
+      return
+    except OSError as exc:
+      logger.warning(
+        "Failed to execute ffmpeg blackdetect (%s); keeping Stage 2 result.",
+        exc,
+      )
+      return
+
+    stderr_text = stderr.decode("utf-8", errors="replace")
+    total_black = parse_blackdetect_duration(stderr_text)
+    if total_black >= sample_sec * 0.85:
+      probe.black_screen = True
+      probe.ok = False
+      probe.error = f"Black screen stream detected ({total_black:.2f}s/{sample_sec:.2f}s black)"

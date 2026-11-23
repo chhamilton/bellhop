@@ -86,6 +86,8 @@ class ProbeResultDict(TypedDict):
   ffprobe_checked: bool
   video_codec: str | None
   audio_codec: str | None
+  audio_languages: list[str]
+  black_screen: bool
   width: int | None
   height: int | None
   fps: float | None
@@ -314,6 +316,8 @@ class ProbeResult:
   ffprobe_checked: bool = False
   video_codec: str | None = None
   audio_codec: str | None = None
+  audio_languages: list[str] = field(default_factory=list)
+  black_screen: bool = False
   width: int | None = None
   height: int | None = None
   fps: float | None = None
@@ -351,6 +355,8 @@ class ProbeResult:
       "ffprobe_checked": self.ffprobe_checked,
       "video_codec": self.video_codec,
       "audio_codec": self.audio_codec,
+      "audio_languages": list(self.audio_languages),
+      "black_screen": self.black_screen,
       "width": self.width,
       "height": self.height,
       "fps": self.fps,
@@ -379,6 +385,12 @@ class ProbeResult:
       audio_codec=str(data["audio_codec"])
       if data.get("audio_codec") is not None
       else None,
+      audio_languages=[
+        str(lg).lower()
+        for lg in (data.get("audio_languages") or [])
+        if str(lg).strip()
+      ],
+      black_screen=bool(data.get("black_screen", False)),
       width=_opt_int(data.get("width")),
       height=_opt_int(data.get("height")),
       fps=_opt_float(data.get("fps")),

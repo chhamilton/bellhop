@@ -51,7 +51,7 @@ Persistent Mapping Schema (`state/channel_mapping.json`, `schema_version = 1`)
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -68,8 +68,17 @@ from bellhop.models import (
   XtreamStream,
 )
 from bellhop.playlist import _resolve_stream_url
-from bellhop.validator import ProgressCallback, StreamValidator
+from bellhop.validator import (
+  ProgressCallback,
+  StreamValidator,
+  check_audio_language_compatibility,
+  clone_probe_with_language_mismatch,
+  normalize_audio_language_code,
+  strip_slot_language_mismatch,
+)
 from bellhop.xtream import XtreamCatalog
+
+VERIFIED_AUDIO_LANG_BONUS = 6.0
 
 MAPPING_SCHEMA_VERSION = 1
 
@@ -391,14 +400,23 @@ def reconcile_rough_mapping(
   )
   prev_slots = existing.slots if existing else {}
 
-  # Collect known stream validation history across all previous slots
+  # Collect intrinsic stream validation history across all previous slots
   prior_validation: dict[int, tuple[str, ProbeResult | None]] = {}
   for old_slot in prev_slots.values():
     for old_cand in old_slot.candidates:
-      if old_cand.validation_status != "unvalidated":
+      if old_cand.validation_status == "unvalidated":
+        continue
+      if old_cand.probe is not None:
+        intrinsic_probe = strip_slot_language_mismatch(old_cand.probe)
+        intrinsic_status = "valid" if intrinsic_probe.ok else "invalid"
+        prior_validation[old_cand.stream_id] = (
+          intrinsic_status,
+          intrinsic_probe,
+        )
+      elif old_cand.stream_id not in prior_validation:
         prior_validation[old_cand.stream_id] = (
           old_cand.validation_status,
-          old_cand.probe,
+          None,
         )
 
   # Merge config-level pinned streams with any slot-level pins stored in existing mapping
@@ -423,6 +441,13 @@ def reconcile_rough_mapping(
   summary.removed_lineup_chnos = sorted(set(prev_slots) - lineup_chnos)
 
   for ch in lineup.channels:
+    pinned_id = effective_pins.get(ch.chno)
+    if pinned_id is None and ch.sd_chno is not None:
+      pinned_id = effective_pins.get(ch.sd_chno)
+    allow_audio_only = (
+      "audio" in ch.group.lower() or "music" in ch.group.lower()
+    )
+
     matched = matcher.find_candidates(ch, limit=max_cands)
     cand_records: list[CandidateRecord] = []
     for mc in matched:
@@ -430,13 +455,52 @@ def reconcile_rough_mapping(
         mc.stream.stream_id, ("unvalidated", None)
       )
       resolved_url = _resolve_stream_url(mc.stream, config)
+      slot_probe: ProbeResult | None = None
+      if prev_probe is not None:
+        clean_url = (
+          prev_probe.url.replace("***", config.xtream.password)
+          if (
+            prev_probe.url
+            and "***" in prev_probe.url
+            and config.xtream.password
+          )
+          else prev_probe.url
+        )
+        slot_probe = replace(
+          prev_probe,
+          url=clean_url,
+          audio_languages=list(prev_probe.audio_languages),
+        )
+
+      adj_score = mc.score
+      adj_reasons = list(mc.reasons)
+
       if (
-        prev_probe is not None
-        and prev_probe.url
-        and "***" in prev_probe.url
-        and config.xtream.password
+        slot_probe is not None
+        and slot_probe.ok
+        and config.validation.check_audio_language
+        and mc.stream.stream_id != pinned_id
       ):
-        prev_probe.url = prev_probe.url.replace("***", config.xtream.password)
+        compat, verified = check_audio_language_compatibility(
+          ch.language,
+          slot_probe.audio_languages,
+          allow_audio_only=allow_audio_only,
+        )
+        if not compat:
+          val_status = "invalid"
+          slot_probe = clone_probe_with_language_mismatch(
+            slot_probe, ch.language
+          )
+          adj_reasons.append(
+            f"audio_lang_mismatch:{','.join(slot_probe.audio_languages)}!={ch.language}"
+          )
+        elif verified:
+          norm_expected = (
+            normalize_audio_language_code(ch.language) or ch.language
+          )
+          adj_score = round(adj_score + VERIFIED_AUDIO_LANG_BONUS, 2)
+          adj_reasons.append(f"audio_lang_verified:{norm_expected}")
+
       cand_records.append(
         CandidateRecord(
           stream_id=mc.stream.stream_id,
@@ -447,10 +511,10 @@ def reconcile_rough_mapping(
           direct_source=resolved_url,
           has_native_epg=mc.has_native_epg,
           quality_tier=mc.quality_tier,
-          score=mc.score,
-          reasons=list(mc.reasons),
+          score=adj_score,
+          reasons=adj_reasons,
           validation_status=val_status,
-          probe=prev_probe,
+          probe=slot_probe,
         )
       )
 
@@ -463,10 +527,6 @@ def reconcile_rough_mapping(
         c.stream_id,
       )
     )
-
-    pinned_id = effective_pins.get(ch.chno)
-    if pinned_id is None and ch.sd_chno is not None:
-      pinned_id = effective_pins.get(ch.sd_chno)
 
     prior_slot = prev_slots.get(ch.chno)
     slot = _reconcile_single_slot(
@@ -745,12 +805,33 @@ def _sync_slot_validation(
   slot: ChannelMappingSlot,
   mapped: MappedChannel,
   probe_cache: dict[int, ProbeResult],
+  *,
+  check_audio_language: bool = True,
 ) -> None:
+  allow_audio_only = (
+    "audio" in slot.group.lower() or "music" in slot.group.lower()
+  )
   for cand in slot.candidates:
     if cand.stream_id in probe_cache:
       pr = probe_cache[cand.stream_id]
-      cand.probe = pr
-      cand.validation_status = "valid" if pr.ok else "invalid"
+      if not pr.ok:
+        cand.probe = pr
+        cand.validation_status = "invalid"
+      elif check_audio_language and cand.stream_id != slot.pinned_stream_id:
+        compat, _ = check_audio_language_compatibility(
+          slot.language,
+          pr.audio_languages,
+          allow_audio_only=allow_audio_only,
+        )
+        if not compat:
+          cand.probe = clone_probe_with_language_mismatch(pr, slot.language)
+          cand.validation_status = "invalid"
+        else:
+          cand.probe = pr
+          cand.validation_status = "valid"
+      else:
+        cand.probe = pr
+        cand.validation_status = "valid"
 
   slot.candidates.sort(
     key=lambda c: (
@@ -835,7 +916,12 @@ async def validate_mapping_candidates(
   ) -> None:
     sl = slot_by_chno.get(mapped.channel.chno)
     if sl is not None:
-      _sync_slot_validation(sl, mapped, probe_cache)
+      _sync_slot_validation(
+        sl,
+        mapped,
+        probe_cache,
+        check_audio_language=active_validator.val_cfg.check_audio_language,
+      )
     if (
       checkpoint_path is not None
       and checkpoint_interval > 0
@@ -854,7 +940,12 @@ async def validate_mapping_candidates(
   for mapped in mappings_to_probe:
     sl = slot_by_chno.get(mapped.channel.chno)
     if sl is not None:
-      _sync_slot_validation(sl, mapped, probe_cache)
+      _sync_slot_validation(
+        sl,
+        mapped,
+        probe_cache,
+        check_audio_language=active_validator.val_cfg.check_audio_language,
+      )
 
   doc.updated_at = datetime.now(timezone.utc).isoformat()
   if checkpoint_path is not None:
