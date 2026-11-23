@@ -390,3 +390,15 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
   assert any(
     r.startswith("audio_lang_mismatch:") for r in c5001_fr_day2.reasons
   )
+
+  # Unclaimed #7001 on 146 also retains its demoted language-mismatch state behind #7003
+  c7001_fr_day2 = next(
+    c for c in doc2.slots[146].candidates if c.stream_id == 7001
+  )
+  assert c7001_fr_day2.validation_status == "valid"
+  assert c7001_fr_day2.probe is not None
+  assert c7001_fr_day2.probe.audio_language_mismatch is True
+  assert doc2.slots[146].candidates[0].stream_id == 7003
+  assert any(
+    r.startswith("audio_lang_mismatch:") for r in c7001_fr_day2.reasons
+  )

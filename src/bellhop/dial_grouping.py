@@ -336,19 +336,10 @@ def build_channel_leaves_and_enrich(
 
     if match is not None:
       info = match.channel
-      preserves_local_callsign_id = bool(
-        ch.tvg_id
-        and ch.callsign
-        and ch.tvg_id.split(".", 1)[0].upper() == ch.callsign.upper()
-      )
       if (
         match.was_replaced
         or not ch.tvg_id
-        or (
-          iptv_org_index is not None
-          and not iptv_org_index.has_id(ch.tvg_id)
-          and not preserves_local_callsign_id
-        )
+        or (iptv_org_index is not None and not iptv_org_index.has_id(ch.tvg_id))
       ):
         ch.tvg_id = info.channel_id
 

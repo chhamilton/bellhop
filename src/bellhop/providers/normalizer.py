@@ -22,6 +22,11 @@ HD_SUFFIX_RE = re.compile(
   r"(?:\s+(?:HD|FHD|4K|UHD|DT)|\s*-?\s*HD)$", re.IGNORECASE
 )
 CALLSIGN_HD_SUFFIX_RE = re.compile(r"(?:HD|-HD|-DT|DT)$", re.IGNORECASE)
+CALLSIGN_DIR_SUFFIX_RE = re.compile(r"-(?:E|W|C|F|P|TV|DT|HD)$", re.IGNORECASE)
+INITIALISM_SKIP_WORDS = frozenset(
+  {"the", "of", "de", "du", "des", "la", "le", "les", "l", "d", "and", "et"}
+)
+WORD_SINGLE_DIGIT_RE = re.compile(r"^([A-Za-z]{5,})\s+([1-9])$")
 LOCAL_CALLSIGN_CITY_RE = re.compile(
   r"^([A-Z0-9-]{3,8})\s+([A-Za-zÀ-ÿ .'-]+),\s*([A-Za-zÀ-ÿ .'-]+?)(?:\s*\(([^()]+)\))?$"
 )
@@ -38,6 +43,28 @@ COUNTRY_PARENS = frozenset(
     "international",
     "english",
     "french",
+    "east",
+    "west",
+    "pacific",
+    "atlantic",
+    "central",
+    "mountain",
+    "hd",
+    "sd",
+  }
+)
+
+INITIALISM_END_NOUNS = frozenset(
+  {
+    "network",
+    "television",
+    "channel",
+    "broadcasting",
+    "legislature",
+    "parliament",
+    "corporation",
+    "entertainment",
+    "movies",
   }
 )
 
@@ -416,15 +443,42 @@ def _clean_station_title(
     aliases.append(stripped)
   if network_name and network_name.strip():
     aliases.append(network_name.strip())
+  aliases.extend(_extract_initialisms(display))
   if callsign:
     cs_clean = callsign.strip()
     cs_base = CALLSIGN_HD_SUFFIX_RE.sub("", cs_clean).strip("-")
+    cs_root = CALLSIGN_DIR_SUFFIX_RE.sub("", cs_base).strip("-")
     if len(cs_base) >= 3:
       aliases.append(cs_base)
+    if cs_root != cs_base and len(cs_root) >= 3:
+      aliases.append(cs_root)
     if cs_clean != cs_base and len(cs_clean) >= 3:
       aliases.append(cs_clean)
 
   return display, _dedupe_strs(aliases), is_hd
+
+
+def _extract_initialisms(title: str) -> list[str]:
+  """Derive 3–5 letter multi-word initialisms (`APTN`) and `<Word><Digit>` (`H2`) aliases."""
+  folded = _strip_accents(title)
+  words = [
+    w
+    for w in re.findall(r"[A-Za-z0-9]+", folded)
+    if w.lower() not in INITIALISM_SKIP_WORDS
+  ]
+  out: list[str] = []
+  if (
+    3 <= len(words) <= 6
+    and all(w[0].isalpha() for w in words)
+    and words[-1].lower() in INITIALISM_END_NOUNS
+  ):
+    acronym = "".join(w[0] for w in words).upper()
+    if 3 <= len(acronym) <= 5:
+      out.append(acronym)
+  m_wd = WORD_SINGLE_DIGIT_RE.match(folded.strip())
+  if m_wd:
+    out.append(f"{m_wd.group(1)[0].upper()}{m_wd.group(2)}")
+  return out
 
 
 def _dedupe_strs(items: list[str]) -> list[str]:

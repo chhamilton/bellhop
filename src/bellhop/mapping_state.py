@@ -445,6 +445,34 @@ def reconcile_rough_mapping(
   lineup_chnos = {ch.chno for ch in lineup.channels}
   summary.removed_lineup_chnos = sorted(set(prev_slots) - lineup_chnos)
 
+  # Build per-slot set of known-dead or audio-language-mismatched stream IDs so Pass 1
+  # does not hoard streams that failed or had cross-wired audio on that slot
+  globally_invalid_ids = {
+    sid for sid, (st, _pr) in prior_validation.items() if st == "invalid"
+  }
+  invalid_by_chno: dict[int, set[int]] = {}
+  for ch in lineup.channels:
+    slot_bad = set(globally_invalid_ids)
+    allow_ao = "audio" in ch.group.lower() or "music" in ch.group.lower()
+    if config.validation.check_audio_language and not allow_ao:
+      for sid, (st, pr) in prior_validation.items():
+        if st == "valid" and pr is not None and pr.audio_languages:
+          compat, _ = check_audio_language_compatibility(
+            ch.language, pr.audio_languages, allow_audio_only=False
+          )
+          if not compat:
+            slot_bad.add(sid)
+    invalid_by_chno[ch.chno] = slot_bad
+
+  multipass_by_chno = {
+    mc_row.channel.chno: mc_row.candidates
+    for mc_row in matcher.match_lineup(
+      lineup.channels,
+      max_candidates=max_cands,
+      invalid_stream_ids_by_chno=invalid_by_chno,
+    )
+  }
+
   for ch in lineup.channels:
     pinned_id = effective_pins.get(ch.chno)
     if pinned_id is None and ch.sd_chno is not None:
@@ -453,7 +481,7 @@ def reconcile_rough_mapping(
       "audio" in ch.group.lower() or "music" in ch.group.lower()
     )
 
-    matched = matcher.find_candidates(ch, limit=max_cands)
+    matched = multipass_by_chno.get(ch.chno, [])
     cand_records: list[CandidateRecord] = []
     for mc in matched:
       val_status, prev_probe = prior_validation.get(
