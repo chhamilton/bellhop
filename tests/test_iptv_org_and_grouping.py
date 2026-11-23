@@ -16,9 +16,15 @@ from bellhop.config import (
   XtreamConfig,
 )
 from bellhop.dial_grouping import assign_dial_contiguous_groups
-from bellhop.iptv_org import IptvOrgClient, IptvOrgError, IptvOrgIndex
+from bellhop.iptv_org import (
+  IptvOrgClient,
+  IptvOrgError,
+  IptvOrgIndex,
+  fold_latin_accents,
+)
 from bellhop.lineup_retriever import retrieve_cable_lineup
-from bellhop.models import LineupChannel
+from bellhop.matcher import ChannelMatcher
+from bellhop.models import LineupChannel, XtreamStream
 from bellhop.providers import (
   RawProviderSlot,
   TvGuideLineupProvider,
@@ -896,3 +902,173 @@ def test_2d_language_genre_mdl_segmentation_across_bilingual_intl_and_french_maj
   assert fr_by_no[101].group == "Sports"
   assert fr_by_no[201].group == "Movies"
   assert fr_by_no[601].group == "English — Sports"
+
+
+def test_latin_accent_ligature_folding_and_corpus_idf_fuzzy_matching() -> None:
+  assert fold_latin_accents("Télé-Québec Français") == "Tele-Quebec Francais"
+  assert fold_latin_accents("Cœur & Sœur Æon") == "Coeur & Soeur Aeon"
+  assert fold_latin_accents("Straße Øresund Łódź") == "Strasse Oresund Lodz"
+
+  idx = IptvOrgIndex.from_json_payloads(
+    channels_raw=[
+      {
+        "id": "CBFT.ca",
+        "name": "ICI Radio-Canada Télé",
+        "alt_names": ["ICI Télé", "Radio-Canada"],
+        "country": "CA",
+        "categories": ["general"],
+      },
+      {
+        "id": "NationalGeographic.ca",
+        "name": "National Geographic",
+        "alt_names": ["Nat Geo"],
+        "country": "CA",
+        "categories": ["science", "documentary"],
+      },
+      {
+        "id": "NationalGeographic.fr",
+        "name": "National Geographic Channel",
+        "alt_names": [],
+        "country": "FR",
+        "categories": ["documentary"],
+      },
+      {
+        "id": "Teletoon.ca",
+        "name": "Télétoon",
+        "alt_names": [],
+        "country": "CA",
+        "categories": ["animation", "kids"],
+      },
+      {
+        "id": "RDS.ca",
+        "name": "RDS",
+        "alt_names": ["Réseau des sports"],
+        "country": "CA",
+        "categories": ["sports"],
+      },
+      {
+        "id": "RDS2.ca",
+        "name": "RDS 2",
+        "alt_names": [],
+        "country": "CA",
+        "categories": ["sports"],
+      },
+      # Extra background stations so generic words ("channel", "tv") naturally carry lower IDF
+      *[
+        {
+          "id": f"Generic{i}.ca",
+          "name": f"Sample {i} Channel TV",
+          "alt_names": [],
+          "country": "CA",
+          "categories": ["entertainment"],
+        }
+        for i in range(12)
+      ],
+    ],
+    feeds_raw=[
+      {"channel": "CBFT.ca", "id": "M", "is_main": True, "languages": ["fra"]},
+      {
+        "channel": "NationalGeographic.ca",
+        "id": "M",
+        "is_main": True,
+        "languages": ["eng"],
+      },
+      {
+        "channel": "NationalGeographic.fr",
+        "id": "M",
+        "is_main": True,
+        "languages": ["fra"],
+      },
+      {
+        "channel": "Teletoon.ca",
+        "id": "M",
+        "is_main": True,
+        "languages": ["fra"],
+      },
+      {"channel": "RDS.ca", "id": "M", "is_main": True, "languages": ["fra"]},
+      {"channel": "RDS2.ca", "id": "M", "is_main": True, "languages": ["fra"]},
+    ],
+  )
+
+  # 1. Domestic CA fuzzy match ("National Geographic") beats foreign FR exact ("National Geographic Channel")!
+  natgeo_hit = idx.lookup("National Geographic Channel", country="CA")
+  assert natgeo_hit is not None
+  assert natgeo_hit.channel.channel_id == "NationalGeographic.ca"
+  assert natgeo_hit.channel.languages == ("eng",)
+
+  # 2. Enrich slots via `normalize_provider_slots` and match against raw IPTV catalog
+  slots = normalize_provider_slots(
+    [
+      RawProviderSlot(
+        chno=1101,
+        raw_name="CBFT Montreal, Quebec (Radio-Canada)",
+        callsign="CBFT",
+        country="CAN",
+      ),
+      RawProviderSlot(
+        chno=153,
+        raw_name="Télétoon Français",
+        language="fr",
+        country="CAN",
+      ),
+      RawProviderSlot(
+        chno=1524,
+        raw_name="National Geographic Channel HD",
+        country="CAN",
+      ),
+      RawProviderSlot(
+        chno=1108,
+        raw_name="RDS HD",
+        country="CAN",
+      ),
+    ],
+    postal_code="H2Y",
+    market="Montréal, QC",
+    provider_name="Bell Fibe TV",
+    lineup_id="TVG-9100000607",
+    iptv_org_index=idx,
+  )
+  by_no = {c.chno: c for c in slots}
+  assert by_no[1524].language == "en"
+  assert "Nat Geo" in by_no[1524].aliases
+  assert any("ICI" in a for a in by_no[1101].aliases)
+
+  catalog_streams = [
+    XtreamStream(stream_id=101, name="CA: ICI MONTREAL FHD"),
+    XtreamStream(stream_id=153, name="CA FR: TELETOON HD"),
+    XtreamStream(stream_id=524, name="US: NATIONAL GEOGRAPHIC FHD"),
+    XtreamStream(stream_id=525, name="CA: NAT GEO HD"),
+    XtreamStream(stream_id=801, name="CA FR: RDS 2 FHD"),
+    XtreamStream(stream_id=802, name="CA FR: RDS INFO FHD"),
+    *[
+      XtreamStream(stream_id=900 + i, name=f"US: SAMPLE {i} CHANNEL HD")
+      for i in range(15)
+    ],
+  ]
+  matcher = ChannelMatcher(catalog_streams)
+
+  c1101 = matcher.find_candidates(by_no[1101])
+  assert c1101 and c1101[0].stream.stream_id == 101
+
+  c153 = matcher.find_candidates(by_no[153])
+  assert c153 and c153[0].stream.stream_id == 153
+
+  c1524 = matcher.find_candidates(by_no[1524])
+  matched_1524_ids = {c.stream.stream_id for c in c1524}
+  assert {524, 525} <= matched_1524_ids
+
+  # Also verify direct fuzzy matching WITHOUT alias expansion ("National Geographic Channel" -> "NATIONAL GEOGRAPHIC")
+  bare_natgeo = LineupChannel(
+    chno=1524,
+    name="National Geographic Channel",
+    group="Science & Docs",
+    language="en",
+    regions=["ca", "us"],
+    aliases=["National Geographic Channel"],
+  )
+  bare_cands = matcher.find_candidates(bare_natgeo)
+  assert any(c.stream.stream_id == 524 for c in bare_cands)
+
+  # Digit & spin-off safety: "RDS" must NOT fuzzily match "RDS 2" or "RDS INFO"
+  rds_cands = matcher.find_candidates(by_no[1108])
+  assert rds_cands == []

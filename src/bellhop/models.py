@@ -87,6 +87,7 @@ class ProbeResultDict(TypedDict):
   video_codec: str | None
   audio_codec: str | None
   audio_languages: list[str]
+  audio_language_mismatch: bool
   black_screen: bool
   width: int | None
   height: int | None
@@ -317,6 +318,7 @@ class ProbeResult:
   video_codec: str | None = None
   audio_codec: str | None = None
   audio_languages: list[str] = field(default_factory=list)
+  audio_language_mismatch: bool = False
   black_screen: bool = False
   width: int | None = None
   height: int | None = None
@@ -356,6 +358,7 @@ class ProbeResult:
       "video_codec": self.video_codec,
       "audio_codec": self.audio_codec,
       "audio_languages": list(self.audio_languages),
+      "audio_language_mismatch": self.audio_language_mismatch,
       "black_screen": self.black_screen,
       "width": self.width,
       "height": self.height,
@@ -390,6 +393,7 @@ class ProbeResult:
         for lg in (data.get("audio_languages") or [])
         if str(lg).strip()
       ],
+      audio_language_mismatch=bool(data.get("audio_language_mismatch", False)),
       black_screen=bool(data.get("black_screen", False)),
       width=_opt_int(data.get("width")),
       height=_opt_int(data.get("height")),

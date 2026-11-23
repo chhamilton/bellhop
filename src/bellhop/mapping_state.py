@@ -79,8 +79,13 @@ from bellhop.validator import (
 from bellhop.xtream import XtreamCatalog
 
 VERIFIED_AUDIO_LANG_BONUS = 6.0
+AUDIO_LANG_MISMATCH_PENALTY = 25.0
 
 MAPPING_SCHEMA_VERSION = 1
+
+
+def _is_audio_lang_mismatch(cand: CandidateRecord) -> bool:
+  return bool(cand.probe is not None and cand.probe.audio_language_mismatch)
 
 
 @dataclass(slots=True)
@@ -487,10 +492,11 @@ def reconcile_rough_mapping(
           allow_audio_only=allow_audio_only,
         )
         if not compat:
-          val_status = "invalid"
+          val_status = "valid"
           slot_probe = clone_probe_with_language_mismatch(
             slot_probe, ch.language
           )
+          adj_score = round(adj_score - AUDIO_LANG_MISMATCH_PENALTY, 2)
           adj_reasons.append(
             f"audio_lang_mismatch:{','.join(slot_probe.audio_languages)}!={ch.language}"
           )
@@ -518,10 +524,11 @@ def reconcile_rough_mapping(
         )
       )
 
-    # Rank known-invalid streams behind valid/unvalidated candidates
+    # Rank compatible/unvalidated ahead of demoted language-mismatch fallbacks, and invalid last
     cand_records.sort(
       key=lambda c: (
         c.validation_status == "invalid",
+        _is_audio_lang_mismatch(c),
         -c.score,
         not c.has_native_epg,
         c.stream_id,
@@ -726,9 +733,12 @@ def _reconcile_single_slot(
       candidates=candidates,
     )
 
-  # A new stream outscored the previous stream!
+  # A new stream outscored (or outranked a language-mismatched fallback) the previous stream!
+  escaping_lang_mismatch = _is_audio_lang_mismatch(
+    prev_in_cands
+  ) and not _is_audio_lang_mismatch(top)
   score_gain = top.score - prev_in_cands.score
-  if score_gain < hysteresis:
+  if not escaping_lang_mismatch and score_gain < hysteresis:
     # Within hysteresis window: avoid needless daily stream churn
     status = (
       "unchanged" if old_cand_ids == new_cand_ids else "candidates_updated"
@@ -825,7 +835,7 @@ def _sync_slot_validation(
         )
         if not compat:
           cand.probe = clone_probe_with_language_mismatch(pr, slot.language)
-          cand.validation_status = "invalid"
+          cand.validation_status = "valid"
         else:
           cand.probe = pr
           cand.validation_status = "valid"
@@ -836,6 +846,7 @@ def _sync_slot_validation(
   slot.candidates.sort(
     key=lambda c: (
       c.validation_status == "invalid",
+      _is_audio_lang_mismatch(c),
       -c.score,
       not c.has_native_epg,
       c.stream_id,
@@ -850,7 +861,13 @@ def _sync_slot_validation(
       else "validated"
     )
     slot.change_status = "unchanged"
-    slot.change_detail = f"Validated working stream #{slot.preferred_stream_id} ({mapped.selected.stream.name})"
+    if mapped.probe is not None and mapped.probe.audio_language_mismatch:
+      slot.change_detail = (
+        f"Validated fallback stream #{slot.preferred_stream_id} "
+        f"({mapped.selected.stream.name}; audio language mismatch)"
+      )
+    else:
+      slot.change_detail = f"Validated working stream #{slot.preferred_stream_id} ({mapped.selected.stream.name})"
   else:
     slot.preferred_stream_id = None
     slot.preferred_source = "none"

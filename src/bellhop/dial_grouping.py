@@ -336,22 +336,43 @@ def build_channel_leaves_and_enrich(
 
     if match is not None:
       info = match.channel
-      if match.was_replaced or not ch.tvg_id:
-        ch.tvg_id = info.channel_id
-
-      # Add active canonical name & alt_names when rebranded (`replaced_by`) or direct brand match
-      ch_base_norm = normalize_lookup_key(PAREN_GROUP_RE.sub("", ch.name))
-      info_name_norm = normalize_lookup_key(info.name)
+      preserves_local_callsign_id = bool(
+        ch.tvg_id
+        and ch.callsign
+        and ch.tvg_id.split(".", 1)[0].upper() == ch.callsign.upper()
+      )
       if (
         match.was_replaced
-        or ch_base_norm == info_name_norm
+        or not ch.tvg_id
         or (
-          ch.callsign
-          and normalize_lookup_key(ch.callsign)
-          == normalize_lookup_key(info.channel_id.split(".", 1)[0])
+          iptv_org_index is not None
+          and not iptv_org_index.has_id(ch.tvg_id)
+          and not preserves_local_callsign_id
         )
       ):
-        extra_aliases = [info.name, *info.alt_names]
+        ch.tvg_id = info.channel_id
+
+      # Add active canonical name & alt_names whenever fuzzy station match succeeded
+      # (skipping generic US parent-network fallbacks on local affiliate slots like "ABC (Burlington)")
+      ch_base_norm = normalize_lookup_key(PAREN_GROUP_RE.sub("", ch.name))
+      us_generic_networks = {"abc", "cbs", "nbc", "fox", "pbs", "cw", "thecw"}
+      if match.was_replaced or (
+        match.similarity >= 0.78 and ch_base_norm not in us_generic_networks
+      ):
+        extra_aliases: list[str] = [info.name, *info.alt_names]
+        parens = PAREN_GROUP_RE.findall(ch.name)
+        city_qual = parens[-1].strip() if parens else ""
+        if city_qual and normalize_lookup_key(city_qual) not in {
+          "canada",
+          "us",
+          "usa",
+          "hd",
+          "east",
+          "west",
+        }:
+          for base_alt in (info.name, *info.alt_names):
+            if city_qual.lower() not in base_alt.lower():
+              extra_aliases.append(f"{base_alt} {city_qual}")
         if iptv_org_index is not None:
           extra_aliases = iptv_org_index.filter_active_aliases(
             extra_aliases, primary_name=ch.name, country=iso2_country

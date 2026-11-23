@@ -80,6 +80,12 @@ elif "/6001." in url:
     {{"codec_type": "video", "codec_name": "hevc", "width": 1920, "height": 1080, "r_frame_rate": "60/1"}},
     {{"codec_type": "audio", "codec_name": "aac", "tags": {{"language": "und"}}}},
   ]
+elif "/7001." in url:
+  # Muxer-defaulted 'eng' tag on a working French broadcast (e.g. 146 Télé-Québec)
+  streams = [
+    {{"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080, "avg_frame_rate": "30/1"}},
+    {{"codec_type": "audio", "codec_name": "aac", "tags": {{"language": "eng"}}}},
+  ]
 else:
   streams = [
     {{"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080, "avg_frame_rate": "30/1"}},
@@ -145,7 +151,9 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
   ts_bytes = _make_mpegts_payload()
   ffprobe_bin, ffmpeg_bin = _write_fake_ffprobe_and_ffmpeg(tmp_path / "bin")
 
-  def stream_handler(_request: web.Request) -> web.Response:
+  def stream_handler(request: web.Request) -> web.Response:
+    if "/7002." in request.path:
+      return web.Response(status=502, text="Bad Gateway")
     return web.Response(
       status=200,
       headers={"Content-Type": "video/mp2t"},
@@ -166,7 +174,7 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
         language="fr",
         aliases=["Canal Famille"],
       ),
-      # 1140: Top candidate #5001 has English audio (Yes TV!) -> must reject #5001 for 1140 and pick #5002 (fra)!
+      # 1140: Top candidate #5001 has English audio (Yes TV!) -> must demote #5001 for 1140 and pick #5002 (fra)!
       LineupChannel(
         chno=1140,
         name="Télétoon",
@@ -189,6 +197,15 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
         group="French — Entertainment & Lifestyle",
         language="fr",
         aliases=["Addik"],
+      ),
+      # 146: #7001 has muxer-stamped 'eng' audio while #7002 is dead (HTTP 502) ->
+      # must probe #7002 first, then select #7001 as last-resort fallback!
+      LineupChannel(
+        chno=146,
+        name="Télé-Québec",
+        group="French — Broadcast & General",
+        language="fr",
+        aliases=["Télé-Québec"],
       ),
     ],
   )
@@ -213,6 +230,14 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
       ),
       XtreamStream(
         stream_id=6001, name="CA FR: ADDIK FHD", epg_channel_id="Addik.ca"
+      ),
+      XtreamStream(
+        stream_id=7001,
+        name="CA FR: TELE QUEBEC FHD",
+        epg_channel_id="TeleQuebec.ca",
+      ),
+      XtreamStream(
+        stream_id=7002, name="CA FR: TELE QUEBEC HD", epg_channel_id=""
       ),
     ],
   )
@@ -275,21 +300,25 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
   assert cand_4001.probe.ok is False
   assert "Black screen" in (cand_4001.probe.error or "")
 
-  # 2. French Slot 1140 rejected English-audio #5001 and promoted French #5002!
+  # 2. French Slot 1140 demoted English-audio #5001 behind verified French #5002!
   slot_1140 = doc1.slots[1140]
   assert slot_1140.preferred_stream_id == 5002
+  assert slot_1140.candidates[0].stream_id == 5002
   cand_5001_fr = next(c for c in slot_1140.candidates if c.stream_id == 5001)
-  assert cand_5001_fr.validation_status == "invalid"
+  assert cand_5001_fr.validation_status == "valid"
   assert cand_5001_fr.probe is not None
+  assert cand_5001_fr.probe.ok is True
+  assert cand_5001_fr.probe.audio_language_mismatch is True
   assert "Audio track language mismatch" in (cand_5001_fr.probe.error or "")
 
-  # 3. English Slot 1651 ACCEPTED the exact same stream #5001 (en == en)!
+  # 3. English Slot 1651 ACCEPTED the exact same stream #5001 (en == en, no mismatch)!
   slot_1651 = doc1.slots[1651]
   assert slot_1651.preferred_stream_id == 5001
   cand_5001_en = next(c for c in slot_1651.candidates if c.stream_id == 5001)
   assert cand_5001_en.validation_status == "valid"
   assert cand_5001_en.probe is not None
   assert cand_5001_en.probe.ok is True
+  assert cand_5001_en.probe.audio_language_mismatch is False
   assert cand_5001_en.probe.audio_languages == ["en"]
 
   # 4. Slot 1120 accepted untagged ("und") #6001 as neutral
@@ -297,19 +326,46 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
   assert doc1.slots[1120].candidates[0].probe is not None
   assert doc1.slots[1120].candidates[0].probe.audio_languages == []
 
-  # 5. Reload `channel_mapping.json` and run Phase (3) `reconcile_rough_mapping` again:
-  #    - #4001 stays globally invalid (`black_screen=True`)
-  #    - #5001 stays invalid on French 1140 AND valid (+6.0 verified bonus) on English 1651!
-  #    - #5002 gets `+6.0` `audio_lang_verified:fr` bonus on French 1140!
+  # 5. Slot 146 probed #7002 (HTTP 502) and fell back to working #7001 as last resort!
+  slot_146 = doc1.slots[146]
+  assert slot_146.preferred_stream_id == 7001
+  assert "audio language mismatch" in slot_146.change_detail
+  cand_7002 = next(c for c in slot_146.candidates if c.stream_id == 7002)
+  assert cand_7002.validation_status == "invalid"
+  cand_7001 = next(c for c in slot_146.candidates if c.stream_id == 7001)
+  assert cand_7001.validation_status == "valid"
+  assert cand_7001.probe is not None
+  assert cand_7001.probe.audio_language_mismatch is True
+
+  # 6. Reload `channel_mapping.json` and run Phase (3) `reconcile_rough_mapping` again
+  #    (including a new unvalidated #7003 candidate for 146 to verify it queues ahead of
+  #    the demoted #7001 fallback without dropping #7001 until validated!):
   save_mapping_document(doc1, mapping_path)
   reloaded: MappingDocument = load_mapping_document(
     mapping_path, lineup_id=lineup.lineup_id
   )
-  doc2 = reconcile_rough_mapping(reloaded, lineup, catalog, cfg)
+  catalog_day2 = XtreamCatalog(
+    account=catalog.account,
+    categories=catalog.categories,
+    streams=[
+      *catalog.streams,
+      XtreamStream(
+        stream_id=7003,
+        name="CA FR: TELE QUEBEC RAW",
+        epg_channel_id="TeleQuebec.ca",
+      ),
+    ],
+  )
+  doc2 = reconcile_rough_mapping(reloaded, lineup, catalog_day2, cfg)
 
   assert doc2.slots[1143].preferred_stream_id == 4002
   assert doc2.slots[1140].preferred_stream_id == 5002
   assert doc2.slots[1651].preferred_stream_id == 5001
+
+  # Slot 146 keeps working #7001 active while queuing unvalidated #7003 at index 0!
+  assert doc2.slots[146].preferred_stream_id == 7001
+  assert doc2.slots[146].change_status == "upgraded_pending_validation"
+  assert doc2.slots[146].candidates[0].stream_id == 7003
 
   c5002_day2 = next(
     c for c in doc2.slots[1140].candidates if c.stream_id == 5002
@@ -320,12 +376,17 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
     c for c in doc2.slots[1651].candidates if c.stream_id == 5001
   )
   assert c5001_en_day2.validation_status == "valid"
+  assert c5001_en_day2.probe is not None
+  assert c5001_en_day2.probe.audio_language_mismatch is False
   assert "audio_lang_verified:en" in c5001_en_day2.reasons
 
   c5001_fr_day2 = next(
     c for c in doc2.slots[1140].candidates if c.stream_id == 5001
   )
-  assert c5001_fr_day2.validation_status == "invalid"
+  assert c5001_fr_day2.validation_status == "valid"
+  assert c5001_fr_day2.probe is not None
+  assert c5001_fr_day2.probe.audio_language_mismatch is True
+  assert doc2.slots[1140].candidates[0].stream_id == 5002
   assert any(
     r.startswith("audio_lang_mismatch:") for r in c5001_fr_day2.reasons
   )

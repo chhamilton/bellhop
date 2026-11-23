@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 from dataclasses import dataclass, field
 
 from bellhop.dial_grouping import assign_dial_contiguous_groups
-from bellhop.iptv_org import IptvOrgIndex
+from bellhop.iptv_org import IptvOrgIndex, fold_latin_accents
 from bellhop.lineup_loader import (
   _load_official_logo_index,
   is_bell_fibe_lineup,
@@ -329,8 +328,7 @@ CATEGORY_RULES: list[tuple[str, tuple[str, ...]]] = [
 
 
 def _strip_accents(text: str) -> str:
-  norm = unicodedata.normalize("NFKD", text)
-  return "".join(ch for ch in norm if not unicodedata.combining(ch))
+  return fold_latin_accents(text)
 
 
 def _norm_key(text: str) -> str:
@@ -478,6 +476,7 @@ _EXPLICIT_NAME_METROS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
   ("edmonton", "edmonton", ("edmonton", "ab", "west")),
   ("winnipeg", "winnipeg", ("winnipeg", "mb")),
   ("halifax", "halifax", ("halifax", "atlantic")),
+  ("moncton", "moncton", ("moncton", "atlantic")),
   ("new york", "newyork", ("newyork", "ny")),
   ("los angeles", "losangeles", ("losangeles", "us_ca", "west")),
   ("chicago", "chicago", ("chicago", "il")),

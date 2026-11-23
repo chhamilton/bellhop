@@ -11,12 +11,14 @@ alternate names for Phase (1) lineup normalization and dial grouping.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import hashlib
 import json
+import math
 import re
 import time
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -78,12 +80,29 @@ COUNTRY_FALLBACK_ISO3_LANG: dict[str, str] = {
 }
 
 PAREN_STRIP_RE = re.compile(r"\([^()]*\)")
-MULTIPLEX_TRAIL_RE = re.compile(
-  r"(?:\s+(?:HD|SD|FHD|4K|UHD|DT|East|West|Pacific|Atlantic|Ontario|Quebec|\d+))+$",
-  re.IGNORECASE,
-)
-GENERIC_SUFFIX_RE = re.compile(
-  r"(?:channel|network|television|tv|tele)$", re.IGNORECASE
+LETTER_DIGIT_SPLIT_RE = re.compile(r"^([a-z]{2,})(\d+)$")
+
+LATIN_LIGATURE_TABLE = str.maketrans(
+  {
+    "œ": "oe",
+    "Œ": "Oe",
+    "æ": "ae",
+    "Æ": "Ae",
+    "ß": "ss",
+    "ẞ": "SS",
+    "ø": "o",
+    "Ø": "O",
+    "ł": "l",
+    "Ł": "L",
+    "đ": "d",
+    "Đ": "D",
+    "ð": "d",
+    "Ð": "D",
+    "þ": "th",
+    "Þ": "Th",
+    "’": "'",
+    "‘": "'",
+  }
 )
 
 US_NETWORK_CANONICAL_IDS: dict[str, str] = {
@@ -96,18 +115,86 @@ US_NETWORK_CANONICAL_IDS: dict[str, str] = {
   "THECW": "TheCW.us",
 }
 
+LANG_ISO3_QUALIFIER_TOKENS: dict[str, frozenset[str]] = {
+  "fra": frozenset({"francais", "french", "fr", "franco"}),
+  "eng": frozenset({"english", "anglais", "en"}),
+  "spa": frozenset({"espanol", "spanish", "es"}),
+  "ita": frozenset({"italiano", "italian"}),
+  "ara": frozenset({"arabic", "arabe"}),
+  "por": frozenset({"portugues", "portuguese"}),
+  "deu": frozenset({"deutsch", "german"}),
+  "zho": frozenset({"chinese", "mandarin"}),
+  "yue": frozenset({"cantonese", "chinese"}),
+}
+
+COUNTRY_QUALIFIER_TOKENS: dict[str, frozenset[str]] = {
+  "CA": frozenset({"canada", "canadian", "ca"}),
+  "US": frozenset({"usa", "us", "american"}),
+  "GB": frozenset({"uk", "british"}),
+  "FR": frozenset({"france"}),
+}
+
+GENERIC_BROADCAST_TOKENS = frozenset(
+  {"channel", "network", "television", "tv", "chaine", "tele", "hd"}
+)
+
+IPTV_ORG_SPINOFF_TOKENS = frozenset(
+  {
+    "plus",
+    "extra",
+    "xtra",
+    "info",
+    "news",
+    "nouvelles",
+    "sports",
+    "sport",
+    "kids",
+    "jr",
+    "junior",
+    "xd",
+    "wild",
+    "scifi",
+    "sci",
+    "fi",
+    "movies",
+    "cinema",
+    "action",
+    "comedy",
+    "drama",
+    "life",
+  }
+)
+
 
 class IptvOrgError(RuntimeError):
   """Raised when fetching or parsing `iptv-org` metadata fails without a fallback."""
 
 
+def fold_latin_accents(text: str) -> str:
+  """Collapse accented Latin characters and ligatures (`é`->`e`, `œ`->`oe`) to ASCII."""
+  translated = text.translate(LATIN_LIGATURE_TABLE)
+  nfkd = unicodedata.normalize("NFKD", translated)
+  return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
+
+
+def tokenize_station_name(text: str) -> tuple[str, ...]:
+  """Tokenize `text` into accent-folded lowercase words and split attached digits."""
+  folded = fold_latin_accents(text).lower()
+  folded = folded.replace("&", " and ").replace("+", " plus ")
+  out: list[str] = []
+  for tok in re.findall(r"[a-z0-9]+", folded):
+    m = LETTER_DIGIT_SPLIT_RE.match(tok)
+    if m:
+      out.append(m.group(1))
+      out.append(m.group(2))
+    else:
+      out.append(tok)
+  return tuple(out)
+
+
 def normalize_lookup_key(text: str) -> str:
-  """Return lowercase ASCII alphanumeric key for station name matching."""
-  nfkd = unicodedata.normalize("NFKD", text)
-  ascii_text = "".join(
-    ch for ch in nfkd if not unicodedata.combining(ch)
-  ).lower()
-  return re.sub(r"[^a-z0-9]+", "", ascii_text)
+  """Return lowercase accent-folded ASCII alphanumeric key for station matching."""
+  return re.sub(r"[^a-z0-9]+", "", fold_latin_accents(text).lower())
 
 
 def normalize_country_iso2(country: str) -> str:
@@ -138,6 +225,7 @@ class IptvOrgMatch:
   channel: IptvOrgChannelInfo
   was_replaced: bool = False
   matched_closed_id: str | None = None
+  similarity: float = 1.0
 
 
 @dataclass(slots=True)
@@ -196,6 +284,16 @@ class IptvOrgIndex:
     self._by_global_key: dict[
       str, list[tuple[IptvOrgChannelInfo, bool, str | None]]
     ] = defaultdict(list)
+    self._entries: list[
+      tuple[
+        IptvOrgChannelInfo,
+        bool,
+        str | None,
+        tuple[tuple[str, tuple[str, ...]], ...],
+      ]
+    ] = []
+    self._token_postings: dict[str, list[int]] = defaultdict(list)
+    self._token_idf: dict[str, float] = {}
     self._active_country_keys: set[tuple[str, str]] = set()
     self._closed_unreplaced_country_keys: set[tuple[str, str]] = set()
     self._closed_unreplaced_ids: set[str] = set()
@@ -288,35 +386,60 @@ class IptvOrgIndex:
 
     idx._station_count = len(active_info_by_id)
 
-    def _extract_keys(raw_ch: Mapping[str, Any], cid: str) -> set[str]:
-      name_val = str(raw_ch.get("name") or "")
-      keys = {normalize_lookup_key(name_val)}
+    def _extract_forms(
+      raw_ch: Mapping[str, Any], cid: str
+    ) -> list[tuple[str, tuple[str, ...]]]:
+      raw_labels: list[str] = [str(raw_ch.get("name") or "")]
       net_val = raw_ch.get("network")
       if net_val:
-        keys.add(normalize_lookup_key(str(net_val)))
+        raw_labels.append(str(net_val))
       raw_alts = raw_ch.get("alt_names")
       if isinstance(raw_alts, list):
         for alt in raw_alts:
-          keys.add(normalize_lookup_key(str(alt)))
-      stem = cid.split(".", 1)[0]
-      keys.add(normalize_lookup_key(stem))
-      stripped = GENERIC_SUFFIX_RE.sub("", normalize_lookup_key(name_val))
-      if len(stripped) >= 4:
-        keys.add(stripped)
-      keys.discard("")
-      return keys
+          raw_labels.append(str(alt))
+      raw_labels.append(cid.split(".", 1)[0])
+
+      seen_compact: set[str] = set()
+      forms: list[tuple[str, tuple[str, ...]]] = []
+      for label in raw_labels:
+        compact = normalize_lookup_key(label)
+        toks = tokenize_station_name(label)
+        if compact and toks and compact not in seen_compact:
+          seen_compact.add(compact)
+          forms.append((compact, toks))
+      return forms
+
+    df_counter: Counter[str] = Counter()
+
+    def _register_entry(
+      info: IptvOrgChannelInfo,
+      was_replaced: bool,
+      closed_id: str | None,
+      forms: list[tuple[str, tuple[str, ...]]],
+      index_country: str,
+    ) -> None:
+      rec = (info, was_replaced, closed_id)
+      entry_idx = len(idx._entries)
+      idx._entries.append((info, was_replaced, closed_id, tuple(forms)))
+      entry_tokens: set[str] = set()
+      for compact, toks in forms:
+        if not was_replaced:
+          idx._active_country_keys.add((index_country, compact))
+        idx._by_country_key[(index_country, compact)].append(rec)
+        if not was_replaced and len(compact) >= 8:
+          idx._by_global_key[compact].append(rec)
+        entry_tokens.update(toks)
+      for tok in entry_tokens:
+        if len(tok) >= 2:
+          idx._token_postings[tok].append(entry_idx)
+          df_counter[tok] += 1
 
     # 1. Index all active channels first so active records always rank ahead of redirects
     for cid, info in active_info_by_id.items():
       raw_ch = raw_by_id[cid]
-      rec = (info, False, None)
-      idx._by_id[cid.lower()] = rec
-      keys = _extract_keys(raw_ch, cid)
-      for k in keys:
-        idx._active_country_keys.add((info.country, k))
-        idx._by_country_key[(info.country, k)].append(rec)
-        if len(k) >= 8:
-          idx._by_global_key[k].append(rec)
+      idx._by_id[cid.lower()] = (info, False, None)
+      forms = _extract_forms(raw_ch, cid)
+      _register_entry(info, False, None, forms, info.country)
 
     # 2. Process `closed` channels: follow `replaced_by` chains or mark permanently defunct
     for cid, raw_ch in raw_by_id.items():
@@ -342,18 +465,21 @@ class IptvOrgIndex:
         cur = raw_by_id.get(rep_id)
 
       country = str(raw_ch.get("country") or "").strip().upper()
-      closed_keys = _extract_keys(raw_ch, cid)
+      closed_forms = _extract_forms(raw_ch, cid)
 
       if resolved_target is not None:
-        redirect_rec = (resolved_target, True, cid)
-        idx._by_id.setdefault(cid.lower(), redirect_rec)
-        for k in closed_keys:
-          idx._by_country_key[(country, k)].append(redirect_rec)
+        idx._by_id.setdefault(cid.lower(), (resolved_target, True, cid))
+        _register_entry(resolved_target, True, cid, closed_forms, country)
       else:
         idx._closed_unreplaced_ids.add(cid.lower())
-        for k in closed_keys:
-          idx._closed_unreplaced_country_keys.add((country, k))
+        for compact, _ in closed_forms:
+          idx._closed_unreplaced_country_keys.add((country, compact))
 
+    total_docs = max(len(idx._entries), 1)
+    idx._token_idf = {
+      tok: math.log(1.0 + total_docs / (1.0 + df))
+      for tok, df in df_counter.items()
+    }
     return idx
 
   def is_permanently_closed_alias(
@@ -370,6 +496,12 @@ class IptvOrgIndex:
     return any(
       (c, k) in self._closed_unreplaced_country_keys for c in probe_countries
     )
+
+  def has_id(self, tvg_id: str | None) -> bool:
+    """Return True if `tvg_id` resolves to an active or replaced station in `iptv-org`."""
+    if not tvg_id:
+      return False
+    return tvg_id.strip().lower() in self._by_id
 
   def is_permanently_closed_id(self, tvg_id: str | None) -> bool:
     """Return True if `tvg_id` is marked `closed` in `iptv-org` with no `replaced_by`."""
@@ -399,6 +531,64 @@ class IptvOrgIndex:
       filtered.append(alias)
     return filtered or [primary_name]
 
+  def _token_weight(self, tok: str, default_idf: float) -> float:
+    if tok in GENERIC_BROADCAST_TOKENS:
+      return min(0.75, self._token_idf.get(tok, 0.75))
+    return self._token_idf.get(tok, default_idf)
+
+  def _text_similarity(
+    self,
+    q_compact: str,
+    q_tokens: tuple[str, ...],
+    c_compact: str,
+    c_tokens: tuple[str, ...],
+    *,
+    meta_qualifiers: frozenset[str] = frozenset(),
+  ) -> float:
+    if q_compact == c_compact:
+      return 1.0
+    q_nums = {t for t in q_tokens if t.isdigit()}
+    c_nums = {t for t in c_tokens if t.isdigit()}
+    if q_nums != c_nums:
+      return 0.0
+
+    # Query language/country qualifiers satisfied by station metadata (e.g. "Francais" -> languages=["fra"])
+    effective_q_tokens = tuple(
+      t for t in q_tokens if (t in c_tokens or t not in meta_qualifiers)
+    )
+    if not effective_q_tokens:
+      effective_q_tokens = q_tokens
+    eff_q_compact = "".join(effective_q_tokens)
+    if eff_q_compact == c_compact:
+      return 0.96
+
+    default_idf = math.log(1.0 + max(len(self._entries), 1))
+    q_set = set(effective_q_tokens)
+    c_set = set(c_tokens)
+    if ((q_set - c_set) | (c_set - q_set)) & IPTV_ORG_SPINOFF_TOKENS:
+      return 0.0
+    q_weight = sum(self._token_weight(t, default_idf) for t in q_set)
+    c_weight = sum(self._token_weight(t, default_idf) for t in c_set)
+    overlap_weight = sum(
+      self._token_weight(t, default_idf) for t in (q_set & c_set)
+    )
+    token_dice = (
+      (2.0 * overlap_weight) / (q_weight + c_weight)
+      if (q_weight + c_weight) > 0.0
+      else 0.0
+    )
+    char_ratio = difflib.SequenceMatcher(None, eff_q_compact, c_compact).ratio()
+    if (
+      min(len(effective_q_tokens), len(c_tokens)) >= 2
+      and (q_set <= c_set or c_set <= q_set)
+      and bool((q_set & c_set) - GENERIC_BROADCAST_TOKENS)
+      and max(q_weight, c_weight) > 0.0
+      and (overlap_weight / max(q_weight, c_weight)) >= 0.45
+    ):
+      min_cov = overlap_weight / min(q_weight, c_weight)
+      return 0.55 * token_dice + 0.25 * min_cov + 0.20 * char_ratio
+    return 0.75 * token_dice + 0.25 * char_ratio
+
   def lookup(
     self,
     name: str,
@@ -408,65 +598,138 @@ class IptvOrgIndex:
     aliases: Sequence[str] = (),
     country: str = "CA",
   ) -> IptvOrgMatch | None:
-    """Match a lineup slot against `iptv-org`, preferring entries with genre tags."""
+    """Fuzzy-match a lineup slot against `iptv-org` using accent-folded IDF similarity."""
     if self.is_empty:
       return None
-
-    candidates: list[tuple[IptvOrgChannelInfo, bool, str | None]] = []
 
     if tvg_id:
       low_id = tvg_id.strip().lower()
       if low_id in self._by_id:
-        candidates.append(self._by_id[low_id])
+        hit = self._by_id[low_id]
+        return IptvOrgMatch(
+          channel=hit[0],
+          was_replaced=hit[1],
+          matched_closed_id=hit[2],
+          similarity=1.0,
+        )
 
     no_paren = PAREN_STRIP_RE.sub("", name).strip()
-    base_brand = MULTIPLEX_TRAIL_RE.sub("", no_paren).strip()
-    brand_upper = normalize_lookup_key(base_brand).upper()
+    brand_upper = normalize_lookup_key(no_paren).upper()
     if brand_upper in US_NETWORK_CANONICAL_IDS:
       canon_id = US_NETWORK_CANONICAL_IDS[brand_upper].lower()
       if canon_id in self._by_id:
-        candidates.append(self._by_id[canon_id])
+        hit = self._by_id[canon_id]
+        return IptvOrgMatch(
+          channel=hit[0],
+          was_replaced=hit[1],
+          matched_closed_id=hit[2],
+          similarity=1.0,
+        )
 
-    probe_strings: list[str] = [name, no_paren, base_brand, *aliases]
+    probe_strings: list[str] = [name, no_paren, *aliases]
     if callsign and callsign.strip():
       probe_strings.append(callsign.strip())
 
-    iso2 = normalize_country_iso2(country)
-    pref_countries = NEIGHBOR_BROADCAST_COUNTRIES.get(iso2, (iso2, "US", "GB"))
+    parsed_probes: list[tuple[str, tuple[str, ...]]] = []
+    seen_probes: set[str] = set()
+    for raw_probe in probe_strings:
+      comp = normalize_lookup_key(raw_probe)
+      toks = tokenize_station_name(raw_probe)
+      if len(comp) >= 3 and toks and comp not in seen_probes:
+        seen_probes.add(comp)
+        parsed_probes.append((comp, toks))
 
-    # Pass 1: Search preferred domestic/neighbor broadcast countries across all probe strings
-    if not candidates:
-      for raw_probe in probe_strings:
-        k = normalize_lookup_key(raw_probe)
-        if len(k) < 3:
-          continue
-        for ctry in pref_countries:
-          hits = self._by_country_key.get((ctry, k))
-          if hits:
-            candidates.extend(hits)
-        if candidates:
-          break
-
-    # Pass 2: Unambiguous long-name global fallback for international specialty channels
-    if not candidates:
-      for raw_probe in probe_strings:
-        k = normalize_lookup_key(raw_probe)
-        if len(k) >= 8 and k in self._by_global_key:
-          candidates.extend(self._by_global_key[k])
-          break
-
-    if not candidates:
+    if not parsed_probes:
       return None
 
-    # Prefer active non-replaced entry with populated categories
-    best = next(
-      (c for c in candidates if not c[1] and c[0].categories),
-      next((c for c in candidates if c[0].categories), candidates[0]),
-    )
+    iso2 = normalize_country_iso2(country)
+    pref_countries = NEIGHBOR_BROADCAST_COUNTRIES.get(iso2, (iso2, "US", "GB"))
+    country_bonus_map: dict[str, float] = {}
+    for rank, ctry in enumerate(pref_countries):
+      if rank == 0:
+        country_bonus_map[ctry] = 0.14
+      elif rank == 1:
+        country_bonus_map[ctry] = 0.08
+      else:
+        country_bonus_map[ctry] = 0.0
+
+    # Gather candidate entry indices from highest-IDF tokens across probe strings
+    cand_entry_indices: set[int] = set()
+    max_posting_len = max(120, len(self._entries) // 25)
+    for _comp, toks in parsed_probes:
+      ranked_toks = sorted(
+        (t for t in toks if t in self._token_postings),
+        key=lambda t: self._token_idf.get(t, 0.0),
+        reverse=True,
+      )
+      for tok in ranked_toks[:2]:
+        postings = self._token_postings[tok]
+        if len(postings) <= max_posting_len:
+          cand_entry_indices.update(postings)
+        elif len(ranked_toks) >= 2:
+          other = self._token_postings[ranked_toks[1]]
+          cand_entry_indices.update(set(postings) & set(other))
+      if not ranked_toks and len(toks) == 1 and len(toks[0]) >= 5:
+        needle = toks[0]
+        first_ch = needle[0]
+        for vocab_tok, postings in self._token_postings.items():
+          if (
+            vocab_tok.startswith(first_ch)
+            and abs(len(vocab_tok) - len(needle)) <= 2
+            and len(postings) <= max_posting_len
+            and difflib.SequenceMatcher(None, needle, vocab_tok).ratio() >= 0.82
+          ):
+            cand_entry_indices.update(postings)
+
+    best_score = -1.0
+    best_sim = 0.0
+    best_entry: tuple[IptvOrgChannelInfo, bool, str | None] | None = None
+
+    for e_idx in cand_entry_indices:
+      info, was_replaced, closed_id, forms = self._entries[e_idx]
+      meta_quals: set[str] = set(
+        COUNTRY_QUALIFIER_TOKENS.get(info.country, frozenset())
+      )
+      for lg in info.languages:
+        meta_quals.update(LANG_ISO3_QUALIFIER_TOKENS.get(lg, frozenset()))
+      meta_frozenset = frozenset(meta_quals)
+
+      max_sim = 0.0
+      for q_comp, q_toks in parsed_probes:
+        for c_comp, c_toks in forms:
+          sim = self._text_similarity(
+            q_comp, q_toks, c_comp, c_toks, meta_qualifiers=meta_frozenset
+          )
+          if sim > max_sim:
+            max_sim = sim
+            if max_sim >= 1.0:
+              break
+        if max_sim >= 1.0:
+          break
+
+      if max_sim < 0.78:
+        continue
+      # Foreign non-neighbor stations require near-exact match (>= 0.92) to avoid false hits
+      if info.country not in country_bonus_map and max_sim < 0.92:
+        continue
+
+      c_bonus = country_bonus_map.get(info.country, -0.05)
+      cat_bonus = 0.02 if info.categories else 0.0
+      rep_adj = -0.01 if was_replaced else 0.0
+      composite = max_sim + c_bonus + cat_bonus + rep_adj
+      if composite > best_score:
+        best_score = composite
+        best_sim = max_sim
+        best_entry = (info, was_replaced, closed_id)
+
+    if best_entry is None:
+      return None
+
     return IptvOrgMatch(
-      channel=best[0],
-      was_replaced=best[1],
-      matched_closed_id=best[2],
+      channel=best_entry[0],
+      was_replaced=best_entry[1],
+      matched_closed_id=best_entry[2],
+      similarity=round(best_sim, 4),
     )
 
 

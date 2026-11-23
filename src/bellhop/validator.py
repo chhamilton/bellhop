@@ -18,6 +18,7 @@ import aiohttp
 from bellhop.config import AppConfig
 from bellhop.models import (
   MappedChannel,
+  MatchCandidate,
   ProbeResult,
   XtreamAccountInfo,
   XtreamStream,
@@ -156,25 +157,28 @@ def check_audio_language_compatibility(
 def clone_probe_with_language_mismatch(
   probe: ProbeResult, expected_lang: str
 ) -> ProbeResult:
-  """Return a slot-scoped failed `ProbeResult` describing an audio language mismatch."""
+  """Return a slot-scoped demoted `ProbeResult` flagging an audio language mismatch."""
   exp = normalize_audio_language_code(expected_lang) or expected_lang
   tracks = ",".join(probe.audio_languages) or "unknown"
   return replace(
     probe,
-    ok=False,
-    error=f"{AUDIO_LANG_MISMATCH_PREFIX} ({tracks} != {exp})",
+    ok=True,
+    audio_language_mismatch=True,
+    error=f"{AUDIO_LANG_MISMATCH_PREFIX} ({tracks} != {exp}); demoted fallback",
   )
 
 
 def strip_slot_language_mismatch(probe: ProbeResult) -> ProbeResult:
-  """Recover intrinsic stream health if `probe` was rejected solely for slot language."""
-  if (
-    not probe.ok
-    and not probe.black_screen
-    and probe.error
-    and probe.error.startswith(AUDIO_LANG_MISMATCH_PREFIX)
+  """Recover intrinsic stream health if `probe` was flagged for slot language mismatch."""
+  if not probe.black_screen and (
+    probe.audio_language_mismatch
+    or (
+      not probe.ok
+      and probe.error is not None
+      and probe.error.startswith(AUDIO_LANG_MISMATCH_PREFIX)
+    )
   ):
-    return replace(probe, ok=True, error=None)
+    return replace(probe, ok=True, audio_language_mismatch=False, error=None)
   return probe
 
 
@@ -365,6 +369,7 @@ class StreamValidator:
 
     max_tries = self.val_cfg.max_candidates_per_channel
     last_probe: ProbeResult | None = None
+    fallback_mismatch: tuple[MatchCandidate, ProbeResult] | None = None
     allow_audio_only = (
       "audio" in mapped.channel.group.lower()
       or "music" in mapped.channel.group.lower()
@@ -395,13 +400,22 @@ class StreamValidator:
           allow_audio_only=allow_audio_only,
         )
         if not compat:
-          last_probe = clone_probe_with_language_mismatch(
+          demoted_probe = clone_probe_with_language_mismatch(
             probe, mapped.channel.language
           )
+          if fallback_mismatch is None:
+            fallback_mismatch = (candidate, demoted_probe)
+          last_probe = demoted_probe
           continue
 
       mapped.selected = candidate
       mapped.probe = probe
+      return
+
+    # If no language-compatible stream succeeded, fall back to the highest-ranked
+    # working stream that was demoted solely for audio-track language metadata.
+    if fallback_mismatch is not None:
+      mapped.selected, mapped.probe = fallback_mismatch
       return
 
     # Record last failed probe for diagnostics if all candidates failed

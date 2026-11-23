@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import difflib
+import math
 import re
-import unicodedata
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from bellhop.iptv_org import fold_latin_accents
 from bellhop.models import (
   LineupChannel,
   MappedChannel,
@@ -189,6 +191,15 @@ SPINOFF_MODIFIER_TOKENS = frozenset(
     "winnipeg",
     "ottawa",
     "halifax",
+    "moncton",
+    "acadie",
+    "saguenay",
+    "mauricie",
+    "estrie",
+    "gatineau",
+    "manitoba",
+    "saskatchewan",
+    "yukon",
     "quebeccity",
     "sherbrooke",
   }
@@ -267,7 +278,8 @@ TARGET_REGION_QUALIFIER_TOKENS: dict[str, frozenset[str]] = {
   "ab": frozenset({"alberta", "ab", "west"}),
   "winnipeg": frozenset({"winnipeg", "manitoba", "mb"}),
   "halifax": frozenset({"halifax", "atlantic"}),
-  "atlantic": frozenset({"atlantic"}),
+  "moncton": frozenset({"moncton", "acadie", "atlantic"}),
+  "atlantic": frozenset({"atlantic", "moncton", "acadie"}),
   "newyork": frozenset({"new", "york", "nyc", "ny"}),
   "ny": frozenset({"ny", "new", "york"}),
   "losangeles": frozenset({"los", "angeles", "la", "west", "pacific"}),
@@ -347,6 +359,7 @@ NON_LINEAR_RE = re.compile(
 )
 TIMESHIFT_RE = re.compile(r"(?:^|\s)\+[123](?:\s|$|\])")
 LETTER_DIGIT_RE = re.compile(r"^([a-z]{2,})(\d+)$")
+GLUED_HD_SUFFIX_RE = re.compile(r"^([a-z]{4,})(fhd|uhd|hd)$")
 E_EXCLAMATION_RE = re.compile(r"(?<![a-z0-9])e!(?![a-z0-9])", re.IGNORECASE)
 CODEC_CLEAN_RE = re.compile(
   r"\b(?:h\.?26[45]|x26[45]|hevc|mpeg-?[24]|1080[pi]|720p|2160p|540p|480[pi]|[356]0\s*fps|5\.1)\b",
@@ -355,9 +368,8 @@ CODEC_CLEAN_RE = re.compile(
 
 
 def strip_accents(text: str) -> str:
-  """Convert accented characters (e.g. Montréal, Télé-Québec, Écran) to ASCII."""
-  normalized = unicodedata.normalize("NFKD", text)
-  return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+  """Convert accented Latin characters and ligatures (Montréal, Cœur, Écran) to ASCII."""
+  return fold_latin_accents(text)
 
 
 def _normalize_symbols(text: str) -> str:
@@ -381,9 +393,22 @@ def _tokenize_raw(text: str, *, split_alnum: bool = True) -> list[str]:
     if m:
       out.append(m.group(1))
       out.append(m.group(2))
+      continue
+    m_hd = GLUED_HD_SUFFIX_RE.match(tok)
+    if m_hd:
+      out.append(m_hd.group(1))
+      out.append(m_hd.group(2))
     else:
       out.append(tok)
   return out
+
+
+def _is_ordered_subsequence(
+  sub: tuple[str, ...], full: tuple[str, ...]
+) -> bool:
+  """Return True if all tokens of `sub` appear in order inside `full`."""
+  it = iter(full)
+  return all(tok in it for tok in sub)
 
 
 def _strip_quality_tokens(tokens: Iterable[str]) -> list[str]:
@@ -756,6 +781,13 @@ class ChannelMatcher:
       if prep.epg_id_lower:
         self._epg_index[prep.epg_id_lower].append(idx)
 
+    total_docs = max(len(self._prepared), 1)
+    self._default_idf = math.log(1.0 + total_docs)
+    self._token_idf: dict[str, float] = {
+      tok: math.log(1.0 + total_docs / (1.0 + len(idxs)))
+      for tok, idxs in self._token_index.items()
+    }
+
   def match_lineup(
     self,
     channels: Iterable[LineupChannel],
@@ -818,9 +850,15 @@ class ChannelMatcher:
     candidate_indices: set[int] = set()
     if tvg_id_lower and tvg_id_lower in self._epg_index:
       candidate_indices.update(self._epg_index[tvg_id_lower])
-    if callsign_tok and callsign_tok in self._token_index:
-      candidate_indices.update(self._token_index[callsign_tok])
+    if callsign_tok:
+      if callsign_tok in self._token_index:
+        candidate_indices.update(self._token_index[callsign_tok])
+      for sfx in (".ca", ".us"):
+        cs_epg = f"{callsign_tok}{sfx}"
+        if cs_epg in self._epg_index:
+          candidate_indices.update(self._epg_index[cs_epg])
 
+    selective_cap = max(220, len(self._prepared) // 25)
     for _, _, a_toks in alias_specs:
       postings = [
         self._token_index[t] for t in a_toks if t in self._token_index
@@ -830,6 +868,41 @@ class ChannelMatcher:
         for p in postings[1:]:
           intersected &= p
         candidate_indices.update(intersected)
+
+      # Fuzzy anchor retrieval via highest-IDF tokens (catches omitted/added generic words)
+      ranked_anchors = sorted(
+        (
+          t
+          for t in a_toks
+          if t in self._token_index and len(t) >= 2 and not t.isdigit()
+        ),
+        key=lambda t: self._token_idf.get(t, 0.0),
+        reverse=True,
+      )
+      if ranked_anchors:
+        added_selective = False
+        for anchor_tok in ranked_anchors[:3]:
+          postings_set = self._token_index[anchor_tok]
+          if len(postings_set) <= selective_cap:
+            candidate_indices.update(postings_set)
+            added_selective = True
+        if not added_selective and len(ranked_anchors) >= 2:
+          candidate_indices.update(
+            self._token_index[ranked_anchors[0]]
+            & self._token_index[ranked_anchors[1]]
+          )
+      elif len(a_toks) == 1 and len(a_toks[0]) >= 5:
+        # Typo-tolerant lookup for single-token brands (e.g. "scifi" <-> "sifi")
+        needle = a_toks[0]
+        first_ch = needle[0]
+        for vocab_tok, idxs in self._token_index.items():
+          if (
+            vocab_tok.startswith(first_ch)
+            and abs(len(vocab_tok) - len(needle)) <= 2
+            and len(idxs) <= selective_cap
+            and difflib.SequenceMatcher(None, needle, vocab_tok).ratio() >= 0.84
+          ):
+            candidate_indices.update(idxs)
 
     target_regions = set(channel.regions)
 
@@ -931,6 +1004,98 @@ class ChannelMatcher:
           if cand_score > best_alias_score:
             best_alias_score = cand_score
             best_alias_reason = f"phrase_alias:{alias_raw}"
+        elif (
+          candidate_core
+          and (len(candidate_core) >= 2 or len(candidate_core[0]) >= 4)
+          and _contains_token_sequence(a_toks, candidate_core)
+          and bool(set(candidate_core) - allowed_extra)
+        ):
+          # Symmetric case: lineup alias includes benign qualifiers ("Teletoon Francais",
+          # "National Geographic Channel") while stream core has the concise brand ("TELETOON")
+          cand_set = set(candidate_core)
+          missing_tokens = [t for t in a_toks if t not in cand_set]
+          if all(
+            t in allowed_extra and t not in SPINOFF_MODIFIER_TOKENS
+            for t in missing_tokens
+          ):
+            cand_score = 58.0 + specificity_bonus - 1.5 * len(missing_tokens)
+            if cand_score > best_alias_score:
+              best_alias_score = cand_score
+              best_alias_reason = f"concise_alias:{alias_raw}"
+        elif candidate_core and (len(a_toks) >= 2 or len(a_toks[0]) >= 5):
+          # Fuzzy IDF-weighted token + edit similarity (symmetric spin-off & digit safety)
+          alias_set = set(a_toks)
+          cand_set = set(candidate_core)
+          alias_digits = {t for t in alias_set if t.isdigit()}
+          cand_digits = {t for t in cand_set if t.isdigit()}
+          if alias_digits != cand_digits:
+            continue
+          if ((cand_set - alias_set) & effective_spinoff_tokens) or (
+            (alias_set - cand_set) & SPINOFF_MODIFIER_TOKENS
+          ):
+            continue
+
+          shared_content = (alias_set & cand_set) - BENIGN_QUALIFIER_TOKENS
+          q_idf = sum(
+            self._token_idf.get(t, self._default_idf) for t in alias_set
+          )
+          c_idf = sum(
+            self._token_idf.get(t, self._default_idf) for t in cand_set
+          )
+          ov_idf = sum(
+            self._token_idf.get(t, self._default_idf)
+            for t in (alias_set & cand_set)
+          )
+          tok_dice = (
+            (2.0 * ov_idf) / (q_idf + c_idf) if (q_idf + c_idf) > 0.0 else 0.0
+          )
+          char_sim = difflib.SequenceMatcher(
+            None, "".join(a_toks), "".join(candidate_core)
+          ).ratio()
+          fuzzy_sim = 0.72 * tok_dice + 0.28 * char_sim
+          single_word_typo = (
+            len(a_toks) == 1 and len(candidate_core) == 1 and char_sim >= 0.86
+          )
+          if fuzzy_sim >= 0.76 and (bool(shared_content) or single_word_typo):
+            cand_score = (
+              42.0
+              + 18.0 * ((fuzzy_sim - 0.75) / 0.25)
+              + specificity_bonus * 0.5
+            )
+            if cand_score > best_alias_score:
+              best_alias_score = cand_score
+              best_alias_reason = f"fuzzy_alias:{alias_raw}({fuzzy_sim:.2f})"
+          elif (
+            len(candidate_core) >= 2
+            and cand_set <= alias_set
+            and _is_ordered_subsequence(candidate_core, a_toks)
+            and q_idf > 0.0
+            and (ov_idf / q_idf) >= 0.38
+          ):
+            distinctive_cand = cand_set - allowed_extra
+            dropped_distinctive = (alias_set - cand_set) - allowed_extra
+            if distinctive_cand:
+              max_kept_idf = max(
+                self._token_idf.get(t, self._default_idf)
+                for t in distinctive_cand
+              )
+              max_dropped_idf = (
+                max(
+                  self._token_idf.get(t, self._default_idf)
+                  for t in dropped_distinctive
+                )
+                if dropped_distinctive
+                else 0.0
+              )
+              if max_kept_idf + 0.6 >= max_dropped_idf:
+                cand_score = (
+                  46.0 + 10.0 * (ov_idf / q_idf) + specificity_bonus * 0.5
+                )
+                if cand_score > best_alias_score:
+                  best_alias_score = cand_score
+                  best_alias_reason = (
+                    f"subseq_alias:{alias_raw}({ov_idf / q_idf:.2f})"
+                  )
 
     if best_alias_score > 0:
       score += best_alias_score
