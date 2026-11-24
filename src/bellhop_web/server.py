@@ -708,7 +708,7 @@ class WebGuideApp:
       ):
         continue
 
-      progs = snap.programs_by_epg_id.get(ch.epg_channel_id, [])
+      progs = snap.programs_for_channel(ch)
       pub = ch.to_public_dict(progs, now_ts=now_ts, upcoming_limit=48)
       if require_epg and not (
         pub["now_playing"] or pub["up_next"] or pub["schedule"]
@@ -764,7 +764,7 @@ class WebGuideApp:
       )
 
     now_ts = int(self._clock())
-    progs = snap.programs_by_epg_id.get(ch.epg_channel_id, [])
+    progs = snap.programs_for_channel(ch)
     upcoming = [
       p.to_dict(now_ts=now_ts)
       for p in progs

@@ -46,6 +46,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape as xml_escape
 
 from bellhop_web.api_contracts import (
   GuideCategoryDict as GuideCategoryDict,
@@ -314,6 +315,7 @@ class WebChannel:
   direct_source: str
   fallback_sources: list[str] = field(default_factory=list)
   epg_aliases: tuple[str, ...] = ()
+  gracenote_station_id: str = ""
 
   def to_public_dict(
     self,
@@ -383,6 +385,20 @@ class LineupSnapshot:
   channels: list[WebChannel] = field(default_factory=list)
   channels_by_chno: dict[int, WebChannel] = field(default_factory=dict)
   programs_by_epg_id: dict[str, list[ProgramItem]] = field(default_factory=dict)
+  programs_by_chno: dict[int, list[ProgramItem]] = field(default_factory=dict)
+
+  def programs_for_channel(self, ch: WebChannel) -> list[ProgramItem]:
+    """Return per-slot EPG items when present, falling back to `epg_channel_id`."""
+    slot_progs = self.programs_by_chno.get(ch.chno)
+    if slot_progs:
+      return slot_progs
+    return self.programs_by_epg_id.get(ch.epg_channel_id, [])
+
+  def channels_with_epg_count(self) -> int:
+    """Count distinct channels (or EPG IDs if channel list empty) with schedules."""
+    if self.channels and self.programs_by_chno:
+      return sum(1 for ch in self.channels if self.programs_for_channel(ch))
+    return sum(1 for v in self.programs_by_epg_id.values() if v)
 
   def build_epg_channel_lookup(self) -> dict[str, str]:
     """Build lowercase upstream channel ID -> canonical `epg_channel_id` lookup map."""
@@ -426,7 +442,12 @@ class LineupSnapshot:
     total = 0
     active = 0
     max_stop = 0
-    for plist in self.programs_by_epg_id.values():
+    source_lists = (
+      [self.programs_for_channel(ch) for ch in self.channels]
+      if (self.channels and self.programs_by_chno)
+      else list(self.programs_by_epg_id.values())
+    )
+    for plist in source_lists:
       for p in plist:
         total += 1
         if p.stop_timestamp > max_stop:
@@ -464,6 +485,7 @@ class LineupGuideStore:
     self._last_updated_at: float = 0.0
     self._snapshot: LineupSnapshot | None = None
     self._epg_overlay: dict[str, list[ProgramItem]] | None = None
+    self._epg_chno_overlay: dict[int, list[ProgramItem]] | None = None
     self._epg_overlay_url: str = ""
 
   @property
@@ -499,6 +521,10 @@ class LineupGuideStore:
       }
       if self._epg_overlay_url and not snap.xmltv_url:
         snap.xmltv_url = self._epg_overlay_url
+    if self._epg_chno_overlay is not None:
+      snap.programs_by_chno = {
+        k: list(v) for k, v in self._epg_chno_overlay.items()
+      }
     snap.loaded_at = self._next_updated_at()
     self._snapshot = snap
     self._last_signature = sig
@@ -519,6 +545,7 @@ class LineupGuideStore:
     self,
     programs_by_epg_id: Mapping[str, list[ProgramItem]],
     *,
+    programs_by_chno: Mapping[int, list[ProgramItem]] | None = None,
     xmltv_url: str = "",
   ) -> int:
     """Overlay dynamically fetched/cached EPG programs into memory (read-only on `output/`)."""
@@ -531,11 +558,28 @@ class LineupGuideStore:
         normalized[cid] = ordered
         total_programs += len(ordered)
 
+    normalized_chno: dict[int, list[ProgramItem]] = {}
+    if programs_by_chno is not None:
+      total_programs = 0
+      for chno, plist in programs_by_chno.items():
+        ordered = reconcile_non_overlapping_schedule(plist)
+        if ordered:
+          normalized_chno[int(chno)] = ordered
+          total_programs += len(ordered)
+
     self._epg_overlay = normalized
+    self._epg_chno_overlay = (
+      normalized_chno if programs_by_chno is not None else None
+    )
     if xmltv_url:
       self._epg_overlay_url = xmltv_url
       snap.xmltv_url = xmltv_url
     snap.programs_by_epg_id = {k: list(v) for k, v in normalized.items()}
+    snap.programs_by_chno = (
+      {k: list(v) for k, v in normalized_chno.items()}
+      if programs_by_chno is not None
+      else {}
+    )
     snap.loaded_at = self._next_updated_at()
     return total_programs
 
@@ -585,6 +629,7 @@ class LineupGuideStore:
         direct_source=rec.direct_source,
         fallback_sources=list(rec.fallback_sources),
         epg_aliases=rec.epg_aliases,
+        gracenote_station_id=rec.gracenote_station_id,
       )
       channels.append(web_ch)
       channels_by_chno[rec.num] = web_ch
@@ -708,3 +753,54 @@ class LineupGuideStore:
     m3u_path: Path,
   ) -> tuple[list[dict[str, str]], list[dict[str, Any]], str]:
     return parse_m3u8_fallback(m3u_path)
+
+
+def _format_xmltv_ts(epoch_ts: int) -> str:
+  return datetime.fromtimestamp(epoch_ts, tz=timezone.utc).strftime(
+    "%Y%m%d%H%M%S +0000"
+  )
+
+
+def render_snapshot_xmltv(snap: LineupSnapshot) -> bytes:
+  """Render `snap`'s merged non-overlapping EPG into an UTF-8 XMLTV document."""
+  lines: list[str] = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<tv generator-info-name="Bellhop">',
+  ]
+  emitted_channels: dict[str, list[ProgramItem]] = {}
+  for ch in snap.channels:
+    cid = ch.epg_channel_id.strip()
+    if not cid or cid in emitted_channels:
+      continue
+    progs = snap.programs_for_channel(ch)
+    emitted_channels[cid] = progs
+    esc_cid = xml_escape(cid, {'"': "&quot;"})
+    esc_name = xml_escape(ch.name)
+    lines.append(f'  <channel id="{esc_cid}">')
+    lines.append(f"    <display-name>{esc_name}</display-name>")
+    if ch.logo:
+      esc_logo = xml_escape(ch.logo, {'"': "&quot;"})
+      lines.append(f'    <icon src="{esc_logo}"/>')
+    lines.append("  </channel>")
+
+  for cid, progs in emitted_channels.items():
+    esc_cid = xml_escape(cid, {'"': "&quot;"})
+    for p in progs:
+      if p.start_timestamp <= 0 or p.stop_timestamp <= p.start_timestamp:
+        continue
+      start_s = _format_xmltv_ts(p.start_timestamp)
+      stop_s = _format_xmltv_ts(p.stop_timestamp)
+      lines.append(
+        f'  <programme start="{start_s}" stop="{stop_s}" channel="{esc_cid}">'
+      )
+      lines.append(f"    <title>{xml_escape(p.title)}</title>")
+      if p.sub_title:
+        lines.append(f"    <sub-title>{xml_escape(p.sub_title)}</sub-title>")
+      if p.description:
+        lines.append(f"    <desc>{xml_escape(p.description)}</desc>")
+      if p.category:
+        lines.append(f"    <category>{xml_escape(p.category)}</category>")
+      lines.append("  </programme>")
+
+  lines.append("</tv>")
+  return ("\n".join(lines) + "\n").encode("utf-8")

@@ -831,10 +831,10 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
     xml = (
       '<?xml version="1.0" encoding="UTF-8"?>\n'
       "<tv>\n"
-      f'  <programme start="{_fmt_xmltv(now_ts - 600)}" stop="{_fmt_xmltv(now_ts + 7200)}" channel="ICITeleMontreal.ca">\n'
+      f'  <programme start="{_fmt_xmltv(now_ts - 600)}" stop="{_fmt_xmltv(now_ts + 14400)}" channel="ICITeleMontreal.ca">\n'
       "    <title>Téléjournal</title>\n"
       "  </programme>\n"
-      f'  <programme start="{_fmt_xmltv(now_ts - 600)}" stop="{_fmt_xmltv(now_ts + 7200)}" channel="ASN.ca">\n'
+      f'  <programme start="{_fmt_xmltv(now_ts - 600)}" stop="{_fmt_xmltv(now_ts + 14400)}" channel="ASN.ca">\n'
       "    <title>Atlantic Live At 5</title>\n"
       "  </programme>\n"
       "</tv>\n"

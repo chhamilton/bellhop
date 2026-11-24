@@ -34,8 +34,9 @@ from bellhop_web.http_utils import (
   json_response,
   start_site,
 )
+from bellhop_web.sd_epg import SchedulesDirectEpgConfig
 from bellhop_web.server import WebGuideApp
-from bellhop_web.store import LineupGuideStore
+from bellhop_web.store import LineupGuideStore, render_snapshot_xmltv
 
 logger = logging.getLogger("bellhop.serve")
 
@@ -103,6 +104,18 @@ class UnifiedServeServer:
     fallback_xmltv_url = build_passthrough_xmltv_url(
       config, redact_secret=False
     )
+    sd_raw = config.lineup.schedules_direct
+    sd_epg_cfg = SchedulesDirectEpgConfig(
+      username=sd_raw.username,
+      password=sd_raw.password,
+      base_url=sd_raw.base_url,
+      auto_add_lineup=sd_raw.auto_add_lineup,
+      preferred_lineup_id=config.lineup.lineup_id,
+      postal_code=config.lineup.postal_code,
+      timeout_sec=config.xtream.request_timeout_sec,
+      token_cache_file=cache_dir / "sd_token.json",
+      data_cache_file=cache_dir / "bellhop_web" / "sd_epg_cache.json",
+    )
 
     web_store = LineupGuideStore(
       xtream_dir,
@@ -112,12 +125,16 @@ class UnifiedServeServer:
     epg_refresher = EpgRefreshService(
       web_store,
       EpgRefreshConfig(
-        enabled=config.serve.web.enabled,
+        enabled=(
+          config.serve.web.enabled
+          or (config.serve.xtream.enabled and sd_epg_cfg.enabled)
+        ),
         refresh_hours=config.epg.refresh_hours,
         request_timeout_sec=config.xtream.request_timeout_sec,
         xmltv_url=fallback_xmltv_url,
         xmltv_file=xmltv_override,
         cache_file=epg_cache_file,
+        sd_epg=sd_epg_cfg,
       ),
       session_factory=epg_session_factory or session_factory,
     )
@@ -141,6 +158,13 @@ class UnifiedServeServer:
       trusted_proxy_ips=config.serve.web.trusted_proxy_ips,
     )
 
+    def _provide_merged_xmltv() -> bytes | None:
+      epg_refresher.trigger_background_if_needed(reason_prefix="xmltv")
+      snap = web_store.get_snapshot()
+      if snap.channels_with_epg_count() == 0:
+        return None
+      return render_snapshot_xmltv(snap)
+
     xtream_store = XtreamExportStore(
       xtream_dir, fallback_xmltv_url=fallback_xmltv_url
     )
@@ -153,6 +177,7 @@ class UnifiedServeServer:
       public_host=config.serve.xtream.public_host,
       public_port=config.serve.xtream.public_port,
       server_protocol=config.serve.xtream.server_protocol,
+      epg_xmltv_provider=_provide_merged_xmltv if sd_epg_cfg.enabled else None,
     )
 
     config_target = config.config_file or (config.project_root / "config.yaml")

@@ -48,6 +48,10 @@ from bellhop_web.http_utils import (
   default_session_factory,
   upstream_url,
 )
+from bellhop_web.sd_epg import (
+  SchedulesDirectEpgClient,
+  SchedulesDirectEpgConfig,
+)
 from bellhop_web.store import (
   LineupGuideStore,
   LineupSnapshot,
@@ -84,6 +88,7 @@ class EpgCacheDocumentDict(_EpgCacheRequiredDict, total=False):
   """Top-level schema for `cache/bellhop_web/epg_cache.json`."""
 
   covered_channel_ids: list[str]
+  channels_by_chno: dict[str, list[CachedProgramDict]]
 
 
 @dataclass(slots=True)
@@ -119,7 +124,7 @@ class EpgRefreshStatus:
       state="disabled",
       program_count=total_progs,
       active_program_count=active_progs,
-      channels_with_epg=sum(1 for v in snap.programs_by_epg_id.values() if v),
+      channels_with_epg=snap.channels_with_epg_count(),
       max_stop_timestamp=max_stop,
     )
 
@@ -142,7 +147,7 @@ class EpgRefreshStatus:
 
 
 DEFAULT_EPG_USER_AGENT = "Bellhop/0.1 (VLC/3.0.20 LibVLC/3.0.20)"
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
 STALE_ENTRY_GRACE_SEC = 7200  # keep shows ending within the last 2 hours
 _PASSWORD_QS_RE = re.compile(r"(password=)([^&\s'\"\\]+)", re.IGNORECASE)
 
@@ -296,10 +301,11 @@ class EpgRefreshConfig:
   min_future_coverage_sec: float = 7200.0
   min_retry_sec: float = 300.0
   max_per_channel: int = 120
+  sd_epg: SchedulesDirectEpgConfig | None = None
 
 
 class EpgRefreshService:
-  """Dynamically fetches passthrough XMLTV as needed and persists a compact JSON cache."""
+  """Dynamically fetches Schedules Direct & XMLTV EPG and persists a compact JSON cache."""
 
   def __init__(
     self,
@@ -314,6 +320,15 @@ class EpgRefreshService:
     self._clock = clock
     self._session_factory: ClientSessionFactory = (
       session_factory or default_session_factory
+    )
+    self._sd_client: SchedulesDirectEpgClient | None = (
+      SchedulesDirectEpgClient(
+        config.sd_epg,
+        session_factory=self._session_factory,
+        clock=self._clock,
+      )
+      if (config.sd_epg is not None and config.sd_epg.enabled)
+      else None
     )
     self._client: aiohttp.ClientSession | None = None
     self._task: asyncio.Task[None] | None = None
@@ -341,7 +356,14 @@ class EpgRefreshService:
     return self.config.xmltv_url
 
   @property
+  def sd_enabled(self) -> bool:
+    """Return `True` when Schedules Direct JSON EPG is configured and active."""
+    return self._sd_client is not None and self._sd_client.enabled
+
+  @property
   def is_configured(self) -> bool:
+    if self.sd_enabled:
+      return True
     if self.config.xmltv_file is not None:
       return True
     return bool(self._resolve_effective_xmltv_url())
@@ -392,7 +414,40 @@ class EpgRefreshService:
         if parsed_items:
           programs_by_id[str(cid)] = parsed_items
 
-      if not programs_by_id:
+      programs_by_chno: dict[int, list[ProgramItem]] = {}
+      raw_by_chno = raw.get("channels_by_chno")
+      if isinstance(raw_by_chno, dict):
+        for ch_key, items in raw_by_chno.items():
+          try:
+            chno_int = int(ch_key)
+          except ValueError:
+            continue
+          if not isinstance(items, list):
+            continue
+          slot_items: list[ProgramItem] = []
+          for p in items:
+            if not isinstance(p, dict) or not p.get("title"):
+              continue
+            stop_ts = int(p.get("stop_timestamp") or 0)
+            if stop_ts > 0 and stop_ts < stale_cutoff:
+              evicted_count += 1
+              continue
+            slot_items.append(
+              ProgramItem(
+                id=str(p.get("id") or ""),
+                channel_id=str(ch_key),
+                title=str(p.get("title") or ""),
+                sub_title=str(p.get("sub_title") or ""),
+                description=str(p.get("description") or ""),
+                category=str(p.get("category") or ""),
+                start_timestamp=int(p.get("start_timestamp") or 0),
+                stop_timestamp=stop_ts,
+              )
+            )
+          if slot_items:
+            programs_by_chno[chno_int] = slot_items
+
+      if not programs_by_id and not programs_by_chno:
         if evicted_count > 0:
           with contextlib.suppress(OSError):
             cache_path.unlink(missing_ok=True)
@@ -410,7 +465,10 @@ class EpgRefreshService:
         else cache_path.stat().st_mtime
       )
 
-      loaded = self.store.apply_epg_programs(programs_by_id)
+      loaded = self.store.apply_epg_programs(
+        programs_by_id,
+        programs_by_chno=programs_by_chno or None,
+      )
       raw_covered = raw.get("covered_channel_ids")
       if isinstance(raw_covered, list) and raw_covered:
         self._covered_channel_ids = frozenset(
@@ -428,17 +486,23 @@ class EpgRefreshService:
       if evicted_count > 0:
         try:
           self._save_cache(
-            programs_by_id, fetched_at, self._covered_channel_ids
+            programs_by_id,
+            fetched_at,
+            self._covered_channel_ids,
+            programs_by_chno=programs_by_chno or None,
           )
         except OSError as exc:
           logger.warning(
             "Could not prune stale entries in %s: %s", cache_path, exc
           )
 
+      ch_count = (
+        len(programs_by_chno) if programs_by_chno else len(programs_by_id)
+      )
       logger.info(
         "Loaded %d cached EPG listings across %d channels from %s%s.",
         loaded,
-        len(programs_by_id),
+        ch_count,
         cache_path,
         f" (evicted {evicted_count} stale)" if evicted_count > 0 else "",
       )
@@ -452,13 +516,14 @@ class EpgRefreshService:
     programs_by_id: dict[str, list[ProgramItem]],
     fetched_at: float,
     covered_channel_ids: frozenset[str] = frozenset(),
+    *,
+    programs_by_chno: dict[int, list[ProgramItem]] | None = None,
   ) -> None:
     cache_path = self.config.cache_file
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    channels_payload: dict[str, list[CachedProgramDict]] = {}
-    total_programs = 0
-    for cid, items in programs_by_id.items():
-      channels_payload[cid] = [
+
+    def _serialize_list(items: list[ProgramItem]) -> list[CachedProgramDict]:
+      return [
         {
           "id": p.id,
           "title": p.title,
@@ -470,7 +535,19 @@ class EpgRefreshService:
         }
         for p in items
       ]
+
+    channels_payload: dict[str, list[CachedProgramDict]] = {}
+    total_programs = 0
+    for cid, items in programs_by_id.items():
+      channels_payload[cid] = _serialize_list(items)
       total_programs += len(items)
+
+    chno_payload: dict[str, list[CachedProgramDict]] = {}
+    if programs_by_chno:
+      total_programs = 0
+      for chno, items in sorted(programs_by_chno.items()):
+        chno_payload[str(chno)] = _serialize_list(items)
+        total_programs += len(items)
 
     effective_covered = sorted(
       covered_channel_ids
@@ -479,11 +556,15 @@ class EpgRefreshService:
     payload: EpgCacheDocumentDict = {
       "version": CACHE_SCHEMA_VERSION,
       "fetched_at": fetched_at,
-      "channel_count": len(channels_payload),
+      "channel_count": len(chno_payload)
+      if chno_payload
+      else len(channels_payload),
       "program_count": total_programs,
       "covered_channel_ids": effective_covered,
       "channels": channels_payload,
     }
+    if chno_payload:
+      payload["channels_by_chno"] = chno_payload
     tmp_path = cache_path.with_suffix(".json.tmp")
     tmp_path.write_text(
       json.dumps(payload, ensure_ascii=False), encoding="utf-8"
@@ -501,7 +582,7 @@ class EpgRefreshService:
       total_progs, active_progs, max_stop_ts = snap.epg_coverage_stats(
         now_ts=effective_now
       )
-      channels_with_epg = sum(1 for v in snap.programs_by_epg_id.values() if v)
+      channels_with_epg = snap.channels_with_epg_count()
     except Exception:
       pass
 
@@ -551,7 +632,7 @@ class EpgRefreshService:
       )
     )
 
-    if self.config.xmltv_file is not None:
+    if self.config.xmltv_file is not None and not self.sd_enabled:
       if not self.config.xmltv_file.is_file():
         return False, "xmltv_file_missing"
       if active_progs == 0:
@@ -564,6 +645,14 @@ class EpgRefreshService:
       ):
         return True, "xmltv_file_updated"
       return False, "fresh"
+
+    if (
+      self.config.xmltv_file is not None
+      and self.config.xmltv_file.is_file()
+      and self._last_updated is not None
+      and self.config.xmltv_file.stat().st_mtime > self._last_updated
+    ):
+      return True, "xmltv_file_updated"
 
     ttl_sec = max(60.0, self.config.refresh_hours * 3600.0)
     if active_progs == 0:
@@ -726,92 +815,162 @@ class EpgRefreshService:
         covered_ids = frozenset(
           cid.strip().lower() for cid in candidate_chains if cid.strip()
         )
-        if not candidate_chains:
+        if not candidate_chains and not snap.channels:
           self._covered_channel_ids = covered_ids
           self._covered_bundle_sig = bundle_sig
-          self._state = "ok"
-          return self.status_dict()
-
-        if self.config.xmltv_file is not None:
-          xml_path = self.config.xmltv_file
-          if not xml_path.is_file():
-            raise FileNotFoundError(
-              f"Configured XMLTV file not found: {xml_path}"
-            )
-          programs = await asyncio.to_thread(
-            parse_xmltv_for_channels,
-            xml_path,
-            channel_id_map,
-            candidate_chains=candidate_chains,
-            max_per_channel=self.config.max_per_channel,
-            now_timestamp=int(self._clock()),
-          )
-          now_epoch = self._clock()
-          self.store.apply_epg_programs(programs)
-          await asyncio.to_thread(
-            self._save_cache, programs, now_epoch, covered_ids
-          )
-          self._covered_channel_ids = covered_ids
-          self._covered_bundle_sig = bundle_sig
-          self._last_updated = now_epoch
           self._state = "ok"
           return self.status_dict()
 
         effective_url = self._resolve_effective_xmltv_url()
-        if not effective_url:
+        has_xmltv_source = self.config.xmltv_file is not None or bool(
+          effective_url
+        )
+
+        # 1. Primary EPG source: Schedules Direct SD-JSON (when configured)
+        sd_by_chno: dict[int, list[ProgramItem]] = {}
+        sd_error: Exception | None = None
+        if self._sd_client is not None and self._sd_client.enabled:
+          try:
+            sd_summary = await self._sd_client.fetch_for_snapshot(
+              snap,
+              now_ts=int(self._clock()),
+              max_per_channel=self.config.max_per_channel,
+            )
+            sd_by_chno = sd_summary.programs_by_chno
+          except Exception as exc:
+            if not has_xmltv_source:
+              raise
+            sd_error = exc
+            logger.warning(
+              "Schedules Direct EPG failed (%s); falling back to XMLTV.",
+              _format_safe_error(exc),
+            )
+
+        # 2. Secondary / backfill EPG source: XMLTV (fills channels missing from SD)
+        need_xmltv = (not sd_by_chno) or (len(sd_by_chno) < len(snap.channels))
+        xmltv_programs: dict[str, list[ProgramItem]] = {}
+        if need_xmltv and has_xmltv_source and candidate_chains:
+          try:
+            if self.config.xmltv_file is not None:
+              xml_path = self.config.xmltv_file
+              if not xml_path.is_file():
+                raise FileNotFoundError(
+                  f"Configured XMLTV file not found: {xml_path}"
+                )
+              xmltv_programs = await asyncio.to_thread(
+                parse_xmltv_for_channels,
+                xml_path,
+                channel_id_map,
+                candidate_chains=candidate_chains,
+                max_per_channel=self.config.max_per_channel,
+                now_timestamp=int(self._clock()),
+              )
+            elif effective_url:
+              self.config.cache_file.parent.mkdir(parents=True, exist_ok=True)
+              fd, tmp_name = tempfile.mkstemp(
+                prefix="xmltv_fetch_",
+                suffix=".xml",
+                dir=str(self.config.cache_file.parent),
+              )
+              tmp_xml_path = Path(tmp_name)
+              logger.info(
+                "Fetching live XMLTV guide from upstream passthrough (reason=%s)...",
+                reason,
+              )
+              owns_client = self._client is None
+              client = (
+                self._client
+                if self._client is not None
+                else self._new_session()
+              )
+              try:
+                with open(fd, "wb") as out_fh:
+                  async with client.get(upstream_url(effective_url)) as resp:
+                    resp.raise_for_status()
+                    async for chunk in resp.content.iter_chunked(65536):
+                      out_fh.write(chunk)
+              finally:
+                if owns_client:
+                  await client.close()
+
+              xmltv_programs = await asyncio.to_thread(
+                parse_xmltv_for_channels,
+                tmp_xml_path,
+                channel_id_map,
+                candidate_chains=candidate_chains,
+                max_per_channel=self.config.max_per_channel,
+                now_timestamp=int(self._clock()),
+              )
+          except Exception as exc:
+            if not sd_by_chno:
+              if sd_error is not None:
+                raise sd_error from exc
+              raise
+            logger.warning(
+              "XMLTV backfill failed (%s); retaining %d Schedules Direct channels.",
+              _format_safe_error(exc),
+              len(sd_by_chno),
+            )
+        elif not sd_by_chno and not has_xmltv_source:
           raise RuntimeError("No upstream XMLTV passthrough URL available.")
 
-        # Stream into a short-lived temp file, extract only mapped channels, then delete it
-        self.config.cache_file.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-          prefix="xmltv_fetch_",
-          suffix=".xml",
-          dir=str(self.config.cache_file.parent),
-        )
-        tmp_xml_path = Path(tmp_name)
-        logger.info(
-          "Fetching live XMLTV guide from upstream passthrough (reason=%s)...",
-          reason,
-        )
-        owns_client = self._client is None
-        client = (
-          self._client if self._client is not None else self._new_session()
-        )
-        try:
-          with open(fd, "wb") as out_fh:
-            async with client.get(upstream_url(effective_url)) as resp:
-              resp.raise_for_status()
-              async for chunk in resp.content.iter_chunked(65536):
-                out_fh.write(chunk)
-        finally:
-          if owns_client:
-            await client.close()
-
-        programs = await asyncio.to_thread(
-          parse_xmltv_for_channels,
-          tmp_xml_path,
-          channel_id_map,
-          candidate_chains=candidate_chains,
-          max_per_channel=self.config.max_per_channel,
-          now_timestamp=int(self._clock()),
-        )
+        # 3. Merge schedules (Schedules Direct primary, XMLTV backfill)
         now_epoch = self._clock()
-        total_loaded = self.store.apply_epg_programs(
-          programs, xmltv_url=effective_url
-        )
-        await asyncio.to_thread(
-          self._save_cache, programs, now_epoch, covered_ids
-        )
+        if sd_by_chno:
+          merged_by_chno: dict[int, list[ProgramItem]] = {}
+          merged_by_id: dict[str, list[ProgramItem]] = dict(xmltv_programs)
+          sd_claimed_ids: set[str] = set()
+          xmltv_backfilled = 0
+          for ch in snap.channels:
+            if ch.chno in sd_by_chno:
+              merged_by_chno[ch.chno] = sd_by_chno[ch.chno]
+              if ch.epg_channel_id and ch.epg_channel_id not in sd_claimed_ids:
+                merged_by_id[ch.epg_channel_id] = sd_by_chno[ch.chno]
+                sd_claimed_ids.add(ch.epg_channel_id)
+            elif ch.epg_channel_id in xmltv_programs:
+              merged_by_chno[ch.chno] = xmltv_programs[ch.epg_channel_id]
+              xmltv_backfilled += 1
+
+          total_loaded = self.store.apply_epg_programs(
+            merged_by_id,
+            programs_by_chno=merged_by_chno,
+            xmltv_url=effective_url,
+          )
+          await asyncio.to_thread(
+            self._save_cache,
+            merged_by_id,
+            now_epoch,
+            covered_ids,
+            programs_by_chno=merged_by_chno,
+          )
+          covered_total = len(merged_by_chno)
+          logger.info(
+            "EPG guide refreshed (%d listings across %d/%d channels: %d Schedules Direct + %d XMLTV backfill; cached to %s).",
+            total_loaded,
+            covered_total,
+            len(snap.channels),
+            len(sd_by_chno),
+            xmltv_backfilled,
+            self.config.cache_file,
+          )
+        else:
+          total_loaded = self.store.apply_epg_programs(
+            xmltv_programs, xmltv_url=effective_url
+          )
+          await asyncio.to_thread(
+            self._save_cache, xmltv_programs, now_epoch, covered_ids
+          )
+          logger.info(
+            "EPG guide refreshed (%d listings across %d channels; cached to %s).",
+            total_loaded,
+            len(xmltv_programs),
+            self.config.cache_file,
+          )
+
         self._covered_channel_ids = covered_ids
         self._covered_bundle_sig = bundle_sig
         self._last_updated = now_epoch
         self._state = "ok"
-        logger.info(
-          "EPG guide refreshed (%d listings across %d channels; cached to %s).",
-          total_loaded,
-          len(programs),
-          self.config.cache_file,
-        )
       except asyncio.CancelledError:
         raise
       except Exception as exc:

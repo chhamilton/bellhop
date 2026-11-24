@@ -141,8 +141,8 @@ pipeline:
     max_candidates_per_channel: 5
 
   epg:
-    # Passthrough EPG: pipeline verifies upstream `xmltv.php` works and embeds the original URL
-    # in generated playlists (never re-served). Web Guide fetches dynamically and caches locally.
+    # Guide EPG: when `schedules_direct` credentials are configured, `bellhop serve` fetches
+    # authoritative SD-JSON schedules as primary and backfills remaining channels from upstream `xmltv.php`.
     verify: true
     refresh_hours: 6.0
 

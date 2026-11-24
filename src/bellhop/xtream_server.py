@@ -315,6 +315,7 @@ class XtreamPassthroughServer:
     public_host: str | None = None,
     public_port: int | None = None,
     server_protocol: str = "http",
+    epg_xmltv_provider: Callable[[], bytes | None] | None = None,
   ) -> None:
     self.store = store
     self.username = username
@@ -324,6 +325,7 @@ class XtreamPassthroughServer:
     self.public_host = public_host
     self.public_port = public_port
     self.server_protocol = server_protocol
+    self.epg_xmltv_provider = epg_xmltv_provider
     self._runner: web.AppRunner | None = None
     self._created_at = int(time.time())
 
@@ -595,6 +597,11 @@ class XtreamPassthroughServer:
       params.get("username", ""), params.get("password", "")
     ):
       return self._unauthorized()
+
+    if self.epg_xmltv_provider is not None:
+      merged_xml = self.epg_xmltv_provider()
+      if merged_xml:
+        return bytes_response(merged_xml, "application/xml; charset=utf-8")
 
     snap = self.store.get_snapshot()
     if not snap.xmltv_url:
