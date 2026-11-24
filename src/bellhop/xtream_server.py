@@ -208,13 +208,23 @@ class XtreamExportStore:
 
   def get_snapshot(self, *, force_reload: bool = False) -> XtreamExportSnapshot:
     sig = self._signature()
-    if (
-      not force_reload and self._snapshot is not None and sig == self._last_sig
-    ):
-      return self._snapshot
+    prev_snap = self._snapshot
+    if not force_reload and prev_snap is not None and sig == self._last_sig:
+      return prev_snap
     snap = self._load_from_disk()
     self._snapshot = snap
     self._last_sig = sig
+    if prev_snap is not None:
+      delta = len(snap.streams) - len(prev_snap.streams)
+      delta_str = f" ({delta:+d})" if delta else ""
+      logger.info(
+        "Reloaded Xtream API playlist from %s: %d streams%s across %d categories [%s].",
+        self.xtream_dir,
+        len(snap.streams),
+        delta_str,
+        len(snap.categories),
+        snap.lineup_id,
+      )
     return snap
 
   def _load_from_disk(self) -> XtreamExportSnapshot:

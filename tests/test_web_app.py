@@ -791,9 +791,13 @@ def test_wcag_aa_contrast_landmarks_and_keyboard_a11y_contracts() -> None:
 @pytest.mark.asyncio
 async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_change(
   tmp_path: Path,
+  caplog: pytest.LogCaptureFixture,
 ) -> None:
-  """Verify `/api/health` exposes `lineup_updated_at` and lineup updates auto-fetch new EPG."""
+  """Verify `/api/health` exposes `lineup_updated_at`, logs reload, & auto-fetches EPG."""
+  import logging
   from datetime import datetime, timezone
+
+  caplog.set_level(logging.INFO, logger="bellhop_web.store")
 
   now_ts = int(time.time())
   xt_dir = tmp_path / "output" / "xtream"
@@ -894,11 +898,15 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
         )
         bundle_path.write_text(json.dumps(bundle_data), encoding="utf-8")
 
-        # 4. `/api/health` immediately bumps `lineup_updated_at` AND kicks off EPG refresh for `ASN.ca`
+        # 4. `/api/health` immediately bumps `lineup_updated_at`, logs reload, & kicks off EPG refresh
         async with client.get("/api/health") as r_h2:
           h2 = await r_h2.json()
         assert h2["lineup_updated_at"] > ts1
         assert h2["channel_count"] == init_count + 1
+        assert any(
+          "Reloaded Web Guide lineup" in rec.message and "(+1)" in rec.message
+          for rec in caplog.records
+        )
 
         for _ in range(50):
           if xmltv_fetches >= 2 and not refresher.status_dict()["refreshing"]:

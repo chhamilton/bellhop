@@ -436,7 +436,12 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
     level=log_level, format="%(levelname)s %(name)s: %(message)s", force=True
   )
   if not args.quiet and not args.verbose:
-    logging.getLogger("bellhop_web.epg").setLevel(logging.INFO)
+    for log_name in (
+      "bellhop_web.epg",
+      "bellhop_web.store",
+      "bellhop.serve",
+    ):
+      logging.getLogger(log_name).setLevel(logging.INFO)
 
   cfg = load_config(args.config)
   server = UnifiedServeServer.from_config(cfg)

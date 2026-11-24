@@ -38,6 +38,7 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import logging
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping
@@ -60,6 +61,8 @@ from bellhop_web.export_bundle import (
   as_str_dict,
   parse_m3u8_fallback,
 )
+
+logger = logging.getLogger("bellhop_web.store")
 
 
 def _as_dict(val: object) -> dict[str, Any]:
@@ -325,12 +328,11 @@ class LineupGuideStore:
 
   def get_snapshot(self, *, force_reload: bool = False) -> LineupSnapshot:
     sig = self._compute_signature()
+    prev_snap = self._snapshot
     if (
-      not force_reload
-      and self._snapshot is not None
-      and sig == self._last_signature
+      not force_reload and prev_snap is not None and sig == self._last_signature
     ):
-      return self._snapshot
+      return prev_snap
 
     snap = self._load_from_disk()
     if self._epg_overlay is not None:
@@ -342,6 +344,17 @@ class LineupGuideStore:
     snap.loaded_at = self._next_updated_at()
     self._snapshot = snap
     self._last_signature = sig
+    if prev_snap is not None:
+      delta = len(snap.channels) - len(prev_snap.channels)
+      delta_str = f" ({delta:+d})" if delta else ""
+      logger.info(
+        "Reloaded Web Guide lineup from %s: %d channels%s across %d categories [%s].",
+        self.xtream_dir,
+        len(snap.channels),
+        delta_str,
+        len(snap.categories),
+        snap.lineup_id,
+      )
     return snap
 
   def apply_epg_programs(
