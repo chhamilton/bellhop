@@ -71,14 +71,18 @@ class CachedProgramDict(TypedDict):
   stop_timestamp: int
 
 
-class EpgCacheDocumentDict(TypedDict):
-  """Top-level schema for `cache/bellhop_web/epg_cache.json`."""
-
+class _EpgCacheRequiredDict(TypedDict):
   version: int
   fetched_at: float
   channel_count: int
   program_count: int
   channels: dict[str, list[CachedProgramDict]]
+
+
+class EpgCacheDocumentDict(_EpgCacheRequiredDict, total=False):
+  """Top-level schema for `cache/bellhop_web/epg_cache.json`."""
+
+  covered_channel_ids: list[str]
 
 
 @dataclass(slots=True)
@@ -289,6 +293,8 @@ class EpgRefreshService:
     self._last_attempt: float | None = None
     self._last_reason: str = ""
     self._last_error: str | None = None
+    self._covered_channel_ids: frozenset[str] = frozenset()
+    self._covered_bundle_sig: tuple[float, ...] = ()
 
   def _resolve_effective_xmltv_url(self) -> str:
     # Prefer the passthrough URL embedded in the generated playlist, falling back to config
@@ -369,13 +375,25 @@ class EpgRefreshService:
       )
 
       loaded = self.store.apply_epg_programs(programs_by_id)
+      raw_covered = raw.get("covered_channel_ids")
+      if isinstance(raw_covered, list) and raw_covered:
+        self._covered_channel_ids = frozenset(
+          str(cid).strip().lower() for cid in raw_covered if str(cid).strip()
+        )
+      else:
+        self._covered_channel_ids = frozenset(
+          cid.strip().lower() for cid in programs_by_id if cid.strip()
+        )
+      self._covered_bundle_sig = self.store.bundle_signature
       self._last_updated = fetched_at
       if self._state == "idle":
         self._state = "ok"
 
       if evicted_count > 0:
         try:
-          self._save_cache(programs_by_id, fetched_at)
+          self._save_cache(
+            programs_by_id, fetched_at, self._covered_channel_ids
+          )
         except OSError as exc:
           logger.warning(
             "Could not prune stale entries in %s: %s", cache_path, exc
@@ -394,7 +412,10 @@ class EpgRefreshService:
       return 0
 
   def _save_cache(
-    self, programs_by_id: dict[str, list[ProgramItem]], fetched_at: float
+    self,
+    programs_by_id: dict[str, list[ProgramItem]],
+    fetched_at: float,
+    covered_channel_ids: frozenset[str] = frozenset(),
   ) -> None:
     cache_path = self.config.cache_file
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -415,11 +436,16 @@ class EpgRefreshService:
       ]
       total_programs += len(items)
 
+    effective_covered = sorted(
+      covered_channel_ids
+      or {cid.strip().lower() for cid in channels_payload if cid.strip()}
+    )
     payload: EpgCacheDocumentDict = {
       "version": CACHE_SCHEMA_VERSION,
       "fetched_at": fetched_at,
       "channel_count": len(channels_payload),
       "program_count": total_programs,
+      "covered_channel_ids": effective_covered,
       "channels": channels_payload,
     }
     tmp_path = cache_path.with_suffix(".json.tmp")
@@ -472,12 +498,30 @@ class EpgRefreshService:
       return False, "no_snapshot"
 
     _total, active_progs, max_stop_ts = snap.epg_coverage_stats(now_ts=now)
+    current_epg_ids = frozenset(
+      cid.strip().lower()
+      for cid in snap.build_epg_channel_lookup().values()
+      if cid.strip()
+    )
+    lineup_changed = bool(
+      current_epg_ids
+      and self._last_updated is not None
+      and (
+        (
+          bool(self._covered_bundle_sig)
+          and self.store.bundle_signature != self._covered_bundle_sig
+        )
+        or bool(current_epg_ids - self._covered_channel_ids)
+      )
+    )
 
     if self.config.xmltv_file is not None:
       if not self.config.xmltv_file.is_file():
         return False, "xmltv_file_missing"
       if active_progs == 0:
         return True, "no_active_programs"
+      if lineup_changed:
+        return True, "lineup_changed"
       if (
         self._last_updated is None
         or self.config.xmltv_file.stat().st_mtime > self._last_updated
@@ -488,6 +532,8 @@ class EpgRefreshService:
     ttl_sec = max(60.0, self.config.refresh_hours * 3600.0)
     if active_progs == 0:
       return True, "no_active_programs"
+    if lineup_changed:
+      return True, "lineup_changed"
     if max_stop_ts > 0 and max_stop_ts < (
       now + int(self.config.min_future_coverage_sec)
     ):
@@ -509,8 +555,10 @@ class EpgRefreshService:
     should_refresh, reason = self.needs_refresh()
     if not should_refresh:
       return False
+    bypass_retry_backoff = reason == "lineup_changed" and self._state != "error"
     if (
-      self._last_attempt is not None
+      not bypass_retry_backoff
+      and self._last_attempt is not None
       and (self._clock() - self._last_attempt) < self.config.min_retry_sec
     ):
       return False
@@ -604,9 +652,11 @@ class EpgRefreshService:
       try:
         should_refresh, reason = self.needs_refresh()
         if should_refresh:
-          now = time.time()
+          now = self._clock()
+          bypass_retry = reason == "lineup_changed" and self._state != "error"
           if (
-            self._last_attempt is None
+            bypass_retry
+            or self._last_attempt is None
             or (now - self._last_attempt) >= self.config.min_retry_sec
           ):
             await self.refresh_now(force=True, reason=reason)
@@ -620,7 +670,7 @@ class EpgRefreshService:
       try:
         await asyncio.wait_for(
           self._stop_event.wait(),
-          timeout=max(1.0, self.config.check_interval_sec),
+          timeout=max(0.02, self.config.check_interval_sec),
         )
       except asyncio.TimeoutError:
         continue
@@ -628,14 +678,20 @@ class EpgRefreshService:
   async def _execute_refresh(self, *, reason: str) -> EpgStatusDict:
     async with self._refresh_lock:
       self._refreshing = True
-      self._last_attempt = time.time()
+      self._last_attempt = self._clock()
       self._last_reason = reason
       self._last_error = None
       tmp_xml_path: Path | None = None
       try:
         snap = self.store.get_snapshot()
+        bundle_sig = self.store.bundle_signature
         channel_id_map = snap.build_epg_channel_lookup()
+        covered_ids = frozenset(
+          cid.strip().lower() for cid in channel_id_map.values() if cid.strip()
+        )
         if not channel_id_map:
+          self._covered_channel_ids = covered_ids
+          self._covered_bundle_sig = bundle_sig
           self._state = "ok"
           return self.status_dict()
 
@@ -650,11 +706,15 @@ class EpgRefreshService:
             xml_path,
             channel_id_map,
             max_per_channel=self.config.max_per_channel,
-            now_timestamp=int(time.time()),
+            now_timestamp=int(self._clock()),
           )
-          now_epoch = time.time()
+          now_epoch = self._clock()
           self.store.apply_epg_programs(programs)
-          await asyncio.to_thread(self._save_cache, programs, now_epoch)
+          await asyncio.to_thread(
+            self._save_cache, programs, now_epoch, covered_ids
+          )
+          self._covered_channel_ids = covered_ids
+          self._covered_bundle_sig = bundle_sig
           self._last_updated = now_epoch
           self._state = "ok"
           return self.status_dict()
@@ -694,13 +754,17 @@ class EpgRefreshService:
           tmp_xml_path,
           channel_id_map,
           max_per_channel=self.config.max_per_channel,
-          now_timestamp=int(time.time()),
+          now_timestamp=int(self._clock()),
         )
-        now_epoch = time.time()
+        now_epoch = self._clock()
         total_loaded = self.store.apply_epg_programs(
           programs, xmltv_url=effective_url
         )
-        await asyncio.to_thread(self._save_cache, programs, now_epoch)
+        await asyncio.to_thread(
+          self._save_cache, programs, now_epoch, covered_ids
+        )
+        self._covered_channel_ids = covered_ids
+        self._covered_bundle_sig = bundle_sig
         self._last_updated = now_epoch
         self._state = "ok"
         logger.info(

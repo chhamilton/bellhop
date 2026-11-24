@@ -9,12 +9,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DEFAULT_UPDATE_CHECK_INTERVAL_MS,
   TIMELINE_STICKY_COL_DEFAULT_PX,
   buildUrlQueryString,
   computeCategorySummaries,
   computeTimelineGeometry,
+  createLineupUpdatePoller,
   escapeHtml,
   groupChannelsByCategory,
+  hasLineupUpdated,
   makeInitials,
   parseExcludedChannelsText,
   parsePinnedStreamsText,
@@ -230,4 +233,67 @@ test("parsePinnedStreamsText and parseExcludedChannelsText parse lines, JSON, an
     1305,
   ]);
   assert.deepEqual(parseExcludedChannelsText("   "), []);
+});
+
+test("createLineupUpdatePoller checks lightweight timestamp and only reloads when changed", async () => {
+  assert.equal(DEFAULT_UPDATE_CHECK_INTERVAL_MS, 60000);
+  assert.equal(hasLineupUpdated(null, 1700000000.1), false);
+  assert.equal(hasLineupUpdated(1700000000.1, 1700000000.1), false);
+  assert.equal(hasLineupUpdated(1700000000.1, 1700000002.5), true);
+
+  let clientKnownTs = 1700000000.123;
+  let serverTs = 1700000000.123;
+  let healthChecks = 0;
+  let fullReloads = 0;
+  let scheduledTick = null;
+  let scheduledInterval = 0;
+  let clearedTimerId = null;
+
+  const poller = createLineupUpdatePoller({
+    intervalMs: 60000,
+    getKnownUpdatedAt: () => clientKnownTs,
+    fetchHealth: async () => {
+      healthChecks += 1;
+      return {
+        lineup_updated_at: serverTs,
+        epg_status: { refreshing: false },
+      };
+    },
+    onUpdateDetected: async (health) => {
+      fullReloads += 1;
+      clientKnownTs = health.lineup_updated_at;
+    },
+    setIntervalFn: (cb, ms) => {
+      scheduledTick = cb;
+      scheduledInterval = ms;
+      return 42;
+    },
+    clearIntervalFn: (id) => {
+      clearedTimerId = id;
+    },
+  });
+
+  poller.start();
+  assert.equal(scheduledInterval, 60000);
+  assert.ok(typeof scheduledTick === "function");
+
+  // Unchanged server timestamp -> lightweight check returns false, 0 full reloads!
+  assert.equal(await poller.checkNow(), false);
+  assert.equal(healthChecks, 1);
+  assert.equal(fullReloads, 0);
+
+  // Server updates catalog/lineup -> timestamp advances -> triggers exactly 1 full reload!
+  serverTs = 1700000060.789;
+  assert.equal(await poller.checkNow(), true);
+  assert.equal(healthChecks, 2);
+  assert.equal(fullReloads, 1);
+  assert.equal(clientKnownTs, 1700000060.789);
+
+  // Next minute tick with no further changes -> 0 additional full reloads!
+  assert.equal(await poller.checkNow(), false);
+  assert.equal(healthChecks, 3);
+  assert.equal(fullReloads, 1);
+
+  poller.stop();
+  assert.equal(clearedTimerId, 42);
 });

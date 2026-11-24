@@ -109,6 +109,7 @@ interface WebkitHTMLVideoElement extends HTMLVideoElement {
 
 interface Window {
   BellhopSettings?: BellhopSettingsApi;
+  BellhopUpdateCheckIntervalMs?: number;
   mpegts?: MpegtsStatic;
   Hls?: HlsConstructor;
 }

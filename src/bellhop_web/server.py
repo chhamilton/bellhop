@@ -620,6 +620,8 @@ class WebGuideApp:
 
   async def _handle_health(self, _request: web.Request) -> web.StreamResponse:
     snap = self.store.get_snapshot()
+    if self.epg_refresher is not None:
+      self.epg_refresher.trigger_background_if_needed(reason_prefix="health")
     now_ts = int(self._clock())
     total_progs, active_progs, _max_stop = snap.epg_coverage_stats(
       now_ts=now_ts
@@ -629,6 +631,7 @@ class WebGuideApp:
       "lineup_id": snap.lineup_id,
       "provider": snap.provider,
       "market": snap.market,
+      "lineup_updated_at": snap.loaded_at,
       "channel_count": len(snap.channels),
       "category_count": len(snap.categories),
       "epg_program_count": total_progs,
@@ -673,9 +676,9 @@ class WebGuideApp:
     return json_response({"released": released})
 
   async def _handle_lineup(self, request: web.Request) -> web.StreamResponse:
+    snap = self.store.get_snapshot()
     if self.epg_refresher is not None:
       self.epg_refresher.trigger_background_if_needed(reason_prefix="lineup")
-    snap = self.store.get_snapshot()
     now_ts = int(self._clock())
     query = request.query
 
@@ -734,6 +737,7 @@ class WebGuideApp:
         "market": snap.market,
         "postal_prefix": snap.postal_prefix,
         "timezone": snap.timezone,
+        "lineup_updated_at": snap.loaded_at,
         "total_channels": len(snap.channels),
         "category_channels": category_channel_count,
         "filtered_channels": len(channels_out),

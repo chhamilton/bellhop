@@ -11,6 +11,7 @@ interface LineupMeta {
   market: string;
   postal_prefix: string;
   timezone: string;
+  lineup_updated_at: number;
   total_channels: number;
   category_channels: number;
   filtered_channels: number;
@@ -92,6 +93,7 @@ interface HealthApiResponse {
   lineup_id: string;
   provider: string;
   market: string;
+  lineup_updated_at: number;
   channel_count: number;
   category_count: number;
   epg_program_count: number;

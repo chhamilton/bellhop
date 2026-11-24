@@ -786,3 +786,134 @@ def test_wcag_aa_contrast_landmarks_and_keyboard_a11y_contracts() -> None:
   ):
     ratio = _contrast(_var(light_block, tok), light_bg)
     assert ratio >= 4.5, f"Light {tok} contrast {ratio:.2f} < 4.5"
+
+
+@pytest.mark.asyncio
+async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_change(
+  tmp_path: Path,
+) -> None:
+  """Verify `/api/health` exposes `lineup_updated_at` and lineup updates auto-fetch new EPG."""
+  from datetime import datetime, timezone
+
+  now_ts = int(time.time())
+  xt_dir = tmp_path / "output" / "xtream"
+  _write_sample_xtream_dir(xt_dir, now_ts - 43200)
+  (xt_dir / "get_epg.json").unlink()
+  bundle_path = xt_dir / "bellhop_xtream_playlist.json"
+  bundle_data = json.loads(bundle_path.read_text(encoding="utf-8"))
+  bundle_data["server_info"]["xmltv_url"] = (
+    "http://panel.example/xmltv.php?username=epg_u&password=pw"
+  )
+  bundle_path.write_text(json.dumps(bundle_data), encoding="utf-8")
+
+  def _fmt_xmltv(ts: int) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
+      "%Y%m%d%H%M%S +0000"
+    )
+
+  xmltv_fetches = 0
+
+  def mock_epg_upstream(_req: web.Request) -> web.Response:
+    nonlocal xmltv_fetches
+    xmltv_fetches += 1
+    xml = (
+      '<?xml version="1.0" encoding="UTF-8"?>\n'
+      "<tv>\n"
+      f'  <programme start="{_fmt_xmltv(now_ts - 600)}" stop="{_fmt_xmltv(now_ts + 7200)}" channel="ICITeleMontreal.ca">\n'
+      "    <title>Téléjournal</title>\n"
+      "  </programme>\n"
+      f'  <programme start="{_fmt_xmltv(now_ts - 600)}" stop="{_fmt_xmltv(now_ts + 7200)}" channel="ASN.ca">\n'
+      "    <title>Atlantic Live At 5</title>\n"
+      "  </programme>\n"
+      "</tv>\n"
+    )
+    return web.Response(status=200, content_type="application/xml", text=xml)
+
+  store = LineupGuideStore(xt_dir)
+  cache_file = tmp_path / "cache" / "bellhop_web" / "epg_cache.json"
+  async with MockHttpServer(mock_epg_upstream) as mock:
+    refresher = EpgRefreshService(
+      store,
+      EpgRefreshConfig(
+        enabled=True,
+        refresh_hours=6.0,
+        cache_file=cache_file,
+        check_interval_sec=0.04,
+        min_retry_sec=0.01,
+      ),
+      session_factory=mock.session_factory,
+    )
+    app = WebGuideApp(store, settle_sec=0.01, epg_refresher=refresher)
+    await app.startup()
+    runner, port = await start_site(app.build_app(), "127.0.0.1", 0)
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+      async with new_test_session(base_url, timeout=10.0) as client:
+        # 1. Wait for initial EPG fetch (only initial channels extracted; ASN.ca not yet in lineup)
+        for _ in range(50):
+          async with client.get("/api/health") as r_h:
+            h1 = await r_h.json()
+          if (
+            h1["epg_active_program_count"] > 0
+            and not h1["epg_status"]["refreshing"]
+          ):
+            break
+          await asyncio.sleep(0.03)
+        assert xmltv_fetches == 1
+
+        async with client.get("/api/lineup") as r_lu1:
+          lu1 = await r_lu1.json()
+        ts1 = lu1["lineup"]["lineup_updated_at"]
+        assert isinstance(ts1, (int, float)) and ts1 > 0
+        init_count = lu1["lineup"]["total_channels"]
+
+        # 2. Repeated `/api/health` checks with no disk change keep `lineup_updated_at` identical
+        async with client.get("/api/health") as r_h_idle:
+          h_idle = await r_h_idle.json()
+        assert h_idle["lineup_updated_at"] == ts1
+        assert xmltv_fetches == 1
+
+        # 3. Simulate `bellhop run` exporting a newly matched channel (`1258 A Atlantic`, `ASN.ca`)
+        bundle_data["live_streams"].append(
+          {
+            "num": 1258,
+            "name": "A Atlantic",
+            "stream_id": 414114,
+            "stream_icon": "",
+            "epg_channel_id": "ASN.ca",
+            "category_id": "1",
+            "category_name": "Broadcast",
+            "direct_source": "http://panel.example/live/u/p/414114.ts",
+            "guide": {
+              "callsign": "ASN-C",
+              "language": "en",
+              "quality_tier": "hd",
+              "has_native_epg": True,
+            },
+          }
+        )
+        bundle_path.write_text(json.dumps(bundle_data), encoding="utf-8")
+
+        # 4. `/api/health` immediately bumps `lineup_updated_at` AND kicks off EPG refresh for `ASN.ca`
+        async with client.get("/api/health") as r_h2:
+          h2 = await r_h2.json()
+        assert h2["lineup_updated_at"] > ts1
+        assert h2["channel_count"] == init_count + 1
+
+        for _ in range(50):
+          if xmltv_fetches >= 2 and not refresher.status_dict()["refreshing"]:
+            break
+          await asyncio.sleep(0.03)
+        assert xmltv_fetches == 2
+        assert "lineup_changed" in refresher.status_dict()["last_reason"]
+
+        # 5. Reloaded `/api/lineup` includes channel 1258 AND its newly fetched `ASN.ca` guide data!
+        async with client.get("/api/lineup") as r_lu2:
+          lu2 = await r_lu2.json()
+        assert lu2["lineup"]["lineup_updated_at"] >= h2["lineup_updated_at"]
+        ch_1258 = next(c for c in lu2["channels"] if c["chno"] == 1258)
+        assert ch_1258["now_playing"] is not None
+        assert ch_1258["now_playing"]["title"] == "Atlantic Live At 5"
+    finally:
+      await runner.cleanup()
+      await app.shutdown()

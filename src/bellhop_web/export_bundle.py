@@ -181,13 +181,17 @@ class ExportBundleReader:
     return files
 
   def compute_signature(self) -> tuple[float, ...]:
-    """Compute mtime signature tuple across all watched export files."""
+    """Compute `(mtime_ns, size)` signature tuple across all watched export files."""
     sig: list[float] = []
     for path in self.watched_files():
       try:
-        sig.append(path.stat().st_mtime if path.is_file() else 0.0)
+        if path.is_file():
+          st = path.stat()
+          sig.extend((float(st.st_mtime_ns), float(st.st_size)))
+        else:
+          sig.extend((0.0, 0.0))
       except OSError:
-        sig.append(0.0)
+        sig.extend((0.0, 0.0))
     return tuple(sig)
 
   def read(self, *, fallback_xmltv_url: str = "") -> ExportBundleData:

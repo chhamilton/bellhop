@@ -9,6 +9,28 @@ export const TIMELINE_STICKY_COL_DEFAULT_PX = 255;
 export const TIMELINE_SLOT_COUNT = 8;
 export const TIMELINE_SLOT_WIDTH_PX = 240;
 export const TIMELINE_SLOT_SEC = 1800;
+export const DEFAULT_UPDATE_CHECK_INTERVAL_MS = 60000;
+
+export interface HealthUpdateSnapshot {
+  lineup_updated_at?: number;
+  epg_status?: EpgStatus | null;
+}
+
+export interface LineupUpdatePollerOptions {
+  intervalMs?: number;
+  getKnownUpdatedAt: () => number | null;
+  fetchHealth: () => Promise<HealthUpdateSnapshot | null>;
+  onUpdateDetected: (health: HealthUpdateSnapshot) => Promise<void> | void;
+  onHealthChecked?: (health: HealthUpdateSnapshot) => void;
+  setIntervalFn?: (cb: () => void, ms: number) => number;
+  clearIntervalFn?: (id: number) => void;
+}
+
+export interface LineupUpdatePoller {
+  checkNow(): Promise<boolean>;
+  start(): void;
+  stop(): void;
+}
 
 export interface ChannelCategoryGroup {
   category_id: string;
@@ -436,4 +458,66 @@ export const parseExcludedChannelsText = (rawExcl: string): number[] => {
     .map((t) => t.trim())
     .filter(Boolean)
     .map((t) => Number(t));
+};
+
+export const hasLineupUpdated = (
+  knownUpdatedAt: number | null,
+  nextUpdatedAt: number | null | undefined,
+): boolean => {
+  if (knownUpdatedAt === null) return false;
+  if (typeof nextUpdatedAt !== "number" || nextUpdatedAt <= 0) return false;
+  return nextUpdatedAt !== knownUpdatedAt;
+};
+
+export const createLineupUpdatePoller = (
+  opts: LineupUpdatePollerOptions,
+): LineupUpdatePoller => {
+  const intervalMs = Math.max(
+    10,
+    opts.intervalMs ?? DEFAULT_UPDATE_CHECK_INTERVAL_MS,
+  );
+  const setTimer =
+    opts.setIntervalFn ?? ((cb, ms) => globalThis.setInterval(cb, ms) as unknown as number);
+  const clearTimer =
+    opts.clearIntervalFn ?? ((id) => globalThis.clearInterval(id));
+
+  let timerId: number | null = null;
+  let inFlight = false;
+
+  const checkNow = async (): Promise<boolean> => {
+    if (inFlight) return false;
+    inFlight = true;
+    try {
+      const health = await opts.fetchHealth();
+      if (!health) return false;
+      if (opts.onHealthChecked) {
+        opts.onHealthChecked(health);
+      }
+      if (hasLineupUpdated(opts.getKnownUpdatedAt(), health.lineup_updated_at)) {
+        await opts.onUpdateDetected(health);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  return {
+    checkNow,
+    start(): void {
+      if (timerId !== null) return;
+      timerId = setTimer(() => {
+        void checkNow();
+      }, intervalMs);
+    },
+    stop(): void {
+      if (timerId !== null) {
+        clearTimer(timerId);
+        timerId = null;
+      }
+    },
+  };
 };

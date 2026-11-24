@@ -8,6 +8,7 @@ export const TIMELINE_STICKY_COL_DEFAULT_PX = 255;
 export const TIMELINE_SLOT_COUNT = 8;
 export const TIMELINE_SLOT_WIDTH_PX = 240;
 export const TIMELINE_SLOT_SEC = 1800;
+export const DEFAULT_UPDATE_CHECK_INTERVAL_MS = 60000;
 export const escapeHtml = (str) => {
     if (str === null || str === undefined || str === "")
         return "";
@@ -317,4 +318,58 @@ export const parseExcludedChannelsText = (rawExcl) => {
         .map((t) => t.trim())
         .filter(Boolean)
         .map((t) => Number(t));
+};
+export const hasLineupUpdated = (knownUpdatedAt, nextUpdatedAt) => {
+    if (knownUpdatedAt === null)
+        return false;
+    if (typeof nextUpdatedAt !== "number" || nextUpdatedAt <= 0)
+        return false;
+    return nextUpdatedAt !== knownUpdatedAt;
+};
+export const createLineupUpdatePoller = (opts) => {
+    const intervalMs = Math.max(10, opts.intervalMs ?? DEFAULT_UPDATE_CHECK_INTERVAL_MS);
+    const setTimer = opts.setIntervalFn ?? ((cb, ms) => globalThis.setInterval(cb, ms));
+    const clearTimer = opts.clearIntervalFn ?? ((id) => globalThis.clearInterval(id));
+    let timerId = null;
+    let inFlight = false;
+    const checkNow = async () => {
+        if (inFlight)
+            return false;
+        inFlight = true;
+        try {
+            const health = await opts.fetchHealth();
+            if (!health)
+                return false;
+            if (opts.onHealthChecked) {
+                opts.onHealthChecked(health);
+            }
+            if (hasLineupUpdated(opts.getKnownUpdatedAt(), health.lineup_updated_at)) {
+                await opts.onUpdateDetected(health);
+                return true;
+            }
+            return false;
+        }
+        catch {
+            return false;
+        }
+        finally {
+            inFlight = false;
+        }
+    };
+    return {
+        checkNow,
+        start() {
+            if (timerId !== null)
+                return;
+            timerId = setTimer(() => {
+                void checkNow();
+            }, intervalMs);
+        },
+        stop() {
+            if (timerId !== null) {
+                clearTimer(timerId);
+                timerId = null;
+            }
+        },
+    };
 };

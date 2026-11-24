@@ -87,6 +87,7 @@ class LineupMetaDict(TypedDict):
   market: str
   postal_prefix: str
   timezone: str
+  lineup_updated_at: float
   total_channels: int
   category_channels: int
   filtered_channels: int
@@ -119,6 +120,7 @@ class HealthApiResponseDict(TypedDict):
   lineup_id: str
   provider: str
   market: str
+  lineup_updated_at: float
   channel_count: int
   category_count: int
   epg_program_count: int

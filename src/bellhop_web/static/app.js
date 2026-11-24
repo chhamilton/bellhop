@@ -5,7 +5,7 @@
  * Timeline views, in-place 30s live progress updates, keyboard navigation,
  * the single-tuner video player (`player.ts`), and Settings (`settings.ts`).
  */
-import { buildUrlQueryString, computeCategorySummaries, groupChannelsByCategory, matchesCategory, matchesSecondaryFilters, parseUrlState, refreshScheduleWindows, resolveSelectedCategory, } from "./guide_logic.js";
+import { DEFAULT_UPDATE_CHECK_INTERVAL_MS, buildUrlQueryString, computeCategorySummaries, createLineupUpdatePoller, groupChannelsByCategory, matchesCategory, matchesSecondaryFilters, parseUrlState, refreshScheduleWindows, resolveSelectedCategory, } from "./guide_logic.js";
 import { createPlayerController } from "./player.js";
 import { renderCardsSectionsHtml, renderCategoriesHtml, renderTimelineViewDom, trapFocusInContainer, updateLiveProgressInPlace, } from "./render.js";
 import { createSettingsController } from "./settings.js";
@@ -25,6 +25,7 @@ const state = {
     streamMode: "mpegts",
     timezone: "America/Montreal",
     timelineOffsetSec: 0,
+    lineupUpdatedAt: null,
     epgStatus: null,
     epgPollTimer: null,
 };
@@ -295,6 +296,10 @@ const loadLineup = async () => {
             throw new Error(`HTTP ${resp.status}`);
         const data = (await resp.json());
         state.lineupMeta = data.lineup || {};
+        state.lineupUpdatedAt =
+            typeof state.lineupMeta.lineup_updated_at === "number"
+                ? state.lineupMeta.lineup_updated_at
+                : null;
         state.epgStatus = data.epg_status || null;
         state.timezone = state.lineupMeta.timezone || "America/Montreal";
         state.categories = data.categories || [];
@@ -605,9 +610,37 @@ window.setInterval(() => {
         });
     }
 }, 30000);
-window.setInterval(() => {
-    void loadLineup();
-}, 600000);
+const updatePoller = createLineupUpdatePoller({
+    intervalMs: window.BellhopUpdateCheckIntervalMs ?? DEFAULT_UPDATE_CHECK_INTERVAL_MS,
+    getKnownUpdatedAt: () => state.lineupUpdatedAt,
+    fetchHealth: async () => {
+        const resp = await fetch("/api/health");
+        if (resp.status === 401) {
+            redirectToLogin();
+            return null;
+        }
+        if (!resp.ok)
+            return null;
+        return (await resp.json());
+    },
+    onHealthChecked: (health) => {
+        if (health.epg_status) {
+            state.epgStatus = health.epg_status;
+            if (state.epgStatus.refreshing) {
+                scheduleEpgCompletionPoll();
+            }
+        }
+    },
+    onUpdateDetected: async () => {
+        await loadLineup();
+    },
+});
+updatePoller.start();
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+        void updatePoller.checkNow();
+    }
+});
 if (window.BellhopSettings && elThemeToggleBtn) {
     window.BellhopSettings.bindThemeToggle(elThemeToggleBtn);
 }

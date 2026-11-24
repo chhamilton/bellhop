@@ -300,9 +300,22 @@ class LineupGuideStore:
       extra_watched_files=extra_watched,
     )
     self._last_signature: tuple[float, ...] = ()
+    self._last_updated_at: float = 0.0
     self._snapshot: LineupSnapshot | None = None
     self._epg_overlay: dict[str, list[ProgramItem]] | None = None
     self._epg_overlay_url: str = ""
+
+  @property
+  def bundle_signature(self) -> tuple[float, ...]:
+    """Return the `(mtime_ns, size)` signature of the currently loaded export bundle."""
+    return self._last_signature
+
+  def _next_updated_at(self) -> float:
+    candidate = round(time.time(), 3)
+    if candidate <= self._last_updated_at:
+      candidate = round(self._last_updated_at + 0.001, 3)
+    self._last_updated_at = candidate
+    return candidate
 
   def _watched_files(self) -> list[Path]:
     return self._bundle_reader.watched_files()
@@ -326,6 +339,7 @@ class LineupGuideStore:
       }
       if self._epg_overlay_url and not snap.xmltv_url:
         snap.xmltv_url = self._epg_overlay_url
+    snap.loaded_at = self._next_updated_at()
     self._snapshot = snap
     self._last_signature = sig
     return snap
@@ -354,7 +368,7 @@ class LineupGuideStore:
       self._epg_overlay_url = xmltv_url
       snap.xmltv_url = xmltv_url
     snap.programs_by_epg_id = {k: list(v) for k, v in normalized.items()}
-    snap.loaded_at = time.time()
+    snap.loaded_at = self._next_updated_at()
     return total_programs
 
   def _load_from_disk(self) -> LineupSnapshot:
