@@ -347,6 +347,15 @@ def build_channel_leaves_and_enrich(
       # (skipping generic US parent-network fallbacks on local affiliate slots like "ABC (Burlington)")
       ch_base_norm = normalize_lookup_key(PAREN_GROUP_RE.sub("", ch.name))
       us_generic_networks = {"abc", "cbs", "nbc", "fox", "pbs", "cw", "thecw"}
+      # Upgrade bare OTA callsign titles ("CBFT" -> "ICI Radio-Canada Télé (CBFT)")
+      if (
+        ch.callsign
+        and ch_base_norm == normalize_lookup_key(ch.callsign)
+        and normalize_lookup_key(info.name) != ch_base_norm
+        and normalize_lookup_key(info.name) not in us_generic_networks
+      ):
+        ch.name = f"{info.name} ({ch.callsign})"
+        ch_base_norm = normalize_lookup_key(info.name)
       if match.was_replaced or (
         match.similarity >= 0.78 and ch_base_norm not in us_generic_networks
       ):

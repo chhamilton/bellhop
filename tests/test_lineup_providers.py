@@ -15,6 +15,7 @@ from bellhop.config import (
   SchedulesDirectConfig,
   StateConfig,
 )
+from bellhop.iptv_org import IptvOrgIndex
 from bellhop.lineup_retriever import (
   build_default_providers,
   discover_provider_lineups,
@@ -436,3 +437,144 @@ def test_provider_selection_registry_routing(tmp_path: Path) -> None:
     ),
     SchedulesDirectLineupProvider,
   )
+
+
+@pytest.mark.asyncio
+async def test_schedules_direct_real_world_pairing_and_ota_feed_enrichment(
+  tmp_path: Path,
+) -> None:
+  """Verify Gracenote 7-char callsign SD/HD pairing, mid-title HD cleanup, and OTA feed callsign enrichment."""
+
+  async def sd_handler(req: web.Request) -> web.Response:
+    if req.path.endswith("/token"):
+      return web.json_response({"code": 0, "token": "tok"})
+    if req.path.endswith("/lineups"):
+      return web.json_response(
+        {
+          "code": 0,
+          "lineups": [
+            {
+              "lineup": "CAN-0004980-X",
+              "name": "Bell Fibe TV",
+              "location": "Montréal",
+            }
+          ],
+        }
+      )
+    if req.path.endswith("/lineups/CAN-0004980-X"):
+      return web.json_response(
+        {
+          "metadata": {
+            "lineup": "CAN-0004980-X",
+            "transport": "Cable",
+            "modified": "2026-11-23T21:02:41Z",
+          },
+          "map": [
+            {"stationID": "10101", "channel": "101"},
+            {"stationID": "11101", "channel": "1101"},
+            {"stationID": "73141", "channel": "111"},
+            {"stationID": "73142", "channel": "1111"},
+            {"stationID": "55401", "channel": "554"},
+            {"stationID": "55402", "channel": "1554"},
+          ],
+          "stations": [
+            {
+              "stationID": "10101",
+              "name": "CBFT",
+              "callsign": "CBFT",
+              "broadcastLanguage": ["fr"],
+            },
+            {
+              "stationID": "11101",
+              "name": "CBFT-DT",
+              "callsign": "CBFTDT",
+              "broadcastLanguage": ["fr"],
+              "isHD": True,
+            },
+            {
+              "stationID": "73141",
+              "name": "TVA Sports",
+              "callsign": "TVASPRT",
+              "broadcastLanguage": ["fr"],
+            },
+            {
+              "stationID": "73142",
+              "name": "TVA Sports HD",
+              "callsign": "TVASPTH",
+              "broadcastLanguage": ["fr"],
+              "isHD": True,
+            },
+            {
+              "stationID": "55401",
+              "name": "Cartoon Network Canada",
+              "callsign": "CRTS",
+              "broadcastLanguage": ["en"],
+            },
+            {
+              "stationID": "55402",
+              "name": "Cartoon Network HD Canada",
+              "callsign": "CRTN",
+              "broadcastLanguage": ["en"],
+              "isHD": True,
+            },
+          ],
+        }
+      )
+    return web.Response(status=404)
+
+  iptv_idx = IptvOrgIndex.from_json_payloads(
+    channels_raw=[
+      {
+        "id": "IciRadioCanadaTele.ca",
+        "name": "ICI Radio-Canada Télé",
+        "alt_names": ["ICI Télé"],
+        "country": "CA",
+        "categories": ["general"],
+      },
+      {
+        "id": "TVASports.ca",
+        "name": "TVA Sports",
+        "alt_names": [],
+        "country": "CA",
+        "categories": ["sports"],
+      },
+      {
+        "id": "CartoonNetwork.ca",
+        "name": "Cartoon Network",
+        "alt_names": [],
+        "country": "CA",
+        "categories": ["animation"],
+      },
+    ],
+    feeds_raw=[
+      {
+        "channel": "IciRadioCanadaTele.ca",
+        "id": "CBFTDT",
+        "name": "CBFT-DT",
+        "is_main": False,
+        "languages": ["fra"],
+      }
+    ],
+  )
+
+  async with MockHttpServer(sd_handler) as mock, mock.new_session() as client:
+    sd = SchedulesDirectLineupProvider(
+      username="u",
+      password="p",
+      base_url=f"{mock.base_url}/20141201",
+      token_cache_path=tmp_path / "sd_token.json",
+      client=client,
+    )
+    lu = await sd.retrieve_lineup(
+      "CAN-0004980-X", postal_code="H2Y", iptv_org_index=iptv_idx
+    )
+    assert lu.provider == "Bell Fibe TV"
+    assert lu.market == "Montréal (Cable)"
+    # All 3 SD/HD pairs (101+1101, 111+1111, 554+1554) cleanly collapsed into 3 unique networks!
+    assert [c.chno for c in lu.channels] == [1101, 1111, 1554]
+    by_no = {c.chno: c for c in lu.channels}
+    assert by_no[1101].sd_chno == 101
+    assert by_no[1101].name == "ICI Radio-Canada Télé (CBFT)"
+    assert by_no[1101].tvg_id == "IciRadioCanadaTele.ca"
+    assert by_no[1111].sd_chno == 111
+    assert by_no[1554].sd_chno == 554

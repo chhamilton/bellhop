@@ -434,6 +434,23 @@ class SchedulesDirectLineupProvider(LineupProvider):
     provider_label = str(meta.get("lineup") or canonical_id).strip()
     transport = str(meta.get("transport") or "Cable").strip()
     sd_location = str(meta.get("location") or "").strip()
+    if provider_label.upper() == canonical_id or not sd_location:
+      try:
+        acct_lus = await self._request("GET", "lineups")
+        if isinstance(acct_lus, Mapping):
+          for item in acct_lus.get("lineups") or []:
+            if (
+              isinstance(item, Mapping)
+              and str(item.get("lineup") or "").strip().upper() == canonical_id
+            ):
+              if provider_label.upper() == canonical_id and item.get("name"):
+                provider_label = str(item["name"]).strip()
+              if not sd_location and item.get("location"):
+                sd_location = str(item["location"]).strip()
+              break
+      except LineupBackendError:
+        pass
+
     channels = normalize_provider_slots(
       raw_slots,
       postal_code=postal_code,
@@ -447,6 +464,11 @@ class SchedulesDirectLineupProvider(LineupProvider):
 
     postal_prefix = (
       postal_code.strip()[:3].upper() if postal_code.strip() else ""
+    )
+    market_label = (
+      f"{sd_location} ({transport})"
+      if sd_location
+      else f"{country_prefix} ({transport})"
     )
 
     meta_dict: dict[str, Any] = {
@@ -462,7 +484,7 @@ class SchedulesDirectLineupProvider(LineupProvider):
     return CableLineup(
       lineup_id=canonical_id,
       provider=provider_label,
-      market=f"{country_prefix} ({transport})",
+      market=market_label,
       postal_prefix=postal_prefix,
       retrieved_at=datetime.now(timezone.utc).isoformat(),
       metadata=meta_dict,

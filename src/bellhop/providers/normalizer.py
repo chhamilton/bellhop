@@ -19,7 +19,7 @@ TRAILING_NOISE_RE = re.compile(
   re.IGNORECASE,
 )
 HD_SUFFIX_RE = re.compile(
-  r"(?:\s+(?:HD|FHD|4K|UHD|DT)|\s*-?\s*HD)$", re.IGNORECASE
+  r"(?:\s+(?:HD|FHD|4K|UHD|DT|SD)|\s*-\s*(?:HD|DT))$", re.IGNORECASE
 )
 CALLSIGN_HD_SUFFIX_RE = re.compile(r"(?:HD|-HD|-DT|DT)$", re.IGNORECASE)
 CALLSIGN_DIR_SUFFIX_RE = re.compile(r"-(?:E|W|C|F|P|TV|DT|HD)$", re.IGNORECASE)
@@ -432,6 +432,16 @@ def _clean_station_title(
   stripped = PAREN_GROUP_RE.sub("", text).strip()
   stripped = TRAILING_NOISE_RE.sub("", stripped).strip(" -–—/")
   stripped_no_hd = HD_SUFFIX_RE.sub("", stripped).strip(" -–—/")
+  # Normalize mid-title HD markers ("Cartoon Network HD Canada" -> "Cartoon Network Canada", "Super Écran HD2" -> "Super Écran 2")
+  stripped_no_hd = re.sub(
+    r"\bHD\s*([1-9])\b", r"\1", stripped_no_hd, flags=re.IGNORECASE
+  )
+  stripped_no_hd = re.sub(
+    r"\s+\b(?:HD|FHD|4K|UHD)\b(?=\s)",
+    "",
+    stripped_no_hd,
+    flags=re.IGNORECASE,
+  ).strip(" -–—/")
 
   display = stripped_no_hd or stripped or text
   if useful_parens and useful_parens[0].lower() not in display.lower():
@@ -449,15 +459,27 @@ def _clean_station_title(
     cs_base = CALLSIGN_HD_SUFFIX_RE.sub("", cs_clean).strip("-")
     cs_root = CALLSIGN_DIR_SUFFIX_RE.sub("", cs_base).strip("-")
     disp_low = display.lower()
-    if (
-      len(cs_root) >= 4
-      and cs_root[-1].upper() in {"E", "W"}
-      and any(d in disp_low for d in ("pacific", "west", "east"))
+    if len(cs_root) >= 4 and (
+      (
+        cs_root[-1].upper() in {"E", "W", "P"}
+        and any(d in disp_low for d in ("pacific", "west", "east"))
+      )
+      or cs_root.upper() in {"YTVP", "YTVW", "YTVE"}
     ):
       cs_dir_trimmed = cs_root[:-1]
     else:
       cs_dir_trimmed = cs_root
-    if len(cs_base) >= 3:
+    disp_first_word = (
+      re.findall(r"[a-z0-9]+", disp_low)[0]
+      if re.findall(r"[a-z0-9]+", disp_low)
+      else ""
+    )
+    is_prefix_word_cs = (
+      len(cs_base) >= 3
+      and cs_base.lower() == disp_first_word
+      and " " in display.strip()
+    )
+    if len(cs_base) >= 3 and not is_prefix_word_cs:
       aliases.append(cs_base)
     if cs_root != cs_base and len(cs_root) >= 3:
       aliases.append(cs_root)
@@ -784,6 +806,14 @@ def normalize_provider_slots(
   consumed_sd_chnos: set[int] = set()
   sd_for_hd: dict[int, int] = {}
 
+  def _dial_pair_key(title: str) -> str:
+    cleaned = re.sub(
+      r"\b(?:the|canada|canadian|television|tv|network|channel)\b",
+      "",
+      _strip_accents(title).lower(),
+    )
+    return _norm_key(cleaned)
+
   if pair_sd_hd:
     # Pass 1: Classic +1000 offset pairing (Bell Fibe 101 <-> 1101, Telus, etc.)
     for p in parsed_list:
@@ -795,6 +825,24 @@ def normalize_provider_slots(
           and cand_sd not in consumed_sd_chnos
           and (
             sd_slot.base_identity_key == p.base_identity_key
+            or (
+              bool(_norm_key(sd_slot.clean_name))
+              and _norm_key(sd_slot.clean_name) == _norm_key(p.clean_name)
+            )
+            or (
+              len(_dial_pair_key(sd_slot.clean_name)) >= 3
+              and _dial_pair_key(sd_slot.clean_name)
+              == _dial_pair_key(p.clean_name)
+            )
+            or (
+              len(p.base_callsign) >= 3
+              and sd_slot.base_callsign == f"{p.base_callsign}1"
+            )
+            or (
+              len(sd_slot.base_callsign) >= 5
+              and len(p.base_callsign) >= 5
+              and sd_slot.base_callsign[:5] == p.base_callsign[:5]
+            )
             or (
               sd_slot.slot.logo_url and sd_slot.slot.logo_url == p.slot.logo_url
             )

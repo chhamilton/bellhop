@@ -330,13 +330,24 @@ class IptvOrgIndex:
     """Construct `IptvOrgIndex`, resolving `replaced_by` chains and closed stations."""
     idx = cls()
 
+    ota_feed_re = re.compile(
+      r"^([CWK][A-Z]{2,4})(?:-?(?:DT|TV|HD))?(?:-\d+|\d)?$"
+    )
     langs_by_id: dict[str, list[str]] = defaultdict(list)
+    feed_callsigns_by_id: dict[str, list[str]] = defaultdict(list)
     for feed in feeds_raw:
       if not isinstance(feed, Mapping):
         continue
       cid = str(feed.get("channel") or "").strip()
       if not cid:
         continue
+      for raw_fc in (feed.get("id"), feed.get("name")):
+        fc = str(raw_fc or "").strip().upper()
+        m_ota = ota_feed_re.match(fc)
+        if m_ota:
+          for cand_cs in (fc, m_ota.group(1)):
+            if cand_cs not in feed_callsigns_by_id[cid]:
+              feed_callsigns_by_id[cid].append(cand_cs)
       raw_langs = feed.get("languages")
       if not isinstance(raw_langs, list):
         continue
@@ -406,6 +417,7 @@ class IptvOrgIndex:
       if isinstance(raw_alts, list):
         for alt in raw_alts:
           raw_labels.append(str(alt))
+      raw_labels.extend(feed_callsigns_by_id.get(cid, ()))
       raw_labels.append(cid.split(".", 1)[0])
 
       seen_compact: set[str] = set()
