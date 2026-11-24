@@ -11,12 +11,20 @@ import pytest
 from aiohttp import web
 from yarl import URL
 
-from bellhop_web.epg_refresh import EpgRefreshConfig, EpgRefreshService
+from bellhop_web.epg_refresh import (
+  EpgRefreshConfig,
+  EpgRefreshService,
+  parse_xmltv_for_channels,
+)
 from bellhop_web.http_utils import DEFAULT_CLIENT_MAX_SIZE, start_site
 from bellhop_web.server import (
   WebGuideApp,
 )
-from bellhop_web.store import LineupGuideStore
+from bellhop_web.store import (
+  LineupGuideStore,
+  ProgramItem,
+  reconcile_non_overlapping_schedule,
+)
 from tests.http_mock import MockHttpServer, new_test_session
 
 
@@ -925,3 +933,224 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
     finally:
       await runner.cleanup()
       await app.shutdown()
+
+
+def test_epg_priority_fallback_and_weighted_interval_deoverlapping(
+  tmp_path: Path,
+) -> None:
+  """Verify EPG alias priority fallback (no cross-feed pooling), v1 cache invalidation, and DP de-overlapping."""
+  now_ts = 1_764_000_000
+  xt_dir = tmp_path / "xtream"
+  xt_dir.mkdir(parents=True, exist_ok=True)
+
+  bundle = {
+    "meta": {"lineup_id": "TVG-9100000607", "provider": "Bell Fibe TV"},
+    "categories": [{"category_id": "1", "category_name": "Movies (1306–1307)"}],
+    "live_streams": [
+      {
+        "num": 1306,
+        "name": "HBO",
+        "stream_id": 1001,
+        "epg_channel_id": "HBO.us",
+        "category_id": "1",
+        "category_name": "Movies (1306–1307)",
+        "direct_source": "http://panel.example/live/u/p/1001.ts",
+        "guide": {
+          "callsign": "HBOCAN",
+          "official_tvg_id": "Cinemax.us",
+          "has_native_epg": True,
+        },
+      },
+      {
+        "num": 1307,
+        "name": "Cinemax",
+        "stream_id": 1002,
+        "epg_channel_id": "Cinemax.us",
+        "category_id": "1",
+        "category_name": "Movies (1306–1307)",
+        "direct_source": "http://panel.example/live/u/p/1002.ts",
+        "guide": {
+          "callsign": "MAX",
+          "official_tvg_id": "Cinemax.us",
+          "has_native_epg": True,
+        },
+      },
+      {
+        "num": 1510,
+        "name": "BBC News",
+        "stream_id": 1003,
+        "epg_channel_id": "BBCWorld.ca",
+        "category_id": "1",
+        "category_name": "Movies (1306–1307)",
+        "direct_source": "http://panel.example/live/u/p/1003.ts",
+        "guide": {
+          "callsign": "BBCW",
+          "official_tvg_id": "BBCNews.uk",
+          "has_native_epg": False,
+        },
+      },
+    ],
+  }
+  (xt_dir / "bellhop_xtream_playlist.json").write_text(
+    json.dumps(bundle), encoding="utf-8"
+  )
+
+  store = LineupGuideStore(xt_dir)
+  snap = store.get_snapshot()
+  lookup = snap.build_epg_channel_lookup()
+  # Primary `Cinemax.us` on 1307 must NEVER be overwritten by 1306's secondary alias
+  assert lookup["hbo.us"] == "HBO.us"
+  assert lookup["cinemax.us"] == "Cinemax.us"
+  assert lookup["bbcnews.uk"] == "BBCWorld.ca"
+
+  chains = snap.build_epg_candidate_chains()
+  assert chains["HBO.us"] == ("hbo.us", "cinemax.us")
+  assert chains["BBCWorld.ca"] == ("bbcworld.ca", "bbcnews.uk")
+
+  def _fmt(ts: int) -> str:
+    return time.strftime("%Y%m%d%H%M%S +0000", time.gmtime(ts))
+
+  xml_path = tmp_path / "upstream.xml"
+  xml_path.write_text(
+    f"""<?xml version="1.0" encoding="UTF-8"?>
+<tv>
+  <programme start="{_fmt(now_ts)}" stop="{_fmt(now_ts + 3600)}" channel="HBO.us">
+    <title>The Gilded Age</title>
+  </programme>
+  <programme start="{_fmt(now_ts + 3600)}" stop="{_fmt(now_ts + 7200)}" channel="HBO.us">
+    <title>This Is Not a War Story</title>
+  </programme>
+  <programme start="{_fmt(now_ts + 900)}" stop="{_fmt(now_ts + 6300)}" channel="Cinemax.us">
+    <title>Happy Death Day</title>
+  </programme>
+  <programme start="{_fmt(now_ts)}" stop="{_fmt(now_ts + 3600)}" channel="BBCNews.uk">
+    <title>BBC News Now</title>
+  </programme>
+</tv>
+""",
+    encoding="utf-8",
+  )
+
+  parsed = parse_xmltv_for_channels(
+    xml_path,
+    lookup,
+    candidate_chains=chains,
+    now_timestamp=now_ts,
+  )
+  # 1306 (`HBO.us`) keeps ONLY `HBO.us` programmes — never interleaved with `Cinemax.us`!
+  assert [p.title for p in parsed["HBO.us"]] == [
+    "The Gilded Age",
+    "This Is Not a War Story",
+  ]
+  assert [p.title for p in parsed["Cinemax.us"]] == ["Happy Death Day"]
+  # 1510 (`BBCWorld.ca`) has no primary XMLTV entries, so it cleanly falls back to `BBCNews.uk`
+  assert [p.title for p in parsed["BBCWorld.ca"]] == ["BBC News Now"]
+
+  # Pre-fix `v1` EPG cache files on disk must be ignored so stale merged feeds re-fetch cleanly
+  v1_cache = tmp_path / "epg_cache.json"
+  v1_cache.write_text(
+    json.dumps(
+      {
+        "version": 1,
+        "updated_at": float(now_ts),
+        "xmltv_url": "http://panel.example/xmltv.php?username=u&password=p",
+        "channels": {
+          "HBO.us": [
+            {
+              "title": "Stale Merged Entry",
+              "sub_title": "",
+              "description": "",
+              "category": "",
+              "start": now_ts,
+              "stop": now_ts + 3600,
+            }
+          ]
+        },
+      }
+    ),
+    encoding="utf-8",
+  )
+  refresher = EpgRefreshService(
+    store,
+    EpgRefreshConfig(enabled=True, cache_file=v1_cache),
+  )
+  assert refresher.hydrate_from_cache(now_ts=now_ts) == 0
+
+  # Single-channel multi-grabber overlaps: shifted duplicates, <=5m bumper overlap, & live sports preemption
+  base = now_ts
+  messy_items = [
+    # Movie 1 ending 3m after Movie 2's grabber A start (`<=5m` boundary bumper)
+    ProgramItem(
+      id="1",
+      channel_id="TSN3.ca",
+      title="Early Morning Feature",
+      start_timestamp=base,
+      stop_timestamp=base + 5400,
+    ),
+    # Shifted duplicate pair from 2 grabbers (`+5220..+11340` vs `+5400..+12600`)
+    ProgramItem(
+      id="2",
+      channel_id="TSN3.ca",
+      title="Morning Documentary",
+      start_timestamp=base + 5220,
+      stop_timestamp=base + 11340,
+    ),
+    ProgramItem(
+      id="3",
+      channel_id="TSN3.ca",
+      title="Morning Documentary",
+      description="Full synopsis from richer grabber.",
+      start_timestamp=base + 5400,
+      stop_timestamp=base + 12600,
+    ),
+    # Competing afternoon tracks: generic `SportsCentre` filler vs `SC` + `Live: FIFA World Cup` preemption
+    ProgramItem(
+      id="4",
+      channel_id="TSN3.ca",
+      title="SportsCentre",
+      start_timestamp=base + 12600,
+      stop_timestamp=base + 16200,
+    ),
+    ProgramItem(
+      id="5",
+      channel_id="TSN3.ca",
+      title="SportsCentre",
+      start_timestamp=base + 16200,
+      stop_timestamp=base + 19800,
+    ),
+    ProgramItem(
+      id="6",
+      channel_id="TSN3.ca",
+      title="SC",
+      start_timestamp=base + 12600,
+      stop_timestamp=base + 13680,
+    ),
+    ProgramItem(
+      id="7",
+      channel_id="TSN3.ca",
+      title="Live: 2026 FIFA U-17 World Cup",
+      description="Quarterfinal live broadcast.",
+      start_timestamp=base + 13680,
+      stop_timestamp=base + 21600,
+    ),
+    ProgramItem(
+      id="8",
+      channel_id="TSN3.ca",
+      title="SportsCentre",
+      start_timestamp=base + 21600,
+      stop_timestamp=base + 23400,
+    ),
+  ]
+  clean = reconcile_non_overlapping_schedule(messy_items)
+  assert [p.title for p in clean] == [
+    "Early Morning Feature",
+    "Morning Documentary",
+    "SC",
+    "Live: 2026 FIFA U-17 World Cup",
+    "SportsCentre",
+  ]
+  assert clean[1].description == "Full synopsis from richer grabber."
+  assert all(
+    a.start_timestamp < a.stop_timestamp <= b.start_timestamp
+    for a, b in zip(clean, clean[1:], strict=False)
+  )

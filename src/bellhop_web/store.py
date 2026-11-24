@@ -41,8 +41,8 @@ import json
 import logging
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -156,6 +156,145 @@ class ProgramItem:
     return d
 
 
+_BUMPER_OVERLAP_SEC = 300
+
+
+def _program_quality_key(
+  item: ProgramItem, seq_idx: int
+) -> tuple[int, int, int, int]:
+  return (
+    1 if "live" in item.title.lower() else 0,
+    len(item.description),
+    len(item.sub_title),
+    seq_idx,
+  )
+
+
+def reconcile_non_overlapping_schedule(
+  items: Sequence[ProgramItem],
+) -> list[ProgramItem]:
+  """Deduplicate and solve 1D weighted interval scheduling so programs never overlap."""
+  if not items:
+    return []
+
+  # 1. Exact `(start, stop, title)` dedup + separate finite vs open-ended entries
+  exact_map: dict[tuple[int, int, str], tuple[ProgramItem, int]] = {}
+  open_ended: list[ProgramItem] = []
+  for idx, p in enumerate(items):
+    if p.start_timestamp <= 0 or not p.title:
+      continue
+    if p.stop_timestamp <= 0:
+      open_ended.append(p)
+      continue
+    if p.stop_timestamp <= p.start_timestamp:
+      continue
+    key = (p.start_timestamp, p.stop_timestamp, p.title.casefold())
+    prev = exact_map.get(key)
+    if prev is None or _program_quality_key(p, idx) > _program_quality_key(
+      prev[0], prev[1]
+    ):
+      exact_map[key] = (p, idx)
+
+  if not exact_map:
+    open_ended.sort(key=lambda p: (p.start_timestamp, p.id))
+    return open_ended
+
+  # 2. Sort finite intervals and coalesce shifted same-title duplicates from multi-grabbers
+  ordered_pairs = sorted(
+    exact_map.values(),
+    key=lambda pair: (
+      pair[0].start_timestamp,
+      pair[0].stop_timestamp,
+      pair[1],
+    ),
+  )
+  coalesced: list[tuple[ProgramItem, int]] = []
+  for cand, idx in ordered_pairs:
+    if coalesced:
+      prev_p, prev_idx = coalesced[-1]
+      if prev_p.title.casefold() == cand.title.casefold():
+        ov = min(prev_p.stop_timestamp, cand.stop_timestamp) - max(
+          prev_p.start_timestamp, cand.start_timestamp
+        )
+        min_dur = min(
+          prev_p.stop_timestamp - prev_p.start_timestamp,
+          cand.stop_timestamp - cand.start_timestamp,
+        )
+        if ov > 0 and ov >= 0.40 * min_dur:
+          if _program_quality_key(cand, idx) >= _program_quality_key(
+            prev_p, prev_idx
+          ):
+            coalesced[-1] = (cand, idx)
+          continue
+    coalesced.append((cand, idx))
+
+  # Fast path when already strictly non-overlapping
+  has_any_overlap = any(
+    coalesced[i][0].stop_timestamp > coalesced[i + 1][0].start_timestamp
+    for i in range(len(coalesced) - 1)
+  )
+  if not has_any_overlap:
+    return [p for p, _ in coalesced]
+
+  # 3. 1D Weighted Interval Scheduling DP (with <=5m boundary bumper tolerance + contiguity bonus)
+  n = len(coalesced)
+  dp = [0.0] * n
+  parent = [-1] * n
+
+  def _base_weight(p: ProgramItem, seq_idx: int) -> float:
+    dur = float(p.stop_timestamp - p.start_timestamp)
+    live_bonus = 300.0 if "live" in p.title.lower() else 0.0
+    desc_bonus = float(min(180, len(p.description)) + min(60, len(p.sub_title)))
+    return dur + live_bonus + desc_bonus + 0.01 * seq_idx
+
+  for j in range(n):
+    pj, idx_j = coalesced[j]
+    dur_j = pj.stop_timestamp - pj.start_timestamp
+    wj = _base_weight(pj, idx_j)
+    best_val = wj
+    best_prev = -1
+    for i in range(j - 1, -1, -1):
+      pi, _ = coalesced[i]
+      if pi.start_timestamp >= pj.start_timestamp:
+        continue
+      if pj.stop_timestamp <= pi.stop_timestamp:
+        continue
+      ov = pi.stop_timestamp - pj.start_timestamp
+      dur_i = pi.stop_timestamp - pi.start_timestamp
+      if ov > 0 and (ov > _BUMPER_OVERLAP_SEC or ov > 0.20 * min(dur_i, dur_j)):
+        continue
+      trimmed_penalty = float(max(0, ov))
+      contig_bonus = (
+        240.0 if abs(pi.stop_timestamp - pj.start_timestamp) <= 60 else 0.0
+      )
+      cand_val = dp[i] + wj - trimmed_penalty + contig_bonus
+      if cand_val > best_val:
+        best_val = cand_val
+        best_prev = i
+    dp[j] = best_val
+    parent[j] = best_prev
+
+  best_end = max(range(n), key=lambda k: dp[k])
+  chosen_rev: list[ProgramItem] = []
+  cur = best_end
+  while cur != -1:
+    chosen_rev.append(coalesced[cur][0])
+    cur = parent[cur]
+  chosen = list(reversed(chosen_rev))
+
+  # 4. Trim any minor <=5m boundary bumper overlap so stop_i <= start_{i+1} holds strictly
+  result: list[ProgramItem] = []
+  for idx, item in enumerate(chosen):
+    if (
+      idx + 1 < len(chosen)
+      and item.stop_timestamp > chosen[idx + 1].start_timestamp
+    ):
+      item = replace(item, stop_timestamp=chosen[idx + 1].start_timestamp)
+    if item.stop_timestamp > item.start_timestamp:
+      result.append(item)
+  return result
+
+
 @dataclass(slots=True)
 class WebChannel:
   """A mapped lineup channel ready for web guide display and local stream proxying."""
@@ -248,16 +387,35 @@ class LineupSnapshot:
   def build_epg_channel_lookup(self) -> dict[str, str]:
     """Build lowercase upstream channel ID -> canonical `epg_channel_id` lookup map."""
     lookup: dict[str, str] = {}
+    # Register primary `epg_channel_id` bindings first so secondary fallback aliases
+    # can never overwrite another station's primary EPG ID.
+    for ch in self.channels:
+      canonical = ch.epg_channel_id.strip()
+      if canonical:
+        lookup[canonical.lower()] = canonical
     for ch in self.channels:
       canonical = ch.epg_channel_id.strip()
       if not canonical:
         continue
-      lookup[canonical.lower()] = canonical
       for alias in ch.epg_aliases:
         cleaned = alias.strip()
-        if cleaned:
+        if cleaned and cleaned.lower() not in lookup:
           lookup[cleaned.lower()] = canonical
     return lookup
+
+  def build_epg_candidate_chains(self) -> dict[str, tuple[str, ...]]:
+    """Build ordered fallback chains `canonical_epg_id -> (primary_id, fallback_alias, ...)`."""
+    chains: dict[str, list[str]] = {}
+    for ch in self.channels:
+      canonical = ch.epg_channel_id.strip()
+      if not canonical:
+        continue
+      bucket = chains.setdefault(canonical, [])
+      for cand in (canonical, *ch.epg_aliases):
+        low = cand.strip().lower()
+        if low and low not in bucket:
+          bucket.append(low)
+    return {k: tuple(v) for k, v in chains.items()}
 
   def epg_coverage_stats(
     self, *, now_ts: int | None = None
@@ -368,10 +526,7 @@ class LineupGuideStore:
     normalized: dict[str, list[ProgramItem]] = {}
     total_programs = 0
     for cid, plist in programs_by_epg_id.items():
-      ordered = sorted(
-        plist,
-        key=lambda item: (item.start_timestamp, item.stop_timestamp, item.id),
-      )
+      ordered = reconcile_non_overlapping_schedule(plist)
       if ordered:
         normalized[cid] = ordered
         total_programs += len(ordered)
@@ -464,9 +619,9 @@ class LineupGuideStore:
     elif xmltv_path.is_file():
       programs_by_epg_id = self._parse_xmltv(xmltv_path)
 
-    for plist in programs_by_epg_id.values():
-      plist.sort(
-        key=lambda item: (item.start_timestamp, item.stop_timestamp, item.id)
+    for cid_key in list(programs_by_epg_id):
+      programs_by_epg_id[cid_key] = reconcile_non_overlapping_schedule(
+        programs_by_epg_id[cid_key]
       )
 
     channels.sort(key=lambda c: c.chno)

@@ -402,9 +402,6 @@ class IptvOrgIndex:
       raw_ch: Mapping[str, Any], cid: str
     ) -> list[tuple[str, tuple[str, ...]]]:
       raw_labels: list[str] = [str(raw_ch.get("name") or "")]
-      net_val = raw_ch.get("network")
-      if net_val:
-        raw_labels.append(str(net_val))
       raw_alts = raw_ch.get("alt_names")
       if isinstance(raw_alts, list):
         for alt in raw_alts:

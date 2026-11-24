@@ -1072,3 +1072,48 @@ def test_latin_accent_ligature_folding_and_corpus_idf_fuzzy_matching() -> None:
   # Digit & spin-off safety: "RDS" must NOT fuzzily match "RDS 2" or "RDS INFO"
   rds_cands = matcher.find_candidates(by_no[1108])
   assert rds_cands == []
+
+  # Corporate parent `network` field must NOT collide with station names (`Cinemax` has `network="HBO"`)
+  hbo_idx = IptvOrgIndex.from_json_payloads(
+    channels_raw=[
+      {
+        "id": "Cinemax.us",
+        "name": "Cinemax",
+        "alt_names": [],
+        "network": "HBO",
+        "country": "US",
+        "categories": ["movies"],
+      },
+      {
+        "id": "HBO.us",
+        "name": "HBO",
+        "alt_names": ["Home Box Office"],
+        "network": None,
+        "country": "US",
+        "categories": ["movies"],
+      },
+      {
+        "id": "StoriesbyAMC.us",
+        "name": "Stories by AMC",
+        "alt_names": [],
+        "network": "AMC",
+        "country": "US",
+        "categories": ["entertainment"],
+      },
+      {
+        "id": "AMC.us",
+        "name": "AMC",
+        "alt_names": [],
+        "network": None,
+        "country": "US",
+        "categories": ["movies"],
+      },
+    ],
+    feeds_raw=[],
+  )
+  hbo_match = hbo_idx.lookup("HBO", callsign="HBOCAN", country="CA")
+  assert hbo_match is not None
+  assert hbo_match.channel.channel_id == "HBO.us"
+  amc_match = hbo_idx.lookup("AMC", callsign="AMC", country="CA")
+  assert amc_match is not None
+  assert amc_match.channel.channel_id == "AMC.us"

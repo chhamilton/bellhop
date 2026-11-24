@@ -35,8 +35,8 @@ import re
 import tempfile
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TypedDict
 
@@ -54,6 +54,7 @@ from bellhop_web.store import (
   ProgramItem,
   open_xml_stream,
   parse_xmltv_ts,
+  reconcile_non_overlapping_schedule,
 )
 
 logger = logging.getLogger("bellhop_web.epg")
@@ -141,7 +142,7 @@ class EpgRefreshStatus:
 
 
 DEFAULT_EPG_USER_AGENT = "Bellhop/0.1 (VLC/3.0.20 LibVLC/3.0.20)"
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 STALE_ENTRY_GRACE_SEC = 7200  # keep shows ending within the last 2 hours
 _PASSWORD_QS_RE = re.compile(r"(password=)([^&\s'\"\\]+)", re.IGNORECASE)
 
@@ -168,11 +169,12 @@ def parse_xmltv_for_channels(
   xml_path: Path,
   channel_id_map: dict[str, str],
   *,
+  candidate_chains: Mapping[str, Sequence[str]] | None = None,
   max_per_channel: int = 120,
   now_timestamp: int | None = None,
 ) -> dict[str, list[ProgramItem]]:
-  """Stream-parse an XMLTV file, deduplicating and windowing programs for mapped channels."""
-  if not xml_path.is_file() or not channel_id_map:
+  """Stream-parse an XMLTV file using priority fallback per channel and non-overlapping reconciliation."""
+  if not xml_path.is_file() or (not channel_id_map and not candidate_chains):
     return {}
 
   ref_now = int(time.time()) if now_timestamp is None else now_timestamp
@@ -180,7 +182,29 @@ def parse_xmltv_for_channels(
     ref_now - 7200
   )  # keep shows ending within the last 2 hours + all upcoming
 
-  dedup_by_id: dict[str, dict[tuple[int, int, str], ProgramItem]] = {}
+  effective_chains: dict[str, tuple[str, ...]] = {}
+  if candidate_chains is not None:
+    for canon_id, chain in candidate_chains.items():
+      cleaned_chain = tuple(c.strip().lower() for c in chain if c.strip())
+      if cleaned_chain:
+        effective_chains[canon_id] = cleaned_chain
+  else:
+    by_canon: dict[str, list[str]] = {}
+    for raw_k, canon_id in channel_id_map.items():
+      low_k = raw_k.strip().lower()
+      if not low_k:
+        continue
+      bucket = by_canon.setdefault(canon_id, [])
+      if low_k == canon_id.lower():
+        bucket.insert(0, low_k)
+      elif low_k not in bucket:
+        bucket.append(low_k)
+    effective_chains = {k: tuple(v) for k, v in by_canon.items() if v}
+
+  wanted_raw_keys: set[str] = {
+    raw_k for chain in effective_chains.values() for raw_k in chain
+  }
+  raw_items_by_key: dict[str, list[ProgramItem]] = {}
   seq = 0
 
   with open_xml_stream(xml_path) as fh:
@@ -188,9 +212,8 @@ def parse_xmltv_for_channels(
       for _event, elem in ET.iterparse(fh, events=("end",)):
         tag = elem.tag.rsplit("}", 1)[-1]
         if tag == "programme":
-          raw_ch = (elem.attrib.get("channel") or "").strip()
-          canonical_id = channel_id_map.get(raw_ch.lower())
-          if canonical_id is not None:
+          raw_key = (elem.attrib.get("channel") or "").strip().lower()
+          if raw_key in wanted_raw_keys:
             title_el = elem.find("title")
             title = (
               (title_el.text or "").strip() if title_el is not None else ""
@@ -206,25 +229,22 @@ def parse_xmltv_for_channels(
                 (desc_el.text or "").strip() if desc_el is not None else ""
               )
 
-              item = ProgramItem(
-                id=str(seq),
-                channel_id=canonical_id,
-                title=title,
-                sub_title=(
-                  (sub_el.text or "").strip() if sub_el is not None else ""
-                ),
-                description=desc_str,
-                category=(
-                  (cat_el.text or "").strip() if cat_el is not None else ""
-                ),
-                start_timestamp=start_ts,
-                stop_timestamp=stop_ts,
+              raw_items_by_key.setdefault(raw_key, []).append(
+                ProgramItem(
+                  id=str(seq),
+                  channel_id=raw_key,
+                  title=title,
+                  sub_title=(
+                    (sub_el.text or "").strip() if sub_el is not None else ""
+                  ),
+                  description=desc_str,
+                  category=(
+                    (cat_el.text or "").strip() if cat_el is not None else ""
+                  ),
+                  start_timestamp=start_ts,
+                  stop_timestamp=stop_ts,
+                )
               )
-              bucket = dedup_by_id.setdefault(canonical_id, {})
-              key = (start_ts, stop_ts, title.casefold())
-              existing = bucket.get(key)
-              if existing is None or len(desc_str) > len(existing.description):
-                bucket[key] = item
           elem.clear()
         elif tag == "channel":
           elem.clear()
@@ -232,18 +252,32 @@ def parse_xmltv_for_channels(
       pass
 
   programs_by_id: dict[str, list[ProgramItem]] = {}
-  for cid, bucket in dedup_by_id.items():
-    ordered = sorted(
-      bucket.values(),
-      key=lambda p: (p.start_timestamp, p.stop_timestamp, p.id),
-    )
-    current_and_upcoming = [
-      p
-      for p in ordered
-      if p.stop_timestamp == 0 or p.stop_timestamp >= recent_cutoff
-    ]
-    chosen = current_and_upcoming if current_and_upcoming else ordered
-    programs_by_id[cid] = chosen[:max_per_channel]
+  for canonical_id, chain in effective_chains.items():
+    selected_raw: list[ProgramItem] | None = None
+    fallback_stale: list[ProgramItem] | None = None
+    for raw_key in chain:
+      cand_list = raw_items_by_key.get(raw_key)
+      if not cand_list:
+        continue
+      reconciled = reconcile_non_overlapping_schedule(cand_list)
+      if not reconciled:
+        continue
+      current_and_upcoming = [
+        p
+        for p in reconciled
+        if p.stop_timestamp == 0 or p.stop_timestamp >= recent_cutoff
+      ]
+      if current_and_upcoming:
+        selected_raw = current_and_upcoming
+        break
+      if fallback_stale is None:
+        fallback_stale = reconciled
+
+    chosen = selected_raw if selected_raw is not None else fallback_stale
+    if chosen:
+      programs_by_id[canonical_id] = [
+        replace(p, channel_id=canonical_id) for p in chosen[:max_per_channel]
+      ]
 
   return programs_by_id
 
@@ -319,7 +353,9 @@ class EpgRefreshService:
       return 0
     try:
       raw = json.loads(cache_path.read_text(encoding="utf-8"))
-      if not isinstance(raw, dict):
+      if (
+        not isinstance(raw, dict) or raw.get("version") != CACHE_SCHEMA_VERSION
+      ):
         return 0
       channels_map = raw.get("channels")
       if not isinstance(channels_map, dict):
@@ -686,10 +722,11 @@ class EpgRefreshService:
         snap = self.store.get_snapshot()
         bundle_sig = self.store.bundle_signature
         channel_id_map = snap.build_epg_channel_lookup()
+        candidate_chains = snap.build_epg_candidate_chains()
         covered_ids = frozenset(
-          cid.strip().lower() for cid in channel_id_map.values() if cid.strip()
+          cid.strip().lower() for cid in candidate_chains if cid.strip()
         )
-        if not channel_id_map:
+        if not candidate_chains:
           self._covered_channel_ids = covered_ids
           self._covered_bundle_sig = bundle_sig
           self._state = "ok"
@@ -705,6 +742,7 @@ class EpgRefreshService:
             parse_xmltv_for_channels,
             xml_path,
             channel_id_map,
+            candidate_chains=candidate_chains,
             max_per_channel=self.config.max_per_channel,
             now_timestamp=int(self._clock()),
           )
@@ -753,6 +791,7 @@ class EpgRefreshService:
           parse_xmltv_for_channels,
           tmp_xml_path,
           channel_id_map,
+          candidate_chains=candidate_chains,
           max_per_channel=self.config.max_per_channel,
           now_timestamp=int(self._clock()),
         )
