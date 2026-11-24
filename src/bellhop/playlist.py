@@ -37,6 +37,8 @@ Diagnostics Report Schema (`output/lineup_report.json`)
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +54,23 @@ from bellhop.models import (
 )
 
 ChannelReportStatus = Literal["active", "failed_validation", "unmatched"]
+
+TRAILING_DIAL_RANGE_RE = re.compile(r"\s*\(\d+(?:[–-]\d+)?\)\s*$")
+
+
+def strip_dial_range_suffix(group_title: str) -> str:
+  """Remove any trailing `(lo–hi)` or `(chno)` dial-range suffix from `group_title`."""
+  return TRAILING_DIAL_RANGE_RE.sub("", group_title).strip()
+
+
+def format_group_with_dial_range(raw_group: str, chnos: Sequence[int]) -> str:
+  """Format `raw_group` with the surviving `(min–max)` or `(chno)` dial range."""
+  base = strip_dial_range_suffix(raw_group) or raw_group.strip() or "General"
+  if not chnos:
+    return raw_group.strip() or base
+  lo = min(chnos)
+  hi = max(chnos)
+  return f"{base} ({lo}–{hi})" if lo != hi else f"{base} ({lo})"
 
 
 def _escape_attr(value: str) -> str:
@@ -123,6 +142,35 @@ def _expand_entries_by_numbering(
   return entries
 
 
+def resolve_group_display_map(
+  mappings: list[MappedChannel],
+  numbering_mode: str,
+  *,
+  collapse_sd_dupes: bool = False,
+) -> dict[str, str]:
+  """Map each `channel.group` key to its surviving-channel `(lo–hi)` display title."""
+  entries = _expand_entries_by_numbering(
+    mappings,
+    numbering_mode,
+    collapse_sd_dupes=collapse_sd_dupes,
+  )
+  active_chnos_by_group: dict[str, list[int]] = {}
+  all_chnos_by_group: dict[str, list[int]] = {}
+  for chno, _name, mapped in entries:
+    grp = mapped.channel.group
+    all_chnos_by_group.setdefault(grp, []).append(chno)
+    if mapped.selected is not None:
+      active_chnos_by_group.setdefault(grp, []).append(chno)
+
+  resolved: dict[str, str] = {}
+  for grp, all_chnos in all_chnos_by_group.items():
+    surviving = active_chnos_by_group.get(grp)
+    resolved[grp] = format_group_with_dial_range(
+      grp, surviving if surviving else all_chnos
+    )
+  return resolved
+
+
 def render_m3u8(
   lineup: CableLineup,
   mappings: list[MappedChannel],
@@ -149,6 +197,11 @@ def render_m3u8(
   ]
 
   entries = _expand_entries_by_numbering(
+    mappings,
+    config.lineup.numbering_mode,
+    collapse_sd_dupes=config.lineup.collapse_sd_dupes,
+  )
+  group_labels = resolve_group_display_map(
     mappings,
     config.lineup.numbering_mode,
     collapse_sd_dupes=config.lineup.collapse_sd_dupes,
@@ -187,7 +240,8 @@ def render_m3u8(
       )
     if logo:
       attrs.append(f'tvg-logo="{_escape_attr(logo)}"')
-    attrs.append(f'group-title="{_escape_attr(ch.group)}"')
+    grp_label = group_labels.get(ch.group, ch.group)
+    attrs.append(f'group-title="{_escape_attr(grp_label)}"')
 
     if ch.language:
       attrs.append(f'tvg-language="{_escape_attr(ch.language)}"')
@@ -417,10 +471,16 @@ def build_diagnostics_report(
   quality_counts: dict[str, int] = {}
   groups: dict[str, GroupCoverageStats] = {}
   channels_report: list[ReportChannelRecord] = []
+  group_labels = resolve_group_display_map(
+    mappings,
+    config.lineup.numbering_mode,
+    collapse_sd_dupes=config.lineup.collapse_sd_dupes,
+  )
 
   for m in mappings:
     ch = m.channel
-    g_stats = groups.setdefault(ch.group, GroupCoverageStats())
+    grp_label = group_labels.get(ch.group, ch.group)
+    g_stats = groups.setdefault(grp_label, GroupCoverageStats())
     status = g_stats.record(m)
 
     if m.selected is not None:
@@ -440,7 +500,7 @@ def build_diagnostics_report(
         callsign=ch.callsign,
         tvg_id=ch.tvg_id,
         gracenote_station_id=ch.gracenote_station_id,
-        group=ch.group,
+        group=grp_label,
         language=ch.language,
         status=status,
         probes_attempted=m.probes_attempted,

@@ -642,16 +642,12 @@ def segment_dial_channels(
     else:
       merged.append((i, j, ln, gn, title))
 
-  # Disambiguate non-adjacent segments sharing the same base title so strict dial contiguity holds
-  title_counts = Counter(t for _, _, _, _, t in merged)
+  # Always include the contiguous dial range `(lo–hi)` (refined post-validation at export)
   segments: list[DialSegment] = []
   for i, j, ln, gn, title in merged:
     lo = leaves[i].chno
     hi = leaves[j - 1].chno
-    if title_counts[title] > 1:
-      uniq_title = f"{title} ({lo}–{hi})" if lo != hi else f"{title} ({lo})"
-    else:
-      uniq_title = title
+    uniq_title = f"{title} ({lo}–{hi})" if lo != hi else f"{title} ({lo})"
     segments.append(
       DialSegment(
         start_idx=i,

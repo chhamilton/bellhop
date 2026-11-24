@@ -419,3 +419,115 @@ pipeline:
   assert 'tvg-chno="1101"' in collapsed_text
   assert 'tvg-chno="148"' in collapsed_text
   assert 'tvg-chno="901"' in collapsed_text
+
+
+def test_exported_group_dial_ranges_reflect_surviving_validated_channels(
+  tmp_path: Path,
+) -> None:
+  """Verify every exported group carries `(lo–hi)` computed from surviving channels only."""
+  from bellhop.xtream_exporter import build_xtream_export_bundle
+
+  lineup = CableLineup(
+    lineup_id="TVG-9100000607",
+    provider="Bell Fibe TV",
+    market="Montréal, QC",
+    postal_prefix="H2Y",
+    channels=[
+      # Science & Docs initially had no range, and ch 1520 failed validation -> (1522–1528)
+      LineupChannel(
+        chno=1520, name="Dead Doc", group="Science & Docs", language="en"
+      ),
+      LineupChannel(
+        chno=1522, name="History", group="Science & Docs", language="en"
+      ),
+      LineupChannel(
+        chno=1528, name="Discovery", group="Science & Docs", language="en"
+      ),
+      # Entertainment initially had stale raw range (1600–2309); 1600 & 2309 failed -> (1602–1660)
+      LineupChannel(
+        chno=1600,
+        name="Dead Lifestyle",
+        group="Entertainment & Lifestyle (1600–2309)",
+        language="en",
+      ),
+      LineupChannel(
+        chno=1602,
+        name="HGTV",
+        group="Entertainment & Lifestyle (1600–2309)",
+        language="en",
+      ),
+      LineupChannel(
+        chno=1660,
+        name="Slice",
+        group="Entertainment & Lifestyle (1600–2309)",
+        language="en",
+      ),
+      LineupChannel(
+        chno=2309,
+        name="International Barker",
+        group="Entertainment & Lifestyle (1600–2309)",
+        language="en",
+      ),
+    ],
+  )
+
+  def _ok_cand(sid: int, title: str) -> MatchCandidate:
+    return MatchCandidate(
+      stream=XtreamStream(stream_id=sid, name=title),
+      score=100.0,
+      reasons=["exact"],
+      quality_tier="hd",
+      has_native_epg=False,
+    )
+
+  ch_map = {c.chno: c for c in lineup.channels}
+  mappings = [
+    MappedChannel(channel=ch_map[1520], candidates=[], selected=None),
+    MappedChannel(
+      channel=ch_map[1522],
+      candidates=[_ok_cand(1, "History")],
+      selected=_ok_cand(1, "History"),
+    ),
+    MappedChannel(
+      channel=ch_map[1528],
+      candidates=[_ok_cand(2, "Discovery")],
+      selected=_ok_cand(2, "Discovery"),
+    ),
+    MappedChannel(channel=ch_map[1600], candidates=[], selected=None),
+    MappedChannel(
+      channel=ch_map[1602],
+      candidates=[_ok_cand(3, "HGTV")],
+      selected=_ok_cand(3, "HGTV"),
+    ),
+    MappedChannel(
+      channel=ch_map[1660],
+      candidates=[_ok_cand(4, "Slice")],
+      selected=_ok_cand(4, "Slice"),
+    ),
+    MappedChannel(channel=ch_map[2309], candidates=[], selected=None),
+  ]
+
+  cfg = AppConfig(
+    project_root=tmp_path,
+    lineup=LineupConfig(collapse_sd_dupes=True),
+  )
+  m3u8 = render_m3u8(lineup, mappings, cfg)
+  assert 'group-title="Science & Docs (1522–1528)"' in m3u8
+  assert 'group-title="Entertainment & Lifestyle (1602–1660)"' in m3u8
+  assert "1600–2309" not in m3u8
+
+  report = build_report_dict(lineup, mappings, cfg)
+  assert set(report["groups"].keys()) == {
+    "Science & Docs (1522–1528)",
+    "Entertainment & Lifestyle (1602–1660)",
+  }
+
+  xt_bundle = build_xtream_export_bundle(lineup, mappings, cfg)
+  assert [c.category_name for c in xt_bundle.categories] == [
+    "Science & Docs (1522–1528)",
+    "Entertainment & Lifestyle (1602–1660)",
+  ]
+  assert {s.category_name for s in xt_bundle.streams} == {
+    "Science & Docs (1522–1528)",
+    "Entertainment & Lifestyle (1602–1660)",
+  }

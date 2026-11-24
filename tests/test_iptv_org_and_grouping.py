@@ -860,15 +860,15 @@ def test_2d_language_genre_mdl_segmentation_across_bilingual_intl_and_french_maj
   ordered_groups = _assert_strictly_dial_contiguous(normalized)
   by_chno = {c.chno: c for c in normalized}
 
-  assert by_chno[701].group == "International — News & Info"
-  assert by_chno[1108].group == "French — Sports"
-  assert by_chno[1150].group == "French — Kids & Family"
-  assert by_chno[1161].group == "French — Movies"
-  assert by_chno[1300].group == "Movies"
+  assert by_chno[701].group == "International — News & Info (701–705)"
+  assert by_chno[1108].group == "French — Sports (1108–1111)"
+  assert by_chno[1150].group == "French — Kids & Family (1150–1152)"
+  assert by_chno[1161].group == "French — Movies (1161–1164)"
+  assert by_chno[1300].group == "Movies (1300–1303)"
   # Unknown channel 1402 ("Mystery Arena Feed") absorbed into surrounding Sports run!
-  assert by_chno[1402].group == "Sports"
-  assert by_chno[1520].group == "Science & Docs"
-  assert by_chno[1550].group == "Kids & Family"
+  assert by_chno[1402].group == "Sports (1400–1404)"
+  assert by_chno[1520].group == "Science & Docs (1520–1523)"
+  assert by_chno[1550].group == "Kids & Family (1550–1553)"
   # Two non-adjacent Music & Audio blocks get distinct dial-range titles
   assert by_chno[901].group == "Music & Audio (901–904)"
   assert by_chno[1640].group == "Music & Audio (1640–1643)"
@@ -899,9 +899,9 @@ def test_2d_language_genre_mdl_segmentation_across_bilingual_intl_and_french_maj
   )
   _assert_strictly_dial_contiguous(fr_norm)
   fr_by_no = {c.chno: c for c in fr_norm}
-  assert fr_by_no[101].group == "Sports"
-  assert fr_by_no[201].group == "Movies"
-  assert fr_by_no[601].group == "English — Sports"
+  assert fr_by_no[101].group == "Sports (101–104)"
+  assert fr_by_no[201].group == "Movies (201–204)"
+  assert fr_by_no[601].group == "English — Sports (601–603)"
 
 
 def test_latin_accent_ligature_folding_and_corpus_idf_fuzzy_matching() -> None:

@@ -252,8 +252,8 @@ pipeline:
           )
         ).json()
         assert [c["category_name"] for c in cats] == [
-          "Francophone — Généraliste",
-          "Sports",
+          "Francophone — Généraliste (1101)",
+          "Sports (1108)",
         ]
 
         # Streams (all + category_id filter)
@@ -320,8 +320,8 @@ pipeline:
         )
         assert player_alias.status_code == 200
         assert [c["category_name"] for c in player_alias.json()] == [
-          "Francophone — Généraliste",
-          "Sports",
+          "Francophone — Généraliste (1101)",
+          "Sports (1108)",
         ]
 
         panel = await client.get(
@@ -386,7 +386,7 @@ pipeline:
           "content-disposition", ""
         )
         assert "url-tvg=" in m3u_plus_ts.text
-        assert 'group-title="Sports"' in m3u_plus_ts.text
+        assert 'group-title="Sports (1108)"' in m3u_plus_ts.text
         assert 'tvg-language="fr"' in m3u_plus_ts.text
         assert (
           "/live/client_alice/client_secret_42/410108.ts" in m3u_plus_ts.text
@@ -460,8 +460,8 @@ pipeline:
         )
         assert roundtrip_cat.account.username == "client_alice"
         assert roundtrip_cat.categories == {
-          "1": "Francophone — Généraliste",
-          "2": "Sports",
+          "1": "Francophone — Généraliste (1101)",
+          "2": "Sports (1108)",
         }
         assert [
           (s.num, s.name, s.stream_id) for s in roundtrip_cat.streams
@@ -492,8 +492,8 @@ pipeline:
           )
         ).json()
         assert [c["category_name"] for c in cats_reloaded] == [
-          "Francophone — Généraliste",
-          "Sports",
+          "Francophone — Généraliste (1101)",
+          "Sports (1108)",
           "News",
         ]
     finally:

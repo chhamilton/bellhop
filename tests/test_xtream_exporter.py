@@ -179,12 +179,12 @@ async def test_phase6_xtream_export_collapsed_hd_and_passthrough_epg(
   assert cats == [
     {
       "category_id": "1",
-      "category_name": "Francophone — Généraliste (Montréal)",
+      "category_name": "Francophone — Généraliste (Montréal) (1101)",
       "parent_id": 0,
     },
     {
       "category_id": "2",
-      "category_name": "Sports",
+      "category_name": "Sports (1108)",
       "parent_id": 0,
     },
   ]
@@ -222,8 +222,8 @@ async def test_phase6_xtream_export_collapsed_hd_and_passthrough_epg(
   roundtrip = load_catalog_from_json(res.bundle_path)
   assert roundtrip.account.username == "sub_user"
   assert roundtrip.categories == {
-    "1": "Francophone — Généraliste (Montréal)",
-    "2": "Sports",
+    "1": "Francophone — Généraliste (Montréal) (1101)",
+    "2": "Sports (1108)",
   }
   assert [(s.num, s.name, s.stream_id) for s in roundtrip.streams] == [
     (1101, "ICI Radio-Canada Télé (Montréal)", 410101),

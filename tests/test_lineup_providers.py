@@ -195,7 +195,7 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
     assert ch_by_no[1101].sd_chno == 101
     assert ch_by_no[1101].language == "fr"
     assert ch_by_no[1108].sd_chno == 108
-    assert ch_by_no[1108].group == "Sports"
+    assert ch_by_no[1108].group == "Sports (1108–1109)"
     # Automatic sibling exclusion inferred: RDS (1108) excludes "2" so RDS2 never bleeds into RDS!
     assert (
       "2" in ch_by_no[1108].exclude

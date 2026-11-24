@@ -80,6 +80,7 @@ from bellhop.playlist import (
   _expand_entries_by_numbering,
   _normalize_base_url,
   _resolve_stream_url,
+  resolve_group_display_map,
   resolve_playback_url,
 )
 
@@ -337,13 +338,18 @@ def build_xtream_export_bundle(
     config.lineup.numbering_mode,
     collapse_sd_dupes=config.lineup.collapse_sd_dupes,
   )
+  group_labels = resolve_group_display_map(
+    mappings,
+    config.lineup.numbering_mode,
+    collapse_sd_dupes=config.lineup.collapse_sd_dupes,
+  )
 
   category_id_by_group: dict[str, str] = {}
   categories: list[ExportedCategory] = []
   for _chno, _name, mapped in entries:
     if mapped.selected is None:
       continue
-    grp = mapped.channel.group
+    grp = group_labels.get(mapped.channel.group, mapped.channel.group)
     if grp not in category_id_by_group:
       cat_id = str(len(categories) + 1)
       category_id_by_group[grp] = cat_id
@@ -368,7 +374,8 @@ def build_xtream_export_bundle(
     ch = mapped.channel
     cand = mapped.selected
     stream = cand.stream
-    cat_id = category_id_by_group[ch.group]
+    grp_label = group_labels.get(ch.group, ch.group)
+    cat_id = category_id_by_group[grp_label]
     cat_id_int = int(cat_id)
 
     official_logo = ch.logo or stream.stream_icon or ""
@@ -394,7 +401,7 @@ def build_xtream_export_bundle(
       official_name=display_name,
       callsign=ch.callsign,
       official_logo=official_logo,
-      group_title=ch.group,
+      group_title=grp_label,
       language=ch.language,
       epg_channel_id=canonical_epg_id,
       official_tvg_id=ch.tvg_id,
@@ -415,7 +422,7 @@ def build_xtream_export_bundle(
         added=str(now_epoch),
         category_id=cat_id,
         category_ids=[cat_id_int],
-        category_name=ch.group,
+        category_name=grp_label,
         custom_sid=str(chno),
         tv_archive=1 if stream.tv_archive else 0,
         direct_source=playback_url,

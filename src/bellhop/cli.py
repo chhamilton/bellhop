@@ -29,6 +29,7 @@ from bellhop.lineup_loader import CableLineup
 from bellhop.lineup_retriever import LineupRetrievalResult, LineupRetrieverError
 from bellhop.mapping_state import MappingDocument
 from bellhop.models import MappedChannel
+from bellhop.playlist import resolve_group_display_map
 from bellhop.runner import (
   PipelineConfigError,
   PipelineRunner,
@@ -201,6 +202,11 @@ def _print_m3u8_summary(
   *,
   dry_run: bool,
 ) -> None:
+  group_labels = resolve_group_display_map(
+    mappings,
+    cfg.lineup.numbering_mode,
+    collapse_sd_dupes=cfg.lineup.collapse_sd_dupes,
+  )
   groups: dict[str, list[MappedChannel]] = {}
   for m in mappings:
     groups.setdefault(m.channel.group, []).append(m)
@@ -215,13 +221,14 @@ def _print_m3u8_summary(
   table.add_column("Total", justify="right")
 
   for grp_name, items in groups.items():
+    display_grp = group_labels.get(grp_name, grp_name)
     active = sum(1 for m in items if m.selected is not None)
     epg = sum(
       1 for m in items if m.selected is not None and m.selected.has_native_epg
     )
     unmatched = sum(1 for m in items if m.selected is None)
     table.add_row(
-      grp_name, str(active), str(epg), str(unmatched), str(len(items))
+      display_grp, str(active), str(epg), str(unmatched), str(len(items))
     )
 
   total_slots = len(mappings)
