@@ -153,13 +153,24 @@ def _print_validation_panel(
   *,
   dry_run: bool,
   only_changed: bool,
+  skipped_reason: str | None = None,
 ) -> None:
   valid_slots = sum(
     1
     for sl in doc.slots.values()
     if sl.preferred_source in {"validated", "pinned"}
   )
-  if dry_run:
+  if skipped_reason:
+    console.print(
+      Panel.fit(
+        f"[bold yellow]Auto-Skipped:[/bold yellow]       {skipped_reason} (implicit `--skip validate`)\n"
+        f"[bold]Slots Deferred:[/bold]     {would_probe_slots} slots preserved unprobed (only_changed={only_changed})\n"
+        f"[bold]Currently Verified:[/bold] {valid_slots} / {len(doc.slots)} slots",
+        title="Phase (4) — Candidate Stream Validation (`validate`)",
+        border_style="yellow",
+      )
+    )
+  elif dry_run:
     console.print(
       Panel.fit(
         f"[bold yellow]Dry-Run Mode:[/bold yellow]       No live stream connections opened\n"
@@ -654,7 +665,10 @@ async def _execute_cli_run(args: argparse.Namespace) -> int:
       saved=result.mapping_saved,
     )
 
-  if result.mapping_doc is not None and "validate" in result.executed_phases:
+  if result.mapping_doc is not None and (
+    "validate" in result.executed_phases
+    or result.validation_skipped_reason is not None
+  ):
     only_changed = False if opts.reprobe_all else cfg.validation.only_changed
     _print_validation_panel(
       result.mapping_doc,
@@ -662,6 +676,7 @@ async def _execute_cli_run(args: argparse.Namespace) -> int:
       result.validation_would_probe_slots,
       dry_run=result.dry_run,
       only_changed=only_changed,
+      skipped_reason=result.validation_skipped_reason,
     )
 
   if result.lineup is not None and (

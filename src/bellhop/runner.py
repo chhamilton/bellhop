@@ -183,6 +183,7 @@ class PipelineRunResult:
   mappings: list[MappedChannel] = field(default_factory=list)
   validation_probed_streams: int = 0
   validation_would_probe_slots: int = 0
+  validation_skipped_reason: str | None = None
   playlist_path: Path | None = None
   report_path: Path | None = None
   xtream_result: XtreamExportResult | None = None
@@ -210,6 +211,7 @@ class PipelineRunResult:
       "mapping_saved": self.mapping_saved,
       "validation_probed_streams": self.validation_probed_streams,
       "validation_would_probe_slots": self.validation_would_probe_slots,
+      "validation_skipped_reason": self.validation_skipped_reason,
       "playlist_path": str(self.playlist_path) if self.playlist_path else None,
       "report_path": str(self.report_path) if self.report_path else None,
       "xtream_bundle_path": (
@@ -257,6 +259,7 @@ class PipelineRunner:
     mapping_saved = False
     probed_unique = 0
     would_probe_slots = 0
+    validation_skipped_reason: str | None = None
     playlist_path: Path | None = None
     report_path: Path | None = None
     xtream_res: XtreamExportResult | None = None
@@ -334,11 +337,12 @@ class PipelineRunner:
           continue
         would_probe_slots += 1
 
-      if not opts.dry_run and would_probe_slots > 0:
+      if not opts.dry_run:
         account = catalog_res.catalog.account if catalog_res else None
         xt = self.config.xtream
         # If Phase (2) served a cached snapshot, verify `player_api.php` account
-        # status first so an expired/inactive account never poisons mapping state.
+        # status first so an expired/inactive account implicitly skips `validate`
+        # instead of poisoning mapping state.
         if (
           self._custom_validator is None
           and xt.seed_json is None
@@ -346,21 +350,33 @@ class PipelineRunner:
           and (catalog_res is None or catalog_res.from_cache)
         ):
           account = await fetch_xtream_account_info(self.config)
-        active_validator = self._custom_validator or StreamValidator(
-          self.config, account
-        )
-        probed_unique = await validate_mapping_candidates(
-          doc,
-          lineup,
-          self.config,
-          account=account,
-          only_changed=only_changed,
-          on_channel_done=on_validation_progress,
-          validator=active_validator,
-          checkpoint_path=mapping_path,
-        )
-        save_mapping_document(doc, mapping_path)
-        mapping_saved = True
+        if account is not None and account.status.strip().lower() not in {
+          "active",
+          "unknown",
+          "",
+        }:
+          validation_skipped_reason = (
+            f"Xtream account status is {account.status!r}"
+          )
+          active_phases = [p for p in active_phases if p != "validate"]
+          if "validate" not in skipped_phases:
+            skipped_phases = [*skipped_phases, "validate"]
+        elif would_probe_slots > 0:
+          active_validator = self._custom_validator or StreamValidator(
+            self.config, account
+          )
+          probed_unique = await validate_mapping_candidates(
+            doc,
+            lineup,
+            self.config,
+            account=account,
+            only_changed=only_changed,
+            on_channel_done=on_validation_progress,
+            validator=active_validator,
+            checkpoint_path=mapping_path,
+          )
+          save_mapping_document(doc, mapping_path)
+          mapping_saved = True
 
     mappings: list[MappedChannel] = []
     if doc is not None and lineup is not None:
@@ -398,7 +414,7 @@ class PipelineRunner:
         mappings,
         self.config,
         account=account,
-        verify_epg=self.config.epg.verify,
+        verify_epg=self.config.epg.verify and validation_skipped_reason is None,
       )
 
     finished_iso = datetime.now(timezone.utc).isoformat()
@@ -418,6 +434,7 @@ class PipelineRunner:
       mappings=mappings,
       validation_probed_streams=probed_unique,
       validation_would_probe_slots=would_probe_slots,
+      validation_skipped_reason=validation_skipped_reason,
       playlist_path=playlist_path,
       report_path=report_path,
       xtream_result=xtream_res,

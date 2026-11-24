@@ -147,13 +147,11 @@ pipeline:
   assert cli_main(["run", "-c", str(tmp_path / "missing.yaml"), "--quiet"]) == 2
 
 
-async def test_cached_catalog_expired_account_aborts_before_poisoning_mapping(
+async def test_expired_account_auto_skips_validate_and_completes_matching_and_exports(
   tmp_path: Path,
 ) -> None:
-  """Verify Phase (4) checks `player_api.php` when catalog came from cache and preserves mapping on `Expired`."""
+  """Verify expired Xtream accounts implicitly skip `validate` and finish matching + exports."""
   from aiohttp import web
-
-  from bellhop.xtream import XtreamError
 
   status_box = {"status": "Active"}
   stream_probes: list[str] = []
@@ -220,6 +218,8 @@ channels:
       encoding="utf-8",
     )
     state_dir = tmp_path / "state"
+    out_m3u8 = tmp_path / "output" / "bellhop.m3u8"
+    out_xtream = tmp_path / "output" / "xtream" / "get_live_streams.json"
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
       f"""\
@@ -227,7 +227,7 @@ paths:
   state_dir: "{state_dir}"
   cache_dir: "{tmp_path / "cache"}"
   lineup_file: "{mini_lineup}"
-  m3u8_playlist_path: "{tmp_path / "output" / "bellhop.m3u8"}"
+  m3u8_playlist_path: "{out_m3u8}"
   m3u8_report_path: "{tmp_path / "output" / "report.json"}"
   xtream_output_dir: "{tmp_path / "output" / "xtream"}"
 upstream_xtream:
@@ -241,24 +241,42 @@ pipeline:
     enabled: true
   epg:
     verify: false
+  output:
+    m3u8_enabled: true
+    xtream_enabled: true
 """,
       encoding="utf-8",
     )
     cfg = load_config(cfg_path)
-    # Run 1: fetch active catalog + match (skip validate)
+    # Run 1: fetch active catalog + match (explicitly skip validate)
     await PipelineRunner(cfg).run(PipelineRunOptions(skip_phases=["validate"]))
 
     # Account expires while daily catalog snapshot is still fresh (<24h TTL)
     status_box["status"] = "Expired"
-    with pytest.raises(XtreamError, match="Expired"):
-      await PipelineRunner(cfg).run()
+    res_cached = await PipelineRunner(cfg).run()
+    assert res_cached.validation_skipped_reason == (
+      "Xtream account status is 'Expired'"
+    )
+    assert "validate" in res_cached.skipped_phases
+    assert "validate" not in res_cached.executed_phases
+    assert "m3u8" in res_cached.executed_phases
+    assert "xtream" in res_cached.executed_phases
+    assert out_m3u8.is_file() and "YTV" in out_m3u8.read_text(encoding="utf-8")
+    assert out_xtream.is_file()
 
-    # Zero live stream probes occurred, and candidate #501 was NOT poisoned as invalid!
+    # Even with `--force-refresh catalog` while Expired, matching + exports succeed
+    res_fresh = await PipelineRunner(cfg).run(
+      PipelineRunOptions(force_refresh={"catalog"})
+    )
+    assert res_fresh.validation_skipped_reason == (
+      "Xtream account status is 'Expired'"
+    )
     assert stream_probes == []
     saved = json.loads((state_dir / "channel_mapping.json").read_text())
     assert (
       saved["slots"]["552"]["candidates"][0]["validation_status"]
       == "unvalidated"
     )
+    assert saved["slots"]["552"]["preferred_stream_id"] == 501
   finally:
     await runner_srv.cleanup()

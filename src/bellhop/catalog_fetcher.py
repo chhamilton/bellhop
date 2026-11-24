@@ -42,6 +42,8 @@ from bellhop.config import AppConfig
 from bellhop.models import XtreamStream
 from bellhop.xtream import (
   XtreamCatalog,
+  XtreamError,
+  fetch_xtream_account_info,
   fetch_xtream_catalog,
   load_catalog_from_json,
 )
@@ -247,11 +249,30 @@ async def fetch_daily_iptv_catalog(
     )
 
   # Fetch from Xtream client (which will also reuse fresh cache/xtream_catalog_*.json if within 24h!)
-  fresh = await fetch_xtream_catalog(
-    config,
-    force_refresh=force_refresh,
-    client=client,
-  )
+  try:
+    fresh = await fetch_xtream_catalog(
+      config,
+      force_refresh=force_refresh,
+      client=client,
+    )
+  except XtreamError:
+    if previous_catalog is None:
+      raise
+    try:
+      acct = await fetch_xtream_account_info(config, client=client)
+    except XtreamError:
+      raise
+    if acct.status.strip().lower() in {"active", "unknown", ""}:
+      raise
+    previous_catalog.account = acct
+    return CatalogFetchResult(
+      catalog=previous_catalog,
+      from_cache=True,
+      age_hours=round(snap_age_sec / 3600.0, 2),
+      streams_with_native_epg=_count_native_epg(previous_catalog.streams),
+      diff=cached_diff,
+      snapshot_path=snap_path,
+    )
   diff = compute_catalog_diff(
     previous_catalog.streams if previous_catalog else None,
     fresh.streams,

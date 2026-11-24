@@ -164,12 +164,7 @@ async def fetch_xtream_account_info(
         "Xtream authentication failed (invalid username or password)."
       )
 
-    account = XtreamAccountInfo.from_api_payload(account_payload)
-    if account.status.lower() not in {"active", "unknown", ""}:
-      raise XtreamError(
-        f"Xtream account is not active (status={account.status!r})."
-      )
-    return account
+    return XtreamAccountInfo.from_api_payload(account_payload)
   finally:
     if owns_client:
       await client.close()
@@ -252,10 +247,11 @@ async def fetch_xtream_catalog(
       )
 
     account = XtreamAccountInfo.from_api_payload(account_payload)
-    if account.status.lower() not in {"active", "unknown", ""}:
-      raise XtreamError(
-        f"Xtream account is not active (status={account.status!r})."
-      )
+    account_inactive = account.status.strip().lower() not in {
+      "active",
+      "unknown",
+      "",
+    }
 
     # 2. Fetch live categories
     async with client.get(
@@ -280,6 +276,10 @@ async def fetch_xtream_catalog(
       streams_resp.raise_for_status()
       streams_raw = await streams_resp.json(content_type=None)
     if not isinstance(streams_raw, list):
+      if account_inactive:
+        raise XtreamError(
+          f"Xtream account is not active (status={account.status!r}) and returned no stream list."
+        )
       raise XtreamError(
         "Unexpected response for action=get_live_streams (expected JSON list)."
       )
@@ -294,9 +294,15 @@ async def fetch_xtream_catalog(
         streams.append(stream)
         valid_raw_items.append(item)
 
-    _save_cached_catalog(
-      cache_file, account_payload, categories, valid_raw_items
-    )
+    if account_inactive and not streams:
+      raise XtreamError(
+        f"Xtream account is not active (status={account.status!r}) and returned 0 streams."
+      )
+
+    if streams:
+      _save_cached_catalog(
+        cache_file, account_payload, categories, valid_raw_items
+      )
     return XtreamCatalog(
       account=account,
       categories=categories,
