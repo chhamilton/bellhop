@@ -21,6 +21,7 @@ from bellhop.runner import (
 
 def test_phase_and_refresh_parsing() -> None:
   assert parse_phase_tokens(["export"]) == ["m3u8", "xtream"]
+  assert parse_phase_tokens(["epg"]) == ["xtream"]
   assert parse_phase_tokens(["3,1", "6"]) == ["lineup", "match", "xtream"]
   assert parse_refresh_targets([]) == {"lineup", "catalog", "epg"}
   assert parse_refresh_targets(["lineup,epg"]) == {"lineup", "epg"}
@@ -74,10 +75,13 @@ channels:
   out_report = tmp_path / "output" / "report.json"
   out_xtream = tmp_path / "output" / "xtream"
 
+  cache_dir = tmp_path / "cache"
   cfg_path = tmp_path / "config.yaml"
   cfg_path.write_text(
     f"""\
+credentials_file: "{tmp_path / "none.yaml"}"
 paths:
+  cache_dir: "{cache_dir}"
   state_dir: "{state_dir}"
   lineup_file: "{mini_lineup}"
   seed_json: "{seed_catalog}"
@@ -137,6 +141,29 @@ pipeline:
   assert out_m3u8.is_file()
   assert out_report.is_file()
   assert (out_xtream / "get_live_streams.json").is_file()
+
+  # 3b. CLI `--phase epg` populates `cache/bellhop_web/epg_cache.json` directly
+  xml_local = tmp_path / "local.xml"
+  xml_local.write_text(
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    "<tv>\n"
+    '  <programme start="20990101000000 +0000" stop="20990101010000 +0000" channel="RDS.ca">\n'
+    "    <title>Hockey Canadiens</title>\n"
+    "  </programme>\n"
+    "</tv>\n",
+    encoding="utf-8",
+  )
+  cfg_with_xml = cfg_path.read_text(encoding="utf-8").replace(
+    "xmltv_file: null", f'xmltv_file: "{xml_local}"'
+  )
+  if "xmltv_file:" not in cfg_with_xml:
+    cfg_with_xml = cfg_with_xml.replace(
+      "paths:\n", f'paths:\n  xmltv_file: "{xml_local}"\n'
+    )
+  cfg_path.write_text(cfg_with_xml, encoding="utf-8")
+  rc_epg = cli_main(["run", "-c", str(cfg_path), "--phase", "epg", "--quiet"])
+  assert rc_epg == 0
+  assert (tmp_path / "cache" / "bellhop_web" / "epg_cache.json").is_file()
 
   # 4. Bare `bellhop -c ... --dry-run` defaults to `run`; invalid phase / missing config return exit code 2
   assert cli_main(["-c", str(cfg_path), "--dry-run", "--quiet"]) == 0

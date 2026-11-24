@@ -452,7 +452,30 @@ def _clean_station_title(
   if stripped and stripped != display:
     aliases.append(stripped)
   if network_name and network_name.strip():
-    aliases.append(network_name.strip())
+    net_raw = network_name.strip()
+    aliases.append(net_raw)
+    net_short_map = {
+      "national broadcasting company": "NBC",
+      "american broadcasting company": "ABC",
+      "cbs television network": "CBS",
+      "fox entertainment": "FOX",
+      "fox broadcasting company": "FOX",
+      "public broadcasting service": "PBS",
+      "the cw television network": "CW",
+      "mynetworktv": "MyNet",
+      "société radio-canada": "ICI Radio-Canada Télé",
+      "societe radio-canada": "ICI Radio-Canada Télé",
+    }
+    short_net = net_short_map.get(net_raw.lower())
+    if short_net:
+      aliases.append(short_net)
+      if callsign:
+        cs_stem_for_net = CALLSIGN_HD_SUFFIX_RE.sub("", callsign.strip()).strip(
+          "-"
+        )
+        if _norm_key(display) == _norm_key(cs_stem_for_net):
+          display = f"{short_net} ({cs_stem_for_net})"
+          aliases.append(f"{short_net} {cs_stem_for_net}")
   aliases.extend(_extract_initialisms(display))
   if callsign:
     cs_clean = callsign.strip()

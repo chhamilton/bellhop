@@ -43,6 +43,7 @@ from bellhop.serve import UnifiedServeServer
 from bellhop.xtream import XtreamError
 from bellhop.xtream_exporter import XtreamExportResult
 from bellhop.xtream_server import build_access_urls
+from bellhop_web.api_contracts import EpgStatusDict
 
 console = Console()
 
@@ -287,7 +288,10 @@ def _print_m3u8_summary(
   )
 
 
-def _print_xtream_panel(res: XtreamExportResult) -> None:
+def _print_xtream_panel(
+  res: XtreamExportResult,
+  epg_sync_status: EpgStatusDict | None = None,
+) -> None:
   ver = res.epg_verification
   if ver is None or ver.skipped:
     epg_status = "[yellow]Skipped[/yellow]"
@@ -302,6 +306,18 @@ def _print_xtream_panel(res: XtreamExportResult) -> None:
     )
 
   epg_url_line = res.xmltv_url_redacted or "(not configured)"
+  sync_line = ""
+  if epg_sync_status is not None:
+    if epg_sync_status["state"] == "ok":
+      sync_line = (
+        f"[bold cyan]EPG Cache Sync:[/bold cyan]          [bold green]OK[/bold green] "
+        f"({epg_sync_status['channels_with_epg']} channels, "
+        f"{epg_sync_status['program_count']:,} listings cached)\n"
+      )
+    else:
+      err_note = epg_sync_status["last_error"] or epg_sync_status["state"]
+      sync_line = f"[bold cyan]EPG Cache Sync:[/bold cyan]          [yellow]{err_note}[/yellow]\n"
+
   console.print(
     Panel.fit(
       f"[bold green]Unified Xtream Bundle:[/bold green]   {res.bundle_path}\n"
@@ -311,9 +327,10 @@ def _print_xtream_panel(res: XtreamExportResult) -> None:
       f"([bold]{res.emitted_categories}[/bold] groups)\n"
       f"[bold cyan]EPG Passthrough:[/bold cyan]         {epg_status} "
       f"({res.channels_with_guide_id} guide-bound slots)\n"
+      f"{sync_line}"
       f"[bold]Upstream XMLTV URL:[/bold]      {epg_url_line}\n"
       f"[bold]Official Network Logos:[/bold]  {res.channels_with_official_logo} networks enriched with official logos",
-      title="Phase (6) — Official Xtream JSON & Passthrough EPG Export (`xtream`)",
+      title="Phase (6) — Official Xtream JSON & EPG Export (`xtream` / `epg`)",
       border_style="green",
     )
   )
@@ -336,7 +353,7 @@ def _add_run_execution_args(parser: argparse.ArgumentParser) -> None:
     metavar="PHASES",
     help=(
       "Comma-separated or repeatable phase(s) to run: "
-      "lineup, catalog, match, validate, m3u8, xtream (or shorthand `export` for m3u8,xtream). "
+      "lineup, catalog, match, validate, m3u8, xtream (or shorthand `export` / `epg`). "
       "Defaults to all enabled phases in config.yaml."
     ),
   )
@@ -534,10 +551,15 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
       epg_ref = server.web_app.epg_refresher
       if epg_ref is not None and epg_ref.is_configured:
         will_refresh, reason = epg_ref.needs_refresh()
+        src_mode = (
+          "Schedules Direct + XMLTV"
+          if epg_ref.sd_enabled
+          else "Dynamic passthrough"
+        )
         epg_label = (
-          f"Dynamic passthrough (TTL {cfg.epg.refresh_hours:g}h; fetching: {reason})"
+          f"{src_mode} (TTL {cfg.epg.refresh_hours:g}h; fetching: {reason})"
           if will_refresh
-          else f"Dynamic passthrough (TTL {cfg.epg.refresh_hours:g}h; cache fresh)"
+          else f"{src_mode} (TTL {cfg.epg.refresh_hours:g}h; cache fresh)"
         )
         epg_cache_label = str(epg_ref.config.cache_file)
       else:
@@ -600,6 +622,12 @@ async def _execute_cli_run(args: argparse.Namespace) -> int:
   phases = parse_phase_tokens(args.phases)
   skip_phases = parse_phase_tokens(args.skip_phases)
   refresh_targets = parse_refresh_targets(args.force_refresh)
+  if args.phases and any(
+    tok.strip().lower() == "epg"
+    for item in args.phases
+    for tok in item.split(",")
+  ):
+    refresh_targets.add("epg")
 
   opts = PipelineRunOptions(
     phases=phases,
@@ -705,7 +733,9 @@ async def _execute_cli_run(args: argparse.Namespace) -> int:
     )
 
   if result.xtream_result is not None and "xtream" in result.executed_phases:
-    _print_xtream_panel(result.xtream_result)
+    _print_xtream_panel(
+      result.xtream_result, epg_sync_status=result.epg_sync_status
+    )
 
   return 0
 

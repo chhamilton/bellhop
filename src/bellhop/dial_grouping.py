@@ -347,21 +347,31 @@ def build_channel_leaves_and_enrich(
       # (skipping generic US parent-network fallbacks on local affiliate slots like "ABC (Burlington)")
       ch_base_norm = normalize_lookup_key(PAREN_GROUP_RE.sub("", ch.name))
       us_generic_networks = {"abc", "cbs", "nbc", "fox", "pbs", "cw", "thecw"}
-      # Upgrade bare OTA callsign titles ("CBFT" -> "ICI Radio-Canada Télé (CBFT)")
+      feed_city = (
+        iptv_org_index.feed_city_for_callsign(ch.callsign)
+        if iptv_org_index is not None
+        else None
+      )
+      # Upgrade bare OTA callsign titles ("CBFT" -> "ICI Radio-Canada Télé (Montreal)")
       if (
         ch.callsign
-        and ch_base_norm == normalize_lookup_key(ch.callsign)
+        and (
+          ch_base_norm == normalize_lookup_key(ch.callsign)
+          or normalize_lookup_key(ch.name)
+          == normalize_lookup_key(f"{info.name} {ch.callsign}")
+        )
         and normalize_lookup_key(info.name) != ch_base_norm
         and normalize_lookup_key(info.name) not in us_generic_networks
       ):
-        ch.name = f"{info.name} ({ch.callsign})"
+        qual = feed_city or ch.callsign
+        ch.name = f"{info.name} ({qual})"
         ch_base_norm = normalize_lookup_key(info.name)
       if match.was_replaced or (
         match.similarity >= 0.78 and ch_base_norm not in us_generic_networks
       ):
         extra_aliases: list[str] = [info.name, *info.alt_names]
         parens = PAREN_GROUP_RE.findall(ch.name)
-        city_qual = parens[-1].strip() if parens else ""
+        city_qual = feed_city or (parens[-1].strip() if parens else "")
         if city_qual and normalize_lookup_key(city_qual) not in {
           "canada",
           "us",
@@ -373,6 +383,8 @@ def build_channel_leaves_and_enrich(
           for base_alt in (info.name, *info.alt_names):
             if city_qual.lower() not in base_alt.lower():
               extra_aliases.append(f"{base_alt} {city_qual}")
+          if "ici" in info.name.lower():
+            extra_aliases.append(f"ICI {city_qual}")
         if iptv_org_index is not None:
           extra_aliases = iptv_org_index.filter_active_aliases(
             extra_aliases, primary_name=ch.name, country=iso2_country

@@ -43,6 +43,49 @@ logger = logging.getLogger("bellhop.serve")
 _Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
+def build_epg_refresher_from_config(
+  config: AppConfig,
+  store: LineupGuideStore,
+  *,
+  session_factory: ClientSessionFactory | None = None,
+  enabled: bool = True,
+) -> EpgRefreshService:
+  """Construct an `EpgRefreshService` wired to `config`'s SD-JSON & XMLTV settings."""
+  xmltv_override = (
+    config.resolve_path(config.epg.xmltv_file)
+    if config.epg.xmltv_file is not None
+    else None
+  )
+  cache_dir = config.resolve_path(config.xtream.cache_dir)
+  epg_cache_file = cache_dir / "bellhop_web" / "epg_cache.json"
+  fallback_xmltv_url = build_passthrough_xmltv_url(config, redact_secret=False)
+  sd_raw = config.lineup.schedules_direct
+  sd_epg_cfg = SchedulesDirectEpgConfig(
+    username=sd_raw.username,
+    password=sd_raw.password,
+    base_url=sd_raw.base_url,
+    auto_add_lineup=sd_raw.auto_add_lineup,
+    preferred_lineup_id=config.lineup.lineup_id,
+    postal_code=config.lineup.postal_code,
+    timeout_sec=config.xtream.request_timeout_sec,
+    token_cache_file=cache_dir / "sd_token.json",
+    data_cache_file=cache_dir / "bellhop_web" / "sd_epg_cache.json",
+  )
+  return EpgRefreshService(
+    store,
+    EpgRefreshConfig(
+      enabled=enabled,
+      refresh_hours=config.epg.refresh_hours,
+      request_timeout_sec=config.xtream.request_timeout_sec,
+      xmltv_url=fallback_xmltv_url,
+      xmltv_file=xmltv_override,
+      cache_file=epg_cache_file,
+      sd_epg=sd_epg_cfg,
+    ),
+    session_factory=session_factory,
+  )
+
+
 class UnifiedServeServer:
   """aiohttp server hosting `WebGuideApp` and `XtreamPassthroughServer`.
 
@@ -99,44 +142,24 @@ class UnifiedServeServer:
       else None
     )
     cache_dir = config.resolve_path(config.xtream.cache_dir)
-    epg_cache_file = cache_dir / "bellhop_web" / "epg_cache.json"
-
     fallback_xmltv_url = build_passthrough_xmltv_url(
       config, redact_secret=False
     )
     sd_raw = config.lineup.schedules_direct
-    sd_epg_cfg = SchedulesDirectEpgConfig(
-      username=sd_raw.username,
-      password=sd_raw.password,
-      base_url=sd_raw.base_url,
-      auto_add_lineup=sd_raw.auto_add_lineup,
-      preferred_lineup_id=config.lineup.lineup_id,
-      postal_code=config.lineup.postal_code,
-      timeout_sec=config.xtream.request_timeout_sec,
-      token_cache_file=cache_dir / "sd_token.json",
-      data_cache_file=cache_dir / "bellhop_web" / "sd_epg_cache.json",
-    )
+    has_sd_epg = bool(sd_raw.username.strip() and sd_raw.password.strip())
 
     web_store = LineupGuideStore(
       xtream_dir,
       m3u8_path=m3u8_path,
       xmltv_path=xmltv_override,
     )
-    epg_refresher = EpgRefreshService(
+    epg_refresher = build_epg_refresher_from_config(
+      config,
       web_store,
-      EpgRefreshConfig(
-        enabled=(
-          config.serve.web.enabled
-          or (config.serve.xtream.enabled and sd_epg_cfg.enabled)
-        ),
-        refresh_hours=config.epg.refresh_hours,
-        request_timeout_sec=config.xtream.request_timeout_sec,
-        xmltv_url=fallback_xmltv_url,
-        xmltv_file=xmltv_override,
-        cache_file=epg_cache_file,
-        sd_epg=sd_epg_cfg,
-      ),
       session_factory=epg_session_factory or session_factory,
+      enabled=(
+        config.serve.web.enabled or (config.serve.xtream.enabled and has_sd_epg)
+      ),
     )
     web_auth = WebAuthManager(
       WebAuthConfig(
@@ -177,7 +200,7 @@ class UnifiedServeServer:
       public_host=config.serve.xtream.public_host,
       public_port=config.serve.xtream.public_port,
       server_protocol=config.serve.xtream.server_protocol,
-      epg_xmltv_provider=_provide_merged_xmltv if sd_epg_cfg.enabled else None,
+      epg_xmltv_provider=_provide_merged_xmltv if has_sd_epg else None,
     )
 
     config_target = config.config_file or (config.project_root / "config.yaml")

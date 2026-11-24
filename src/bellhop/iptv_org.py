@@ -309,7 +309,18 @@ class IptvOrgIndex:
     self._active_country_keys: set[tuple[str, str]] = set()
     self._closed_unreplaced_country_keys: set[tuple[str, str]] = set()
     self._closed_unreplaced_ids: set[str] = set()
+    self._feed_city_by_callsign: dict[str, str] = {}
     self._station_count = 0
+
+  def feed_city_for_callsign(self, callsign: str | None) -> str | None:
+    """Return broadcast city from `feeds.json` UN/LOCODE for an OTA callsign."""
+    if not callsign:
+      return None
+    up = callsign.strip().upper()
+    stem = re.sub(r"(?:-?(?:DT|TV|HD))+$", "", up)
+    return self._feed_city_by_callsign.get(
+      up
+    ) or self._feed_city_by_callsign.get(stem)
 
   @property
   def is_empty(self) -> bool:
@@ -330,9 +341,38 @@ class IptvOrgIndex:
     """Construct `IptvOrgIndex`, resolving `replaced_by` chains and closed stations."""
     idx = cls()
 
-    ota_feed_re = re.compile(
-      r"^([CWK][A-Z]{2,4})(?:-?(?:DT|TV|HD))?(?:-\d+|\d)?$"
-    )
+    ota_feed_re = re.compile(r"^([CWK][A-Z]{2,4})(?:-?(?:DT|TV|HD))?(?:-?1)?$")
+    locode_cities = {
+      "ct/CAMTR": "Montreal",
+      "ct/CATOR": "Toronto",
+      "ct/CAVAN": "Vancouver",
+      "ct/CAOTT": "Ottawa",
+      "ct/CACAL": "Calgary",
+      "ct/CAEDM": "Edmonton",
+      "ct/CAWNP": "Winnipeg",
+      "ct/CAHAL": "Halifax",
+      "ct/CAMNT": "Moncton",
+      "ct/CAREG": "Regina",
+      "ct/CASAK": "Saskatoon",
+      "ct/CASJF": "St. John's",
+      "ct/CAQUE": "Quebec City",
+      "ct/CAGAT": "Gatineau",
+      "ct/CASBR": "Sherbrooke",
+      "ct/CASAG": "Saguenay",
+      "ct/CARIM": "Rimouski",
+      "ct/CATRR": "Trois-Rivieres",
+      "ct/CAKIN": "Kingston",
+      "ct/CAPBH": "Peterborough",
+      "ct/CASUD": "Sudbury",
+      "ct/CATHU": "Thunder Bay",
+      "ct/CAKWL": "Kelowna",
+      "ct/CAFRE": "Fredericton",
+      "ct/CACHA": "Charlottetown",
+      "ct/CAWND": "Windsor",
+      "ct/CALOD": "London",
+      "ct/CAKTC": "Kitchener",
+      "ct/CASJB": "Saint John",
+    }
     langs_by_id: dict[str, list[str]] = defaultdict(list)
     feed_callsigns_by_id: dict[str, list[str]] = defaultdict(list)
     for feed in feeds_raw:
@@ -341,6 +381,14 @@ class IptvOrgIndex:
       cid = str(feed.get("channel") or "").strip()
       if not cid:
         continue
+      feed_city = ""
+      raw_areas = feed.get("broadcast_area")
+      if isinstance(raw_areas, list):
+        for area in raw_areas:
+          mapped_city = locode_cities.get(str(area).strip())
+          if mapped_city:
+            feed_city = mapped_city
+            break
       for raw_fc in (feed.get("id"), feed.get("name")):
         fc = str(raw_fc or "").strip().upper()
         m_ota = ota_feed_re.match(fc)
@@ -348,6 +396,8 @@ class IptvOrgIndex:
           for cand_cs in (fc, m_ota.group(1)):
             if cand_cs not in feed_callsigns_by_id[cid]:
               feed_callsigns_by_id[cid].append(cand_cs)
+            if feed_city:
+              idx._feed_city_by_callsign.setdefault(cand_cs, feed_city)
       raw_langs = feed.get("languages")
       if not isinstance(raw_langs, list):
         continue

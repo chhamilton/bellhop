@@ -25,12 +25,15 @@ from bellhop.mapping_state import (
 )
 from bellhop.models import MappedChannel
 from bellhop.playlist import write_m3u8, write_report
+from bellhop.serve import build_epg_refresher_from_config
 from bellhop.validator import ProgressCallback, StreamValidator
 from bellhop.xtream import fetch_xtream_account_info
 from bellhop.xtream_exporter import (
   XtreamExportResult,
   export_xtream_playlist_and_guide,
 )
+from bellhop_web.api_contracts import EpgStatusDict
+from bellhop_web.store import LineupGuideStore
 
 ALL_PHASES: tuple[str, ...] = (
   "lineup",
@@ -66,6 +69,7 @@ PHASE_ALIASES: dict[str, tuple[str, ...]] = {
   "generate": ("m3u8",),
   "6": ("xtream",),
   "xtream": ("xtream",),
+  "epg": ("xtream",),
   "export-xtream": ("xtream",),
   "export_xtream": ("xtream",),
   "export": ("m3u8", "xtream"),
@@ -187,6 +191,7 @@ class PipelineRunResult:
   playlist_path: Path | None = None
   report_path: Path | None = None
   xtream_result: XtreamExportResult | None = None
+  epg_sync_status: EpgStatusDict | None = None
 
   def to_dict(self) -> dict[str, Any]:
     return {
@@ -263,6 +268,7 @@ class PipelineRunner:
     playlist_path: Path | None = None
     report_path: Path | None = None
     xtream_res: XtreamExportResult | None = None
+    epg_sync_status: EpgStatusDict | None = None
 
     needs_lineup = bool(
       set(active_phases) & {"lineup", "match", "validate", "m3u8", "xtream"}
@@ -405,7 +411,7 @@ class PipelineRunner:
         mapping_summary=doc.last_summary.to_dict(),
       )
 
-    # Phase (6): Official Xtream API JSON Playlist Export (with Passthrough EPG verification)
+    # Phase (6): Official Xtream API JSON Playlist Export (with Passthrough & SD EPG sync)
     if "xtream" in active_phases and not opts.dry_run:
       assert lineup is not None
       account = catalog_res.catalog.account if catalog_res is not None else None
@@ -416,6 +422,30 @@ class PipelineRunner:
         account=account,
         verify_epg=self.config.epg.verify and validation_skipped_reason is None,
       )
+      explicit_epg = ("epg" in opts.force_refresh) or any(
+        tok.strip().lower() == "epg"
+        for item in (opts.phases or [])
+        for tok in item.split(",")
+      )
+      sd_creds = self.config.lineup.schedules_direct
+      has_sd_epg = bool(sd_creds.username.strip() and sd_creds.password.strip())
+      if validation_skipped_reason is None and (
+        explicit_epg or (self.config.epg.verify and has_sd_epg)
+      ):
+        m3u_cand = playlist_path or self.config.resolve_path(
+          self.config.output.playlist_path
+        )
+        epg_store = LineupGuideStore(
+          self.config.resolve_path(self.config.output.xtream_dir),
+          m3u8_path=m3u_cand if m3u_cand.is_file() else None,
+        )
+        refresher = build_epg_refresher_from_config(self.config, epg_store)
+        refresher.hydrate_from_cache()
+        epg_sync_status = await refresher.refresh_now(
+          force=explicit_epg,
+          reason="force_refresh" if explicit_epg else "pipeline",
+        )
+        await refresher.stop()
 
     finished_iso = datetime.now(timezone.utc).isoformat()
     return PipelineRunResult(
@@ -438,4 +468,5 @@ class PipelineRunner:
       playlist_path=playlist_path,
       report_path=report_path,
       xtream_result=xtream_res,
+      epg_sync_status=epg_sync_status,
     )
