@@ -1,10 +1,16 @@
-"""2D `(Language x Genre)` Shannon self-information dial segmentation for Phase (1).
+"""2D `(Language x Genre)` Shannon self-information dial segmentation for Phase
+(1).
 
-Assigns strictly dial-contiguous channel groups by labeling each channel slot with an
-empirical `(language, genre)` leaf from `iptv-org` (with whole-word fallback when
-`iptv-org` omits categories), computing Shannon self-information `I(u) = -log2 P(u)`
-over the lineup's own language and genre distributions (zero market hardcoding), and
-solving the exact 1D Minimum Description Length (MDL) dynamic program along the dial.
+Assigns strictly dial-contiguous channel groups by labeling each channel slot
+with an
+empirical `(language, genre)` leaf from `iptv-org` (with whole-word fallback
+when
+`iptv-org` omits categories), computing Shannon self-information `I(u) = -log2
+P(u)`
+over the lineup's own language and genre distributions (zero market hardcoding),
+and
+solving the exact 1D Minimum Description Length (MDL) dynamic program along the
+dial.
 """
 
 from __future__ import annotations
@@ -147,7 +153,8 @@ SPORTS_OVERFLOW_RE = re.compile(
   re.IGNORECASE,
 )
 
-# Whole-word fallback rules applied ONLY when `iptv-org` lacks category tags for a slot
+# Whole-word fallback rules applied ONLY when `iptv-org` lacks category tags for
+# a slot
 WORD_GENRE_FALLBACK: tuple[tuple[re.Pattern[str], str], ...] = (
   (SPORTS_OVERFLOW_RE, "sports_overflow"),
   (
@@ -220,7 +227,9 @@ PAREN_GROUP_RE = re.compile(r"\(([^()]+)\)")
 
 @dataclass(slots=True)
 class ChannelTaxonomyLeaf:
-  """Per-channel `(language, leaf_genre, macro_genre)` input to 1D MDL segmentation."""
+  """Per-channel `(language, leaf_genre, macro_genre)` input to 1D MDL
+  segmentation.
+  """
 
   chno: int
   name: str
@@ -231,7 +240,9 @@ class ChannelTaxonomyLeaf:
 
 @dataclass(frozen=True, slots=True)
 class DialSegment:
-  """Contiguous dial slice `[start_idx, end_idx)` emitted by `segment_dial_channels`."""
+  """Contiguous dial slice `[start_idx, end_idx)` emitted by
+  `segment_dial_channels`.
+  """
 
   start_idx: int
   end_idx: int
@@ -286,7 +297,9 @@ def build_channel_leaves_and_enrich(
   market: str = "",
   country: str = "CAN",
 ) -> list[ChannelTaxonomyLeaf]:
-  """Enrich `LineupChannel` metadata from `iptv-org` and return taxonomy leaves."""
+  """Enrich `LineupChannel` metadata from `iptv-org` and return taxonomy
+  leaves.
+  """
   iso2_country = normalize_country_iso2(country)
   market_city_norm = normalize_lookup_key(market.split(",", 1)[0])
   leaves: list[ChannelTaxonomyLeaf] = []
@@ -343,8 +356,10 @@ def build_channel_leaves_and_enrich(
       ):
         ch.tvg_id = info.channel_id
 
-      # Add active canonical name & alt_names whenever fuzzy station match succeeded
-      # (skipping generic US parent-network fallbacks on local affiliate slots like "ABC (Burlington)")
+      # Add active canonical name & alt_names whenever fuzzy station match
+      # succeeded
+      # (skipping generic US parent-network fallbacks on local affiliate slots
+      # like "ABC (Burlington)")
       ch_base_norm = normalize_lookup_key(PAREN_GROUP_RE.sub("", ch.name))
       us_generic_networks = {"abc", "cbs", "nbc", "fox", "pbs", "cw", "thecw"}
       feed_city = (
@@ -352,7 +367,8 @@ def build_channel_leaves_and_enrich(
         if iptv_org_index is not None
         else None
       )
-      # Upgrade bare OTA callsign titles ("CBFT" -> "ICI Radio-Canada Télé (Montreal)")
+      # Upgrade bare OTA callsign titles ("CBFT" -> "ICI Radio-Canada Télé
+      # (Montreal)")
       if (
         ch.callsign
         and (
@@ -402,8 +418,10 @@ def build_channel_leaves_and_enrich(
 
       if info.languages:
         lang_iso3 = info.languages[0]
-        # Update 2-letter channel language when `iptv-org` provides an explicit feed language
-        # (unless local slot explicitly identified French on a bilingual Canadian station)
+        # Update 2-letter channel language when `iptv-org` provides an explicit
+        # feed language
+        # (unless local slot explicitly identified French on a bilingual
+        # Canadian station)
         mapped_iso1 = ISO3_TO_ISO1_LANG.get(lang_iso3)
         if mapped_iso1 and not (
           ch.language == "fr" and info.country == "CA" and mapped_iso1 == "en"
@@ -419,7 +437,8 @@ def build_channel_leaves_and_enrich(
     elif lang_iso3 is None:
       lang_iso3 = _normalize_iso3_lang(ch.language)
 
-    # Distinguish out-of-market regional/time-shift broadcast feeds from in-market locals
+    # Distinguish out-of-market regional/time-shift broadcast feeds from
+    # in-market locals
     if leaf_genre == "general":
       parens = PAREN_GROUP_RE.findall(ch.name)
       if parens and market_city_norm:
@@ -449,7 +468,9 @@ def build_channel_leaves_and_enrich(
 def segment_dial_channels(
   leaves: Sequence[ChannelTaxonomyLeaf],
 ) -> list[DialSegment]:
-  """Partition dial-sorted `leaves` into strictly contiguous `(Language x Genre)` groups."""
+  """Partition dial-sorted `leaves` into strictly contiguous `(Language x
+  Genre)` groups.
+  """
   n = len(leaves)
   if n == 0:
     return []
@@ -586,7 +607,8 @@ def segment_dial_channels(
         best_g = gn
         best_g_bits = score
 
-    # Discourage uninformative genre catch-alls on any major lineup language (>=5%)
+    # Discourage uninformative genre catch-alls on any major lineup language
+    # (>=5%)
     if best_g == "ANY" and (best_l == "ANY" or best_l in major_langs):
       best_g_bits -= 1.5 * len(seg)
 
@@ -663,7 +685,8 @@ def segment_dial_channels(
     else:
       merged.append((i, j, ln, gn, title))
 
-  # Always include the contiguous dial range `(lo–hi)` (refined post-validation at export)
+  # Always include the contiguous dial range `(lo–hi)` (refined post-validation
+  # at export)
   segments: list[DialSegment] = []
   for i, j, ln, gn, title in merged:
     lo = leaves[i].chno
@@ -691,7 +714,9 @@ def assign_dial_contiguous_groups(
   market: str = "",
   country: str = "CAN",
 ) -> list[DialSegment]:
-  """Sort `channels` by dial number, enrich from `iptv-org`, and assign MDL dial groups."""
+  """Sort `channels` by dial number, enrich from `iptv-org`, and assign MDL dial
+  groups.
+  """
   if not channels:
     return []
   channels.sort(key=lambda c: c.chno)

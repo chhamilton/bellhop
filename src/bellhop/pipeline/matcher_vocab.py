@@ -12,7 +12,8 @@ SEPARATOR_RE = re.compile(r"^[\s#=*_~<>|-]{3,}.*[\s#=*_~<>|-]{3,}$")
 LEADING_BRACKET_RE = re.compile(r"^\s*(?:[\[\(]([^\]\)]{1,20})[\]\)]\s*)+")
 DELIMITER_SPLIT_RE = re.compile(r"\s*(?:\||¦|::|—|–|\s-\s|:)\s*")
 
-# Codec / framerate / resolution tokens stripped before channel identity comparison
+# Codec / framerate / resolution tokens stripped before channel identity
+# comparison
 QUALITY_AND_TECH_TOKENS = frozenset(
   {
     "4k",
@@ -154,7 +155,8 @@ BROADCAST_WRAPPER_TOKENS = frozenset(
   }
 )
 
-# Tokens that strongly indicate a DIFFERENT spin-off channel if not present in the alias
+# Tokens that strongly indicate a DIFFERENT spin-off channel if not present in
+# the alias
 SPINOFF_MODIFIER_TOKENS = frozenset(
   {
     "1",

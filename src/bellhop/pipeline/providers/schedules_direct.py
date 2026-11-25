@@ -1,4 +1,6 @@
-"""Schedules Direct SD-JSON (`20141201`) lineup provider backed by Gracenote TMS."""
+"""Schedules Direct SD-JSON (`20141201`) lineup provider backed by Gracenote
+TMS.
+"""
 
 from __future__ import annotations
 
@@ -91,7 +93,9 @@ class SdStationInfo:
 
 
 class SchedulesDirectLineupProvider(LineupProvider):
-  """Official Schedules Direct SD-JSON API lineup backend (`json.schedulesdirect.org/20141201`)."""
+  """Official Schedules Direct SD-JSON API lineup backend
+  (`json.schedulesdirect.org/20141201`).
+  """
 
   backend_name = "schedules_direct"
 
@@ -175,7 +179,8 @@ class SchedulesDirectLineupProvider(LineupProvider):
     elif country_iso == "US":
       country_iso = "USA"
 
-    # Schedules Direct expects Canadian postal codes without spaces (e.g. "H2Y1C6")
+    # Schedules Direct expects Canadian postal codes without spaces (e.g.
+    # "H2Y1C6")
     clean_pc = re.sub(r"\s+", "", postal_code.strip().upper())
     if not clean_pc:
       raise LineupBackendError(
@@ -236,7 +241,8 @@ class SchedulesDirectLineupProvider(LineupProvider):
     try:
       payload = await self._request("GET", f"lineups/{canonical_id}")
     except LineupBackendError as exc:
-      # Code 2100 / not in account lineups: optionally subscribe via PUT /lineups/{id}
+      # Code 2100 / not in account lineups: optionally subscribe via PUT
+      # /lineups/{id}
       if self.auto_add_lineup and (
         "2100" in str(exc) or "not in" in str(exc).lower()
       ):

@@ -1,4 +1,6 @@
-"""Focused unit and failure-mode tests for `EpgDatabase` (`src/bellhop/epg/db.py`)."""
+"""Focused unit and failure-mode tests for `EpgDatabase`
+(`src/bellhop/epg/db.py`).
+"""
 
 from __future__ import annotations
 
@@ -95,7 +97,8 @@ def test_corrupt_or_empty_database_recovers_cleanly(
   elif corrupt_kind == "non_sqlite_header":
     db_path.write_bytes(b"NOT_A_SQLITE_FILE_HEADER_1234567890")
   else:
-    # Valid 16-byte SQLite header followed by garbage page bytes triggers DatabaseError
+    # Valid 16-byte SQLite header followed by garbage page bytes triggers
+    # DatabaseError
     db_path.write_bytes(b"SQLite format 3\x00" + b"\xff" * 8192)
 
   db = EpgDatabase(db_path)
@@ -155,14 +158,16 @@ def test_synthetic_chno_ids_and_orphans_never_leak_into_chunked_xmltv(
         epg_channel_id="ICIRDI.ca",
         logo="https://logos.example/rdi.png",
       ),
-      # Duplicate SD/HD channel sharing `ICIRDI.ca` must not double-emit programmes
+      # Duplicate SD/HD channel sharing `ICIRDI.ca` must not double-emit
+      # programmes
       _StubChannel(
         chno=101,
         name="ICI RDI SD",
         callsign="RDI",
         epg_channel_id="ICIRDI.ca",
       ),
-      # Channel with empty `epg_channel_id` uses internal `ch.1200` for `/api/epg/1200`
+      # Channel with empty `epg_channel_id` uses internal `ch.1200` for
+      # `/api/epg/1200`
       _StubChannel(
         chno=1200,
         name="Local Community Access",
@@ -227,7 +232,8 @@ def test_synthetic_chno_ids_and_orphans_never_leak_into_chunked_xmltv(
   assert inserted > 5
   assert db.get_meta()["guide_fingerprint"] == "fp-test-1"
 
-  # Web Guide `/api/epg/1200` still serves the `epg_channel_id=""` channel by `chno`
+  # Web Guide `/api/epg/1200` still serves the `epg_channel_id=""` channel by
+  # `chno`
   ch1200_sched = db.query_channel_schedule(1200, "")
   assert len(ch1200_sched) == 1
   assert ch1200_sched[0].title == "City Council Live"
@@ -304,7 +310,8 @@ def test_sd_program_retention_pruning_and_stale_airings_eviction(
     ("10001", "2026-11-25"): "md5-cur"
   }
 
-  # Expiring all `guide_airings` clears `fetched_at` and resets cached active count
+  # Expiring all `guide_airings` clears `fetched_at` and resets cached active
+  # count
   snap = _StubSnapshot(
     channels=(
       _StubChannel(
@@ -336,3 +343,53 @@ def test_sd_program_retention_pruning_and_stale_airings_eviction(
   )
   assert (evicted, remaining) == (1, 0)
   assert "fetched_at" not in db.get_meta()
+
+
+@pytest.mark.asyncio
+async def test_xmltv_download_size_cap_aborts_and_unlinks_temp_file(
+  tmp_path: Path,
+) -> None:
+  """Verify `max_xmltv_bytes` aborts oversized XMLTV responses and removes temp
+  files.
+  """
+  from aiohttp import web
+
+  from bellhop.epg.refresh import EpgRefreshConfig, EpgRefreshService
+  from bellhop.web.store import LineupGuideStore
+  from tests.conftest import write_minimal_xtream_export
+  from tests.http_mock import MockHttpServer
+
+  def _oversized_xmltv(_req: web.Request) -> web.Response:
+    big_xml = (
+      '<?xml version="1.0"?><tv>'
+      + (
+        '<programme start="20990101000000 +0000" stop="20990101010000 +0000" channel="ICIRDI.ca"><title>'
+        + "X" * 2048
+        + "</title></programme>"
+      )
+      + "</tv>"
+    )
+    return web.Response(
+      status=200, content_type="application/xml", text=big_xml
+    )
+
+  async with MockHttpServer(_oversized_xmltv) as mock:
+    xt_dir = write_minimal_xtream_export(
+      tmp_path / "output" / "xtream",
+      xmltv_url=f"{mock.base_url}/xmltv.php?username=u&password=super_secret_pw",
+    )
+    cache_file = tmp_path / "cache" / "epg.sqlite3"
+    refresher = EpgRefreshService(
+      LineupGuideStore(xt_dir),
+      EpgRefreshConfig(
+        enabled=True,
+        cache_file=cache_file,
+        max_xmltv_bytes=1024,
+      ),
+      session_factory=mock.session_factory,
+    )
+    st = await refresher.refresh_now(force=True, reason="cap_test")
+    assert st["state"] == "error"
+    assert "exceed" in (st["last_error"] or "").lower()
+    assert "super_secret_pw" not in (st["last_error"] or "")
+    assert list(cache_file.parent.glob("xmltv_fetch_*.xml")) == []

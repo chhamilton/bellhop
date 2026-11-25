@@ -59,8 +59,8 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
 │       ├── serve.py             # `UnifiedServeServer` co-hosting Web Guide + Xtream API (shared or split ports)
 │       ├── common/              # Tier 0: `file_utils`, `api_contracts`, `http_utils`, cached `export_bundle`
 │       ├── config/              # Tier 1: Two-tier config package (`model.py`, `load.py`, `public.py`)
-│       ├── epg/                 # Tier 2: WAL SQLite `db`, `sd_client`, `sd_epg`, `xmltv`, `refresh`, `sync`
-│       ├── pipeline/            # Tier 3a: 6-phase `runner`, `providers/`, `matcher`, `validator`, `playlist`, `xtream_exporter`
+│       ├── epg/                 # Tier 2: `constants`, WAL SQLite `db`, `models`, `sd_client`, `sd_epg`, `xmltv`, `refresh`, `sync`
+│       ├── pipeline/            # Tier 3a: `models`, `lineup_loader`, `dial_grouping`, `iptv_org`, `lineup_retriever`, `providers/`, `catalog_fetcher`, `matcher`, `matcher_vocab`, `mapping_state`, `validator`, `playlist`, `xtream_exporter`, `runner`
 │       ├── xtream/              # Tier 3b: Upstream `client.py` + `XtreamPassthroughServer` (`server.py`)
 │       └── web/                 # Tier 3c: `auth`, `store`, `server` (`WebGuideApp` + `TunerSessionManager`), `frontend/`, `static/`
 ├── Dockerfile                   # Multi-stage Alpine container (`node:22-alpine` -> `python:3.13-alpine`)

@@ -1,4 +1,5 @@
-"""Shared aiohttp server/client helpers, rate limiter, and LAN bind-address utilities.
+"""Shared aiohttp server/client helpers, rate limiter, and LAN bind-address
+utilities.
 
 Used across `bellhop.web` (Web Guide), `bellhop.xtream` (Xtream passthrough
 server), `bellhop.epg`, and `bellhop.pipeline`.
@@ -38,6 +39,7 @@ __all__ = [
   "detect_device_ip",
   "json_response",
   "parse_trusted_proxy_networks",
+  "redact_url_secrets",
   "redirect_response",
   "resolve_bind_host",
   "resolve_client_ip",
@@ -148,7 +150,9 @@ def resolve_bind_host(
   *,
   ip_detector: Callable[[], str | None] = detect_device_ip,
 ) -> str:
-  """Resolve a configured host (`0.0.0.0`, `auto`/`lan`/`device`, or explicit IP)."""
+  """Resolve a configured host (`0.0.0.0`, `auto`/`lan`/`device`, or explicit
+  IP).
+  """
   raw = (configured_host or "").strip()
   if not raw:
     return "0.0.0.0"
@@ -187,7 +191,9 @@ def build_access_urls(
 # Trusted reverse-proxy client IP resolution (`X-Forwarded-For` / `X-Real-IP`)
 # -----------------------------------------------------------------------------
 def _parse_ip_addr(raw: str | None) -> IpAddress | None:
-  """Parse an IPv4/IPv6 address, unwrapping IPv4-mapped IPv6 (`::ffff:x.x.x.x`)."""
+  """Parse an IPv4/IPv6 address, unwrapping IPv4-mapped IPv6
+  (`::ffff:x.x.x.x`).
+  """
   if not raw:
     return None
   cleaned = raw.strip()
@@ -366,12 +372,16 @@ _STREAM_CRED_PATH_RE = re.compile(
 
 
 def _redact_request_path(path: str) -> str:
-  """Mask embedded Xtream stream credentials inside `/live/<user>/<pass>/<id>` paths."""
+  """Mask embedded Xtream stream credentials inside `/live/<user>/<pass>/<id>`
+  paths.
+  """
   return _STREAM_CRED_PATH_RE.sub(r"/live/\1/***/\3", path)
 
 
 def _is_web_guide_path(path: str) -> bool:
-  """Return `True` for Web Guide UI/API routes (which never allow wildcard CORS)."""
+  """Return `True` for Web Guide UI/API routes (which never allow wildcard
+  CORS).
+  """
   return path in (
     "/",
     "/index.html",
@@ -519,3 +529,28 @@ class LoginRateLimiter:
   def record_success(self, ip: str) -> None:
     """Clear failed login attempts for `ip` after a successful sign-in."""
     self._failures.pop(ip or "unknown", None)
+
+
+_STREAM_PATH_SECRET_RE = re.compile(
+  r"(/(?:live|movie|series|timeshift)/[^/\s'\"\\]+/)([^/\s'\"\\]+)(/)",
+  re.IGNORECASE,
+)
+_QUERY_SECRET_RE = re.compile(
+  r"((?:password|passwd|pass|token)=)([^&\s'\"\\]+)",
+  re.IGNORECASE,
+)
+_AUTH_USERINFO_RE = re.compile(r"(://[^:/@\s'\"\\]+:)([^@\s'\"\\]+)(@)")
+
+
+def redact_url_secrets(text: str) -> str:
+  """Mask embedded stream/query/userinfo credentials in logged error strings.
+
+  Args:
+    text: Raw error or URL text that may embed upstream credentials.
+
+  Returns:
+    Sanitized string with passwords and tokens replaced by `***`.
+  """
+  masked = _STREAM_PATH_SECRET_RE.sub(r"\1***\3", text)
+  masked = _AUTH_USERINFO_RE.sub(r"\1***\3", masked)
+  return _QUERY_SECRET_RE.sub(r"\1***", masked)

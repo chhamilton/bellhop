@@ -1,8 +1,10 @@
-"""Core typed domain models for Xtream streams, cable lineup slots, matching, and stream probes.
+"""Core typed domain models for Xtream streams, cable lineup slots, matching,
+and stream probes.
 
 Serialized JSON Layouts
 -----------------------
-1. `LineupChannelDict` (entries inside `state/lineups/<lineup_id>.json` -> `lineup.channels[]`):
+1. `LineupChannelDict` (entries inside `state/lineups/<lineup_id>.json` ->
+   `lineup.channels[]`):
    ```json
    {
      "chno": 1108,
@@ -19,7 +21,8 @@ Serialized JSON Layouts
      "exclude": ["RDS 2", "RDS Info"]
    }
    ```
-2. `ProbeResultDict` (stored under `probe` on `CandidateRecord` in `state/channel_mapping.json`):
+2. `ProbeResultDict` (stored under `probe` on `CandidateRecord` in
+   `state/channel_mapping.json`):
    ```json
    {
      "stream_id": 410108,
@@ -127,7 +130,9 @@ def _opt_float(val: object) -> float | None:
 
 @dataclass(slots=True)
 class LineupChannel:
-  """A target slot in the emulated cable provider lineup (e.g. Bell Fibe Montréal)."""
+  """A target slot in the emulated cable provider lineup (e.g. Bell Fibe
+  Montréal).
+  """
 
   chno: int
   name: str

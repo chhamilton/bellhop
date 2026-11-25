@@ -229,7 +229,9 @@ class AppConfig:
     return p if p.is_absolute() else (self.project_root / p).resolve()
 
   def to_dict(self, *, redact_secrets: bool = True) -> dict[str, Any]:
-    """Serialize full configuration for diagnostics, redacting secrets by default."""
+    """Serialize full configuration for diagnostics, redacting secrets by
+    default.
+    """
     return {
       "credentials_file": str(self.credentials_file),
       "xtream": {

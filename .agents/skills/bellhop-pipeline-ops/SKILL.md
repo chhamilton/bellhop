@@ -39,4 +39,4 @@ description: >-
 4. Register the provider in `build_default_providers()` (`src/bellhop/pipeline/lineup_retriever.py`) and add `MockHttpServer` tests in `tests/test_lineup_providers.py`.
 
 ## Detailed Scoring & Provider Reference
-Read [provider-and-matcher-quirks.md](./references/provider-and-matcher-quirks.md) when tuning candidate scoring weights, handling `provider.example` edge cases, or debugging TV Guide / Schedules Direct wire formats.
+Read [provider-and-matcher-quirks.md](./references/provider-and-matcher-quirks.md) when tuning candidate scoring weights, handling upstream IPTV naming edge cases, or debugging TV Guide / Schedules Direct wire formats.

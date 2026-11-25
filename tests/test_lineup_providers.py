@@ -1,4 +1,6 @@
-"""Tests for the pluggable `LineupProvider` interface, `TvGuideLineupProvider`, and `SchedulesDirectLineupProvider`."""
+"""Tests for the pluggable `LineupProvider` interface, `TvGuideLineupProvider`,
+and `SchedulesDirectLineupProvider`.
+"""
 
 from __future__ import annotations
 
@@ -174,7 +176,8 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
     us_headends = await tvg.discover_lineups(postal_code="10001")
     assert [h.lineup_id for h in us_headends] == ["TVG-9133001919"]
 
-    # 3. Retrieve lineup via Phase (1) `retrieve_cable_lineup` + verify SD/HD pairing & monthly cache
+    # 3. Retrieve lineup via Phase (1) `retrieve_cable_lineup` + verify SD/HD
+    #    pairing & monthly cache
     cfg = AppConfig(
       project_root=tmp_path,
       lineup=LineupConfig(
@@ -188,7 +191,8 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
     assert res1.backend == "tvguide"
     assert not res1.from_cache
     assert res1.lineup.provider == "Bell Fibe TV - Montreal (Digital)"
-    # 5 raw slots (101, 1101, 108, 1108, 1109) paired into 3 unique networks (total_dial_positions=5)!
+    # 5 raw slots (101, 1101, 108, 1108, 1109) paired into 3 unique networks
+    # (total_dial_positions=5)!
     assert len(res1.lineup.channels) == 3
     assert res1.lineup.total_dial_positions == 5
 
@@ -197,7 +201,8 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
     assert ch_by_no[1101].language == "fr"
     assert ch_by_no[1108].sd_chno == 108
     assert ch_by_no[1108].group == "Sports (1108–1109)"
-    # Automatic sibling exclusion inferred: RDS (1108) excludes "2" so RDS2 never bleeds into RDS!
+    # Automatic sibling exclusion inferred: RDS (1108) excludes "2" so RDS2
+    # never bleeds into RDS!
     assert (
       "2" in ch_by_no[1108].exclude
       or "rds2" in ch_by_no[1108].exclude
@@ -208,7 +213,8 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
     res2 = await retrieve_cable_lineup(cfg, providers=[tvg])
     assert res2.from_cache
 
-    # 4. Verify Phase (3) ChannelMatcher matches raw IPTV streams against dynamic TVGuide channels
+    # 4. Verify Phase (3) ChannelMatcher matches raw IPTV streams against
+    #    dynamic TVGuide channels
     matcher = ChannelMatcher(
       [
         XtreamStream(
@@ -373,7 +379,8 @@ async def test_schedules_direct_provider_auth_reauth_auto_add_and_retrieval(
       state=StateConfig(state_dir=Path("state")),
     )
 
-    # 1. Headend discovery strips space from H2Y 1C6 and re-authenticates expired token
+    # 1. Headend discovery strips space from H2Y 1C6 and re-authenticates
+    #    expired token
     discovered = await discover_provider_lineups(
       cfg,
       backend="schedules_direct",
@@ -385,7 +392,8 @@ async def test_schedules_direct_provider_auth_reauth_auto_add_and_retrieval(
     assert discovered[0].lineup_id == "CAN-0005993-X"
     assert state["token_calls"] == 1
 
-    # 2. Lineup retrieval auto-subscribes (`PUT /lineups/CAN-0005993-X`) and pairs 108 + 1108
+    # 2. Lineup retrieval auto-subscribes (`PUT /lineups/CAN-0005993-X`) and
+    #    pairs 108 + 1108
     res = await retrieve_cable_lineup(cfg, providers=[sd])
     assert res.backend == "schedules_direct"
     assert state["added_lineup"] is True
@@ -443,7 +451,9 @@ def test_provider_selection_registry_routing(tmp_path: Path) -> None:
 async def test_schedules_direct_real_world_pairing_and_ota_feed_enrichment(
   tmp_path: Path,
 ) -> None:
-  """Verify Gracenote 7-char callsign SD/HD pairing, mid-title HD cleanup, and OTA feed callsign enrichment."""
+  """Verify Gracenote 7-char callsign SD/HD pairing, mid-title HD cleanup, and
+  OTA feed callsign enrichment.
+  """
 
   async def sd_handler(req: web.Request) -> web.Response:
     if req.path.endswith("/token"):
@@ -570,7 +580,8 @@ async def test_schedules_direct_real_world_pairing_and_ota_feed_enrichment(
     )
     assert lu.provider == "Bell Fibe TV"
     assert lu.market == "Montréal (Cable)"
-    # All 3 SD/HD pairs (101+1101, 111+1111, 554+1554) cleanly collapsed into 3 unique networks!
+    # All 3 SD/HD pairs (101+1101, 111+1111, 554+1554) cleanly collapsed into 3
+    # unique networks!
     assert [c.chno for c in lu.channels] == [1101, 1111, 1554]
     by_no = {c.chno: c for c in lu.channels}
     assert by_no[1101].sd_chno == 101

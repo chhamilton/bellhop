@@ -38,6 +38,19 @@ if [ "$(id -u)" -eq 0 ]; then
   PUID="${PUID:-1000}"
   PGID="${PGID:-1000}"
 
+  case "${PUID}" in
+    ''|*[!0-9]*|0)
+      echo "[bellhop] ERROR: PUID must be a positive integer (>= 1); refusing to run as root (PUID=${PUID})." >&2
+      exit 1
+      ;;
+  esac
+  case "${PGID}" in
+    ''|*[!0-9]*|0)
+      echo "[bellhop] ERROR: PGID must be a positive integer (>= 1); refusing to run as root (PGID=${PGID})." >&2
+      exit 1
+      ;;
+  esac
+
   if [ -n "${TZ:-}" ] && [ -f "/usr/share/zoneinfo/${TZ}" ]; then
     ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime 2>/dev/null || true
     printf '%s\n' "${TZ}" > /etc/timezone 2>/dev/null || true

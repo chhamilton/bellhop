@@ -1,4 +1,6 @@
-"""Async Xtream Codes player_api.php client, local JSON loader, and catalog cache."""
+"""Async Xtream Codes player_api.php client, local JSON loader, and catalog
+cache.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ from typing import Any
 import aiohttp
 
 from bellhop.common.file_utils import write_private_text
+from bellhop.common.http_utils import redact_url_secrets
 from bellhop.config import AppConfig
 
 DEFAULT_USER_AGENT = "Bellhop/0.1 (VLC/3.0.20 LibVLC/3.0.20)"
@@ -230,7 +233,9 @@ async def fetch_xtream_account_info(
   *,
   client: aiohttp.ClientSession | None = None,
 ) -> XtreamAccountInfo:
-  """Verify live `player_api.php` account status without consuming a tuner slot."""
+  """Verify live `player_api.php` account status without consuming a tuner
+  slot.
+  """
   xt = config.xtream
   if not xt.server_url or not xt.username or not xt.password:
     raise XtreamError(
@@ -272,7 +277,8 @@ async def fetch_xtream_account_info(
           f"Xtream API HTTP {last_exc.status} error from {base_url}"
         ) from last_exc
       raise XtreamError(
-        f"Network error contacting Xtream server {xt.server_url}: {last_exc}"
+        f"Network error contacting Xtream server {xt.server_url}: "
+        f"{redact_url_secrets(str(last_exc))}"
       ) from last_exc
 
     if not isinstance(account_payload, dict):
@@ -298,7 +304,9 @@ async def fetch_xtream_catalog(
   force_refresh: bool = False,
   client: aiohttp.ClientSession | None = None,
 ) -> XtreamCatalog:
-  """Fetch account metadata, live categories, and live streams from Xtream Codes API."""
+  """Fetch account metadata, live categories, and live streams from Xtream Codes
+  API.
+  """
   xt = config.xtream
   if not xt.server_url or not xt.username or not xt.password:
     raise XtreamError(
@@ -330,7 +338,8 @@ async def fetch_xtream_catalog(
 
   assert client is not None
   try:
-    # 1. Authenticate & inspect account limits (auto-negotiating http/https if scheme omitted)
+    # 1. Authenticate & inspect account limits (auto-negotiating http/https if
+    #    scheme omitted)
     account_payload: Any = None
     last_exc: Exception | None = None
     for cand_base in candidates:
@@ -353,7 +362,8 @@ async def fetch_xtream_catalog(
           f"Xtream API HTTP {last_exc.status} error from {base_url}"
         ) from last_exc
       raise XtreamError(
-        f"Network error contacting Xtream server {xt.server_url}: {last_exc}"
+        f"Network error contacting Xtream server {xt.server_url}: "
+        f"{redact_url_secrets(str(last_exc))}"
       ) from last_exc
 
     api_url = f"{base_url}/player_api.php"
@@ -437,11 +447,13 @@ async def fetch_xtream_catalog(
     ) from exc
   except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
     raise XtreamError(
-      f"Network error contacting Xtream server {base_url}: {exc}"
+      f"Network error contacting Xtream server {base_url}: "
+      f"{redact_url_secrets(str(exc))}"
     ) from exc
   except ValueError as exc:
     raise XtreamError(
-      f"Invalid JSON returned by Xtream server {base_url}: {exc}"
+      f"Invalid JSON returned by Xtream server {base_url}: "
+      f"{redact_url_secrets(str(exc))}"
     ) from exc
   finally:
     if owns_client:
@@ -449,7 +461,9 @@ async def fetch_xtream_catalog(
 
 
 def load_catalog_from_json(json_path: Path) -> XtreamCatalog:
-  """Load an Xtream JSON playlist from a local file (list of streams or full catalog dict)."""
+  """Load an Xtream JSON playlist from a local file (list of streams or full
+  catalog dict).
+  """
   with json_path.open("r", encoding="utf-8") as fh:
     data = json.load(fh)
 

@@ -1,4 +1,6 @@
-"""Multi-stage async IPTV stream validator (HTTP/HLS/MPEG-TS, ffprobe audio/video, blackdetect)."""
+"""Multi-stage async IPTV stream validator (HTTP/HLS/MPEG-TS, ffprobe
+audio/video, blackdetect).
+"""
 
 from __future__ import annotations
 
@@ -119,7 +121,9 @@ ProgressCallback = Callable[[MappedChannel, int, int], None]
 
 
 def normalize_audio_language_code(raw_lang: str | None) -> str | None:
-  """Normalize an ISO-639-1/2/3 audio track language tag, ignoring `und`/`mul`."""
+  """Normalize an ISO-639-1/2/3 audio track language tag, ignoring
+  `und`/`mul`.
+  """
   if not raw_lang:
     return None
   token = re.split(r"[-_]", raw_lang.strip().lower(), maxsplit=1)[0].strip()
@@ -138,7 +142,9 @@ def check_audio_language_compatibility(
   *,
   allow_audio_only: bool = False,
 ) -> tuple[bool, bool]:
-  """Return `(is_compatible, is_verified_match)` for a slot language vs probed tracks."""
+  """Return `(is_compatible, is_verified_match)` for a slot language vs probed
+  tracks.
+  """
   if allow_audio_only:
     return (True, False)
   expected = normalize_audio_language_code(expected_lang)
@@ -157,7 +163,9 @@ def check_audio_language_compatibility(
 def clone_probe_with_language_mismatch(
   probe: ProbeResult, expected_lang: str
 ) -> ProbeResult:
-  """Return a slot-scoped demoted `ProbeResult` flagging an audio language mismatch."""
+  """Return a slot-scoped demoted `ProbeResult` flagging an audio language
+  mismatch.
+  """
   exp = normalize_audio_language_code(expected_lang) or expected_lang
   tracks = ",".join(probe.audio_languages) or "unknown"
   return replace(
@@ -169,7 +177,9 @@ def clone_probe_with_language_mismatch(
 
 
 def strip_slot_language_mismatch(probe: ProbeResult) -> ProbeResult:
-  """Recover intrinsic stream health if `probe` was flagged for slot language mismatch."""
+  """Recover intrinsic stream health if `probe` was flagged for slot language
+  mismatch.
+  """
   if not probe.black_screen and (
     probe.audio_language_mismatch
     or (
@@ -183,7 +193,9 @@ def strip_slot_language_mismatch(probe: ProbeResult) -> ProbeResult:
 
 
 def parse_blackdetect_duration(stderr_text: str) -> float:
-  """Sum `black_duration:<sec>` intervals reported by `ffmpeg -vf blackdetect`."""
+  """Sum `black_duration:<sec>` intervals reported by `ffmpeg -vf
+  blackdetect`.
+  """
   total = 0.0
   for match in BLACK_DURATION_RE.finditer(stderr_text):
     try:
@@ -196,7 +208,9 @@ def parse_blackdetect_duration(stderr_text: str) -> float:
 def effective_concurrency(
   config: AppConfig, account: XtreamAccountInfo | None = None
 ) -> int:
-  """Compute safe stream probe concurrency respecting Xtream account max_connections."""
+  """Compute safe stream probe concurrency respecting Xtream account
+  max_connections.
+  """
   desired = max(1, config.validation.concurrency)
   if config.validation.ignore_account_limit or account is None:
     return desired
@@ -204,7 +218,9 @@ def effective_concurrency(
 
 
 def has_mpegts_sync(data: bytes) -> bool:
-  """Verify 188-byte MPEG-TS 0x47 sync byte cadence inside an initial byte buffer."""
+  """Verify 188-byte MPEG-TS 0x47 sync byte cadence inside an initial byte
+  buffer.
+  """
   n = len(data)
   if n < TS_PACKET_SIZE * 2:
     return False
@@ -267,7 +283,9 @@ def _parse_fps(rate_str: str | None) -> float | None:
 
 
 class StreamValidator:
-  """Validates candidate Xtream live streams using Stage 1 HTTP/HLS + Stage 2 ffprobe."""
+  """Validates candidate Xtream live streams using Stage 1 HTTP/HLS + Stage 2
+  ffprobe.
+  """
 
   def __init__(
     self,
@@ -322,7 +340,9 @@ class StreamValidator:
     *,
     on_channel_done: ProgressCallback | None = None,
   ) -> list[MappedChannel]:
-    """Validate ranked candidates per channel, stopping at the first working stream."""
+    """Validate ranked candidates per channel, stopping at the first working
+    stream.
+    """
     timeout = aiohttp.ClientTimeout(
       total=None,
       connect=min(5.0, self.val_cfg.http_timeout_sec),
@@ -412,7 +432,8 @@ class StreamValidator:
       mapped.probe = probe
       return
 
-    # If no language-compatible stream succeeded, fall back to the highest-ranked
+    # If no language-compatible stream succeeded, fall back to the
+    # highest-ranked
     # working stream that was demoted solely for audio-track language metadata.
     if fallback_mismatch is not None:
       mapped.selected, mapped.probe = fallback_mismatch
@@ -428,7 +449,9 @@ class StreamValidator:
     *,
     allow_audio_only: bool = False,
   ) -> ProbeResult:
-    """Probe a single Xtream stream (deduplicated across channels sharing a candidate)."""
+    """Probe a single Xtream stream (deduplicated across channels sharing a
+    candidate).
+    """
     sid = stream.stream_id
     if sid in self._probe_cache:
       return self._probe_cache[sid]
@@ -482,7 +505,8 @@ class StreamValidator:
       return result
 
     if self.ffprobe_path:
-      # Give max_connections=1 Xtream panels time to release Stage 1's tuner slot
+      # Give max_connections=1 Xtream panels time to release Stage 1's tuner
+      # slot
       if self.val_cfg.inter_probe_delay_sec > 0:
         await asyncio.sleep(self.val_cfg.inter_probe_delay_sec)
       await self._stage2_ffprobe_check(
@@ -534,7 +558,8 @@ class StreamValidator:
           )
 
         path_lower = final_url.split("?", 1)[0].lower()
-        # Detect Xtream panel offline placeholder / dummy loop redirects (e.g. /video/black.ts)
+        # Detect Xtream panel offline placeholder / dummy loop redirects (e.g.
+        # /video/black.ts)
         if _hls_depth == 0 and (
           any(
             marker in path_lower
@@ -603,7 +628,8 @@ class StreamValidator:
         checked_at=checked_at,
       )
 
-    # Notice: `async with client.stream(...)` has exited cleanly here, closing the connection
+    # Notice: `async with client.stream(...)` has exited cleanly here, closing
+    # the connection
     if not data:
       return ProbeResult(
         stream_id=stream_id,
@@ -689,7 +715,8 @@ class StreamValidator:
     ts_ok = has_mpegts_sync(data)
     container_ok = ts_ok or _looks_like_fmp4_or_flv(data)
 
-    # HLS segments might theoretically be small in mock tests, while live continuous streams
+    # HLS segments might theoretically be small in mock tests, while live
+    # continuous streams
     # must deliver at least min_bytes_to_read
     enough_bytes = len(data) >= min_bytes or (_hls_depth > 0 and container_ok)
     if not enough_bytes:
@@ -844,7 +871,9 @@ class StreamValidator:
       probe.error = "ffprobe found no decodable video stream"
 
   async def _stage3_black_screen_check(self, probe: ProbeResult) -> None:
-    """Decode a short sample via `ffmpeg -vf blackdetect` and reject pure-black streams."""
+    """Decode a short sample via `ffmpeg -vf blackdetect` and reject pure-black
+    streams.
+    """
     assert self.ffmpeg_path is not None
     sample_sec = max(0.5, float(self.val_cfg.black_sample_sec))
     min_black_dur = round(sample_sec * 0.85, 2)

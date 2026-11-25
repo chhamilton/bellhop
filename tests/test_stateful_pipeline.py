@@ -1,4 +1,6 @@
-"""Tests for the 5-phase stateful pipeline: monthly lineup, daily catalog, incremental matching, candidate-only validation, and M3U8 output."""
+"""Tests for the 5-phase stateful pipeline: monthly lineup, daily catalog,
+incremental matching, candidate-only validation, and M3U8 output.
+"""
 
 from __future__ import annotations
 
@@ -279,7 +281,8 @@ def test_matcher_prefers_native_epg_and_higher_quality_and_filters_bad_epg() -> 
   # Télé-Mag must NOT match SUPER ECRAN 4 despite epg_channel_id="Telemag.ca"
   assert matcher.find_candidates(ch_telemag) == []
 
-  # Super Écran 4 prefers #412881 (HD + plausible native EPG) and marks #412880 has_native_epg=False
+  # Super Écran 4 prefers #412881 (HD + plausible native EPG) and marks #412880
+  # has_native_epg=False
   se4_cands = matcher.find_candidates(ch_se4)
   assert se4_cands[0].stream.stream_id == 412881
   assert se4_cands[0].has_native_epg is True
@@ -355,7 +358,8 @@ def test_incremental_rough_mapping_updates(tmp_path: Path) -> None:
   # Run 3:
   # - RDS gets a new FHD + native EPG stream (#11) -> upgraded!
   # - TSN2's old stream (#30) disappears, replaced by #31 -> replaced_missing!
-  # - Lineup drops 1201 and adds 1115 LCN -> removed_lineup_chnos=[1201], new_slots=1!
+  # - Lineup drops 1201 and adds 1115 LCN -> removed_lineup_chnos=[1201],
+  # new_slots=1!
   lineup_v2 = CableLineup(
     provider="Bell Fibe TV",
     market="Montréal, QC",
@@ -489,7 +493,8 @@ async def test_candidate_only_validation_and_native_epg_m3u8(
   )
 
   doc = reconcile_rough_mapping(None, lineup, catalog, cfg)
-  # Candidate pool contains ONLY the 2 matched streams (99% reduction from 202 raw streams!)
+  # Candidate pool contains ONLY the 2 matched streams (99% reduction from 202
+  # raw streams!)
   assert doc.unique_candidate_stream_ids() == {901, 902}
 
   probed_urls: list[str] = []
@@ -519,7 +524,8 @@ async def test_candidate_only_validation_and_native_epg_m3u8(
     assert doc.slots[1101].preferred_stream_id == 902
     assert doc.slots[1101].preferred_source == "validated"
 
-    # Re-reconcile on next day with no changes + run validate_mapping_candidates(only_changed=True):
+    # Re-reconcile on next day with no changes + run
+    # validate_mapping_candidates(only_changed=True):
     # should perform ZERO probes because 1101 is validated & unchanged!
     doc_day2 = reconcile_rough_mapping(doc, lineup, catalog, cfg)
     validator2 = StreamValidator(
@@ -538,7 +544,8 @@ async def test_candidate_only_validation_and_native_epg_m3u8(
     assert count2 == 0
     assert len(probed_urls) == 2
 
-  # Phase (5): M3U8 uses provider's native epg_channel_id ("ICITeleMontreal.ca") so xmltv.php binds!
+  # Phase (5): M3U8 uses provider's native epg_channel_id ("ICITeleMontreal.ca")
+  # so xmltv.php binds!
   mapped_list = mapping_document_to_mapped_channels(doc_day2, lineup)
   m3u8 = render_m3u8(lineup, mapped_list, cfg)
   assert (

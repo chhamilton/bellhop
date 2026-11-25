@@ -1,4 +1,6 @@
-"""Load cable provider lineup definitions from YAML or JSON snapshots, enriched with official logos."""
+"""Load cable provider lineup definitions from YAML or JSON snapshots, enriched
+with official logos.
+"""
 
 from __future__ import annotations
 
@@ -18,7 +20,9 @@ BELL_FIBE_MTL_TVGUIDE_ID = "TVG-9100000607"
 
 
 def is_bell_fibe_lineup(*, lineup_id: str = "", provider: str = "") -> bool:
-  """Return True when the lineup uses Bell Fibe dial numbering for logo lookup."""
+  """Return True when the lineup uses Bell Fibe dial numbering for logo
+  lookup.
+  """
   lid = lineup_id.strip().upper()
   prov = provider.strip().lower()
   return (
@@ -28,7 +32,9 @@ def is_bell_fibe_lineup(*, lineup_id: str = "", provider: str = "") -> bool:
 
 
 def _load_official_logo_index(base_dir: Path | None = None) -> dict[int, str]:
-  """Load verified official network logo URLs keyed by Bell Fibe channel number."""
+  """Load verified official network logo URLs keyed by Bell Fibe channel
+  number.
+  """
   candidates: list[Path] = []
   if base_dir is not None:
     candidates.append(base_dir / "official_logos.json")
@@ -63,7 +69,9 @@ class CableLineup:
 
   @property
   def total_dial_positions(self) -> int:
-    """Total channel numbers on the Bell Fibe dial (counting both SD and HD positions)."""
+    """Total channel numbers on the Bell Fibe dial (counting both SD and HD
+    positions).
+    """
     return sum(
       2 if (ch.sd_chno is not None and ch.sd_chno != ch.chno) else 1
       for ch in self.channels
@@ -127,7 +135,9 @@ class CableLineup:
 def load_lineup(
   yaml_path: Path, excluded_channels: set[int] | None = None
 ) -> CableLineup:
-  """Parse a YAML cable lineup definition into structured LineupChannel entries."""
+  """Parse a YAML cable lineup definition into structured LineupChannel
+  entries.
+  """
   with yaml_path.open("r", encoding="utf-8") as fh:
     data = yaml.safe_load(fh) or {}
   logos = _load_official_logo_index(yaml_path.parent)

@@ -1,4 +1,6 @@
-"""Streamlined CLI runner (`bellhop run`) driven declaratively by `config.yaml`."""
+"""Streamlined CLI runner (`bellhop run`) driven declaratively by
+`config.yaml`.
+"""
 
 from __future__ import annotations
 
@@ -590,7 +592,8 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
       )
     )
 
-  # Handle SIGTERM gracefully (e.g., `docker stop`) so active tuner slots close cleanly.
+  # Handle SIGTERM gracefully (e.g., `docker stop`) so active tuner slots close
+  # cleanly.
   loop = asyncio.get_running_loop()
   serve_task = asyncio.create_task(server.serve_forever())
 
@@ -747,7 +750,8 @@ def main(argv: list[str] | None = None) -> int:
   """Execute the `bellhop` CLI entry point and return an OS exit status code."""
   os.umask(0o077)
   raw_argv = list(sys.argv[1:] if argv is None else argv)
-  # Default to `run` subcommand when invoked as bare `bellhop` or `bellhop --skip validate`
+  # Default to `run` subcommand when invoked as bare `bellhop` or `bellhop
+  # --skip validate`
   if not raw_argv or raw_argv[0] not in {"run", "serve", "-h", "--help"}:
     raw_argv = ["run", *raw_argv]
 

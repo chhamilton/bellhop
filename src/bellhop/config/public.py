@@ -1,4 +1,6 @@
-"""Public Tier-2 operational config serializer and comment-preserving updater."""
+"""Public Tier-2 operational config serializer and comment-preserving
+updater.
+"""
 
 from __future__ import annotations
 
@@ -226,7 +228,8 @@ def apply_public_config_update(
   config_path: Path,
   updates: Mapping[str, Any],
 ) -> tuple[AppConfig, bool]:
-  """Validate and atomically merge operational settings into two-tier `config.yaml`.
+  """Validate and atomically merge operational settings into two-tier
+  `config.yaml`.
 
   Preserves YAML comments, quotes, and `${ENV}` placeholders via `ruamel.yaml`.
   Strictly scopes updates to `upstream_xtream` and `pipeline`.

@@ -86,7 +86,9 @@ def test_hysteresis_retains_incumbent_below_threshold_and_queues_upgrade_above()
 
 
 def test_reconcile_missing_invalid_pinned_and_unmatched_transitions() -> None:
-  """Verify missing/invalid incumbent promotion, pinned override, & unmatched."""
+  """Verify missing/invalid incumbent promotion, pinned override, &
+  unmatched.
+  """
   ch = _rds_channel()
   cand_a = CandidateRecord(
     stream_id=200,

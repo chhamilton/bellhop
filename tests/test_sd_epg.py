@@ -1,4 +1,6 @@
-"""Tests for Schedules Direct SD-JSON EPG priority, MD5 caching, and XMLTV backfill."""
+"""Tests for Schedules Direct SD-JSON EPG priority, MD5 caching, and XMLTV
+backfill.
+"""
 
 from __future__ import annotations
 
@@ -50,7 +52,9 @@ def _date_utc(ts: int) -> str:
 async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
   tmp_path: Path,
 ) -> None:
-  """Verify SD-JSON EPG takes priority, XMLTV backfills gaps, MD5 skips unchanged fetches, and `/xmltv.php` serves merged XMLTV."""
+  """Verify SD-JSON EPG takes priority, XMLTV backfills gaps, MD5 skips
+  unchanged fetches, and `/xmltv.php` serves merged XMLTV.
+  """
   now_ts = 1_795_530_000  # 2026-11-24T14:20:00Z
   today_str = _date_utc(now_ts)
 
@@ -466,33 +470,39 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
     assert epg_db_file.is_file()
 
     snap = store.get_snapshot()
-    # In-memory snapshot holds ZERO ProgramItem attributes — all airings live in SQLite!
+    # In-memory snapshot holds ZERO ProgramItem attributes — all airings live in
+    # SQLite!
     assert len(snap.channels) == 5
     assert not hasattr(snap, "programs_by_epg_id")
     assert not hasattr(snap, "programs_by_chno")
 
-    # 1. `50 AMI-télé` (missing from XMLTV) is populated from Schedules Direct with S02E04 subtitle!
+    # 1. `50 AMI-télé` (missing from XMLTV) is populated from Schedules Direct
+    #    with S02E04 subtitle!
     ami_progs = refresher.db.query_channel_schedule(50, "bell.50.ca")
     assert ami_progs[0].title == "Et si c'était toi?"
     assert ami_progs[0].sub_title == "S02E04 · Rencontres d'automne"
 
-    # 2. `1306 HBO` (present in both) prioritizes Schedules Direct over upstream XMLTV!
+    # 2. `1306 HBO` (present in both) prioritizes Schedules Direct over upstream
+    #    XMLTV!
     hbo_progs = refresher.db.query_channel_schedule(1306, "HBO.us")
     assert hbo_progs[0].title == "Dune: Part Two"
     assert hbo_progs[0].sub_title == "2024"
 
-    # 3. `220 NBC (Plattsburgh)` and `1285 NBC (Seattle)` get distinct per-station schedules despite sharing `NBC.us`!
+    # 3. `220 NBC (Plattsburgh)` and `1285 NBC (Seattle)` get distinct
+    #    per-station schedules despite sharing `NBC.us`!
     wptz_progs = refresher.db.query_channel_schedule(220, "NBC.us")
     king_progs = refresher.db.query_channel_schedule(1285, "NBC.us")
     assert wptz_progs[0].title == "NBC 5 News at Noon"
     assert king_progs[0].title == "Live: Seahawks Pre-Game"
     assert king_progs[0].sub_title == "49ers vs. Seahawks"
 
-    # 4. `2621 Intl Specialty` (absent from SD) is seamlessly backfilled from upstream XMLTV!
+    # 4. `2621 Intl Specialty` (absent from SD) is seamlessly backfilled from
+    #    upstream XMLTV!
     intl_progs = refresher.db.query_channel_schedule(2621, "IntlSpec.tv")
     assert intl_progs[0].title == "Global World Cinema"
 
-    # 5. Second refresh with unchanged MD5s + simulated expired token (`4003`) re-auths once
+    # 5. Second refresh with unchanged MD5s + simulated expired token (`4003`)
+    #    re-auths once
     #    and makes ZERO `/schedules` or `/programs` fetches!
     force_expired_once["armed"] = True
     status2 = await refresher.refresh_now(force=True, reason="md5_recheck")
@@ -504,8 +514,10 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
 
     await refresher.stop()
 
-    # 6. `UnifiedServeServer` hydrates SQLite on startup, serves distinct affiliate EPGs
-    #    on `/api/epg/<chno>`, serves base64 `get_short_epg` / `get_simple_data_table`,
+    # 6. `UnifiedServeServer` hydrates SQLite on startup, serves distinct
+    #    affiliate EPGs
+    # on `/api/epg/<chno>`, serves base64 `get_short_epg` /
+    # `get_simple_data_table`,
     #    and streams merged XMLTV chunks directly from SQLite on `/xmltv.php`!
     app_cfg = AppConfig(
       project_root=tmp_path,
@@ -628,7 +640,9 @@ async def test_epg_db_permissions_corrupt_recovery_schema_bump_and_cli_banner(
   tmp_path: Path,
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  """Verify `0o600` DB mode, corrupt/schema-bump recovery, and `bellhop serve` SQLite banner."""
+  """Verify `0o600` DB mode, corrupt/schema-bump recovery, and `bellhop serve`
+  SQLite banner.
+  """
   import argparse
   import contextlib
   import io
@@ -650,7 +664,8 @@ async def test_epg_db_permissions_corrupt_recovery_schema_bump_and_cli_banner(
   db_path = cache_dir / "epg.sqlite3"
   now_ts = int(datetime.now(tz=timezone.utc).timestamp())
 
-  # 1. Corrupt non-SQLite file on disk is safely replaced and restricted to 0o600
+  # 1. Corrupt non-SQLite file on disk is safely replaced and restricted to
+  #    0o600
   cache_dir.mkdir(parents=True)
   db_path.write_bytes(b"not-a-valid-sqlite-header-at-all")
   db = EpgDatabase(db_path)
@@ -658,7 +673,8 @@ async def test_epg_db_permissions_corrupt_recovery_schema_bump_and_cli_banner(
   assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
   assert stat.S_IMODE(cache_dir.stat().st_mode) == 0o700
 
-  # 2. Schema version mismatch dynamically drops arbitrary tables via sqlite_master
+  # 2. Schema version mismatch dynamically drops arbitrary tables via
+  #    sqlite_master
   with contextlib.closing(sqlite3.connect(db_path)) as raw_conn:
     raw_conn.execute("CREATE TABLE obsolete_future_table (x TEXT)")
     raw_conn.execute("PRAGMA user_version = 99")
@@ -680,7 +696,8 @@ async def test_epg_db_permissions_corrupt_recovery_schema_bump_and_cli_banner(
   assert ver == 1
   assert auto_vac == 2  # INCREMENTAL auto-vacuum
 
-  # 2b. `touch_and_prune_sd_programs` retains active & <14d programs and prunes >14d orphans
+  # 2b. `touch_and_prune_sd_programs` retains active & <14d programs and prunes
+  #     >14d orphans
   db_reopened.upsert_sd_programs(
     {
       "MV_ACTIVE": {"md5": "m1", "title": "Active Movie"},
@@ -787,7 +804,8 @@ xtream_server:
   assert "1 active / 1 cached" in banner_text
   assert "epg.sqlite3" in banner_text
 
-  # 4. Keyset-paginated `iter_xmltv_chunks` yields multi-page chunks without leaking synthetic IDs
+  # 4. Keyset-paginated `iter_xmltv_chunks` yields multi-page chunks without
+  #    leaking synthetic IDs
   snap_for_xml = LineupGuideStore(xt_dir).get_snapshot()
   chunks = list(
     db_reopened.iter_xmltv_chunks(

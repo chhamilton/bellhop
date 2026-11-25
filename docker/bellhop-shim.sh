@@ -7,8 +7,16 @@ umask 077
 
 REAL_BELLHOP="/usr/local/libexec/bellhop"
 
-if [ "$(id -u)" -eq 0 ] && [ "${PUID:-1000}" != "0" ]; then
-  exec su-exec "${PUID:-1000}:${PGID:-1000}" "${REAL_BELLHOP}" "$@"
+if [ "$(id -u)" -eq 0 ]; then
+  PUID="${PUID:-1000}"
+  PGID="${PGID:-1000}"
+  case "${PUID}:${PGID}" in
+    0:*|*:0|*[!0-9:]*)
+      echo "[bellhop] ERROR: PUID and PGID must be positive integers (>= 1)." >&2
+      exit 1
+      ;;
+  esac
+  exec su-exec "${PUID}:${PGID}" "${REAL_BELLHOP}" "$@"
 fi
 
 exec "${REAL_BELLHOP}" "$@"

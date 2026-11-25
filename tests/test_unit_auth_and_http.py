@@ -1,4 +1,6 @@
-"""Focused unit & HTTP hardening tests for auth cookies, rate limits, and XFF."""
+"""Focused unit & HTTP hardening tests for auth cookies, rate limits, and
+XFF.
+"""
 
 from __future__ import annotations
 
@@ -55,7 +57,9 @@ def _write_minimal_bundle(xt_dir: Path) -> None:
 
 
 def test_sanitize_next_url_and_login_html_escaping() -> None:
-  """Verify strict internal-only redirects and HTML single-quote escaping on `/login`."""
+  """Verify strict internal-only redirects and HTML single-quote escaping on
+  `/login`.
+  """
   assert sanitize_next_url(None) == "/"
   assert sanitize_next_url("/?cat=2&ch=1108") == "/?cat=2&ch=1108"
   assert sanitize_next_url("//evil.example/phish") == "/"
@@ -81,10 +85,13 @@ def test_sanitize_next_url_and_login_html_escaping() -> None:
 def test_web_auth_token_signing_persistence_and_rotation_with_fake_clock(
   tmp_path: Path, fake_clock: FakeClock
 ) -> None:
-  """Verify HMAC session tokens, 0600 secret persistence, Unicode passwords, and mandatory login."""
+  """Verify HMAC session tokens, 0600 secret persistence, Unicode passwords, and
+  mandatory login.
+  """
   import stat
 
-  # Unconfigured credentials MUST fail verification and MUST be rejected by WebGuideApp
+  # Unconfigured credentials MUST fail verification and MUST be rejected by
+  # WebGuideApp
   unconfigured = WebAuthManager(WebAuthConfig())
   assert unconfigured.enabled is True
   assert unconfigured.has_credentials is False
@@ -307,7 +314,9 @@ def test_resolve_client_ip_and_bind_host_helpers(tmp_path: Path) -> None:
 async def test_http_hardening_413_403_cors_and_reverse_proxy_throttling(
   tmp_path: Path, fake_clock: FakeClock
 ) -> None:
-  """Verify HTTP middleware limits (413/403/204/404) & XFF rate-limit isolation."""
+  """Verify HTTP middleware limits (413/403/204/404) & XFF rate-limit
+  isolation.
+  """
   xt_dir = tmp_path / "output" / "xtream"
   _write_minimal_bundle(xt_dir)
   auth = WebAuthManager(
@@ -319,7 +328,8 @@ async def test_http_hardening_413_403_cors_and_reverse_proxy_throttling(
     clock=fake_clock,
   )
 
-  # 1. Trusted proxy (`127.0.0.1` allowlisted) isolates rate limit per XFF client
+  # 1. Trusted proxy (`127.0.0.1` allowlisted) isolates rate limit per XFF
+  #    client
   #    and recovers deterministically when `fake_clock` advances past window!
   app_trusted = WebGuideApp(
     LineupGuideStore(xt_dir),
@@ -431,7 +441,9 @@ async def test_http_hardening_413_403_cors_and_reverse_proxy_throttling(
 async def test_csrf_cors_and_hls_ssrf_protection(
   tmp_path: Path, fake_clock: FakeClock
 ) -> None:
-  """Verify Web Guide omits wildcard CORS, blocks CSRF/GET mutations, and rejects forged HLS tokens."""
+  """Verify Web Guide omits wildcard CORS, blocks CSRF/GET mutations, and
+  rejects forged HLS tokens.
+  """
   import base64
 
   xt_dir = tmp_path / "output" / "xtream"
@@ -485,7 +497,8 @@ async def test_csrf_cors_and_hls_ssrf_protection(
         assert lu_r.status == 200
         assert "Access-Control-Allow-Origin" not in lu_r.headers
 
-      # State-changing GET routes are disabled (rejected with 404/405, zero state change)
+      # State-changing GET routes are disabled (rejected with 404/405, zero
+      # state change)
       for get_mut in (
         "/api/auth/logout",
         "/api/epg/refresh",
@@ -510,7 +523,8 @@ async def test_csrf_cors_and_hls_ssrf_protection(
       ) as plain_put:
         assert plain_put.status == 415
 
-      # Forged base64 URL in `/api/hls/<chno>/asset?u=` rejected with 403 (zero SSRF)
+      # Forged base64 URL in `/api/hls/<chno>/asset?u=` rejected with 403 (zero
+      # SSRF)
       forged = (
         base64.urlsafe_b64encode(b"http://127.0.0.1:22/secret")
         .decode("ascii")
@@ -518,6 +532,93 @@ async def test_csrf_cors_and_hls_ssrf_protection(
       )
       async with client.get(f"/api/hls/1101/asset?u={forged}") as ssrf_r:
         assert ssrf_r.status == 403
+  finally:
+    await runner.cleanup()
+    await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_session_revocation_on_logout_https_cookie_flag_and_url_redaction(
+  tmp_path: Path,
+) -> None:
+  """Verify logout revokes session replay, `X-Forwarded-Proto` sets `Secure`,
+  and URLs redact.
+  """
+  from bellhop.common.http_utils import redact_url_secrets
+  from tests.conftest import write_minimal_xtream_export
+
+  redacted = redact_url_secrets(
+    "Failed GET http://u:p1@panel.example/live/alice/sec_pw/101.ts?password=q_pw&token=t_tok"
+  )
+  assert "p1" not in redacted
+  assert "sec_pw" not in redacted
+  assert "q_pw" not in redacted
+  assert "t_tok" not in redacted
+  assert "http://u:***@panel.example/live/alice/***/101.ts" in redacted
+
+  xt_dir = write_minimal_xtream_export(tmp_path / "output" / "xtream")
+  auth = WebAuthManager(
+    WebAuthConfig(
+      username="admin",
+      password="secret",
+      secret_file=tmp_path / "session_secret.key",
+    )
+  )
+  app = WebGuideApp(
+    LineupGuideStore(xt_dir),
+    auth=auth,
+    trust_proxy_headers=True,
+    trusted_proxy_ips=("127.0.0.1", "::1"),
+  )
+  await app.startup()
+  runner, port = await start_site(app.build_app(), "127.0.0.1", 0)
+  base_url = f"http://127.0.0.1:{port}"
+  try:
+    # Plain HTTP login omits `Secure`; trusted `X-Forwarded-Proto: https` adds
+    # `Secure`
+    async with (
+      new_test_session(base_url) as client_http,
+      client_http.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "secret"},
+      ) as r_http,
+    ):
+      assert r_http.status == 200
+      set_cookie_http = r_http.headers.get("Set-Cookie", "")
+      assert "Secure" not in set_cookie_http
+
+    async with new_test_session(base_url) as client_https:
+      async with client_https.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "secret"},
+        headers={"X-Forwarded-Proto": "https"},
+      ) as r_https:
+        assert r_https.status == 200
+        set_cookie_https = r_https.headers.get("Set-Cookie", "")
+        assert "; Secure" in set_cookie_https
+        raw_token = set_cookie_https.split(";", 1)[0].split("=", 1)[1].strip()
+
+      # Logout clears cookie AND revokes token server-side
+      async with client_https.post(
+        "/api/auth/logout",
+        headers={
+          "X-Forwarded-Proto": "https",
+          "Cookie": f"bellhop_session={raw_token}",
+        },
+      ) as r_out:
+        assert r_out.status == 200
+        assert "; Secure" in r_out.headers.get("Set-Cookie", "")
+
+    # Replaying the captured pre-logout cookie in a fresh client is rejected
+    # with 401!
+    async with (
+      new_test_session(base_url) as replay_client,
+      replay_client.get(
+        "/api/lineup",
+        headers={"Cookie": f"bellhop_session={raw_token}"},
+      ) as r_replay,
+    ):
+      assert r_replay.status == 401
   finally:
     await runner.cleanup()
     await app.shutdown()

@@ -1,4 +1,6 @@
-"""Focused unit tests for `ChannelMatcher` scoring, EPG plausibility, & filters."""
+"""Focused unit tests for `ChannelMatcher` scoring, EPG plausibility, &
+filters.
+"""
 
 from __future__ import annotations
 
@@ -36,7 +38,9 @@ def test_native_epg_plausibility_rejects_typos_and_accepts_matches() -> None:
 
 
 def test_matcher_quality_tiers_backup_timeshift_and_nonlinear_filters() -> None:
-  """Verify 4K > FHD > HD > SD, backup/timeshift penalties, and 24/7 rejection."""
+  """Verify 4K > FHD > HD > SD, backup/timeshift penalties, and 24/7
+  rejection.
+  """
   streams = [
     XtreamStream(stream_id=1, name="CA | TSN 1 SD", category_name="Sports"),
     XtreamStream(stream_id=2, name="CA | TSN 1 HD", category_name="Sports"),
@@ -111,7 +115,9 @@ def test_matcher_foreign_region_penalties_and_spinoff_isolation() -> None:
 def test_weighted_edit_distance_compounds_symbols_decades_and_multipass_claiming() -> (
   None
 ):
-  """Verify IDF-weighted edit distance + multipass exclusive station-group claiming."""
+  """Verify IDF-weighted edit distance + multipass exclusive station-group
+  claiming.
+  """
   streams = [
     XtreamStream(
       stream_id=101,
@@ -251,7 +257,8 @@ def test_weighted_edit_distance_compounds_symbols_decades_and_multipass_claiming
       regions=["on", "ca"],
       aliases=["CTV Two Barrie", "CTV Two"],
     ),
-    # Multipass test 1: 153 Teletoon Francais locks #112 away from English 1554 Cartoon Network
+    # Multipass test 1: 153 Teletoon Francais locks #112 away from English 1554
+    # Cartoon Network
     LineupChannel(
       chno=153,
       name="Teletoon Francais",
@@ -268,7 +275,8 @@ def test_weighted_edit_distance_compounds_symbols_decades_and_multipass_claiming
       regions=["ca", "us"],
       aliases=["Cartoon Network", "Teletoon"],
     ),
-    # Multipass test 2: 1500 CNN locks domestic #114 away from 511 CNN International
+    # Multipass test 2: 1500 CNN locks domestic #114 away from 511 CNN
+    # International
     LineupChannel(
       chno=1500,
       name="CNN",
@@ -285,7 +293,8 @@ def test_weighted_edit_distance_compounds_symbols_decades_and_multipass_claiming
       regions=["ca", "us"],
       aliases=["CNN International"],
     ),
-    # Multipass test 3: Dual-dial twins sharing gracenote_station_id BOTH keep #115!
+    # Multipass test 3: Dual-dial twins sharing gracenote_station_id BOTH keep
+    # #115!
     LineupChannel(
       chno=1300,
       name="Crave1",
@@ -331,7 +340,9 @@ def test_weighted_edit_distance_compounds_symbols_decades_and_multipass_claiming
 def test_callsign_epg_stem_ota_virtual_channel_tail_and_rare_feed_suffixes() -> (
   None
 ):
-  """Verify callsign EPG stem (`ASN.ca`), OTA tail (`WPIX`->`PIX 11`), `YTVW`, `ATN`, & rare feed suffixes."""
+  """Verify callsign EPG stem (`ASN.ca`), OTA tail (`WPIX`->`PIX 11`), `YTVW`,
+  `ATN`, & rare feed suffixes.
+  """
   norm_slots = normalize_provider_slots(
     [
       RawProviderSlot(

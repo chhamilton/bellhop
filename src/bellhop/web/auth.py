@@ -1,8 +1,12 @@
-"""Signed expiring session-cookie authentication for the Bellhop Web Guide (`bellhop serve`).
+"""Signed expiring session-cookie authentication for the Bellhop Web Guide
+(`bellhop serve`).
 
-Uses Python standard-library primitives (`hmac`, `hashlib.sha256`, `secrets`, `http.cookies`)
-implementing the same HMAC-SHA256 timed token design as `itsdangerous.URLSafeTimedSerializer`,
-with zero extra runtime dependencies and persistent signing key support across restarts.
+Uses Python standard-library primitives (`hmac`, `hashlib.sha256`, `secrets`,
+`http.cookies`)
+implementing the same HMAC-SHA256 timed token design as
+`itsdangerous.URLSafeTimedSerializer`,
+with zero extra runtime dependencies and persistent signing key support across
+restarts.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ import hmac
 import json
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from pathlib import Path
@@ -77,7 +81,9 @@ class WebAuthConfig:
 
 @dataclass(slots=True)
 class SessionInfo:
-  """Verified browser session extracted from a signed `bellhop_session` cookie."""
+  """Verified browser session extracted from a signed `bellhop_session`
+  cookie.
+  """
 
   username: str
   issued_at: int
@@ -91,7 +97,9 @@ class SessionInfo:
 
 
 class WebAuthManager:
-  """Manages Web Guide login verification and HMAC-SHA256 signed session cookies."""
+  """Manages Web Guide login verification and HMAC-SHA256 signed session
+  cookies.
+  """
 
   def __init__(
     self,
@@ -102,6 +110,20 @@ class WebAuthManager:
     self.config = config
     self._clock = clock
     self._key: bytes | None = None
+    self._revoked_tokens: dict[str, int] = {}
+    self._max_revoked = 4096
+
+  @staticmethod
+  def _token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+  def _prune_revoked(self, now: int) -> None:
+    for digest, exp in list(self._revoked_tokens.items()):
+      if exp <= now:
+        self._revoked_tokens.pop(digest, None)
+    while len(self._revoked_tokens) >= self._max_revoked:
+      oldest = next(iter(self._revoked_tokens))
+      self._revoked_tokens.pop(oldest, None)
 
   @property
   def has_credentials(self) -> bool:
@@ -147,7 +169,9 @@ class WebAuthManager:
     return self._key
 
   def _credential_fingerprint(self) -> str:
-    """Short HMAC binding sessions to current credentials (password change invalidates old cookies)."""
+    """Short HMAC binding sessions to current credentials (password change
+    invalidates old cookies).
+    """
     key = self._get_signing_key()
     material = f"{self.config.username}\0{self.config.password}".encode()
     return hmac.new(key, material, hashlib.sha256).hexdigest()[:12]
@@ -169,6 +193,7 @@ class WebAuthManager:
       "iat": now,
       "exp": exp,
       "v": self._credential_fingerprint(),
+      "jti": secrets.token_hex(8),
     }
     payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     payload_b64 = _b64u_encode(payload_bytes)
@@ -213,12 +238,43 @@ class WebAuthManager:
     now = int(self._clock()) if now_ts is None else now_ts
     if exp <= now:
       return None
+    if self._revoked_tokens:
+      self._prune_revoked(now)
+      if self._token_digest(token) in self._revoked_tokens:
+        return None
     if not _safe_compare_str(user, self.config.username):
       return None
     if not _safe_compare_str(ver, self._credential_fingerprint()):
       return None
 
     return SessionInfo(username=user, issued_at=iat, expires_at=exp)
+
+  def revoke_token(self, token: str, *, now_ts: int | None = None) -> None:
+    """Revoke `token` server-side until its natural expiration timestamp."""
+    if not token:
+      return
+    now = int(self._clock()) if now_ts is None else now_ts
+    info = self.verify_session_token(token, now_ts=now)
+    if info is None:
+      return
+    self._prune_revoked(now)
+    self._revoked_tokens[self._token_digest(token)] = info.expires_at
+
+  def revoke_session_from_headers(
+    self, headers: Mapping[str, str], *, now_ts: int | None = None
+  ) -> None:
+    """Extract and revoke any `bellhop_session` cookie present in `headers`."""
+    raw_cookie = headers.get("cookie") or headers.get("Cookie") or ""
+    if not raw_cookie:
+      return
+    cookie = SimpleCookie()
+    try:
+      cookie.load(raw_cookie)
+    except Exception:
+      return
+    morsel = cookie.get(SESSION_COOKIE_NAME)
+    if morsel is not None and morsel.value:
+      self.revoke_token(morsel.value, now_ts=now_ts)
 
   def extract_session_from_headers(
     self,
@@ -239,7 +295,9 @@ class WebAuthManager:
       return None
     return self.verify_session_token(morsel.value, now_ts=now_ts)
 
-  def build_set_cookie_header(self, token: str) -> str:
+  def build_set_cookie_header(
+    self, token: str, *, secure: bool | None = None
+  ) -> str:
     parts = [
       f"{SESSION_COOKIE_NAME}={token}",
       "Path=/",
@@ -247,11 +305,11 @@ class WebAuthManager:
       "HttpOnly",
       "SameSite=Lax",
     ]
-    if self.config.secure_cookie:
+    if self.config.secure_cookie or bool(secure):
       parts.append("Secure")
     return "; ".join(parts)
 
-  def build_clear_cookie_header(self) -> str:
+  def build_clear_cookie_header(self, *, secure: bool | None = None) -> str:
     parts = [
       f"{SESSION_COOKIE_NAME}=",
       "Path=/",
@@ -260,7 +318,7 @@ class WebAuthManager:
       "HttpOnly",
       "SameSite=Lax",
     ]
-    if self.config.secure_cookie:
+    if self.config.secure_cookie or bool(secure):
       parts.append("Secure")
     return "; ".join(parts)
 
@@ -274,7 +332,9 @@ class WebAuthManager:
 def render_login_page_html(
   *, next_url: str = "/", error_message: str = ""
 ) -> bytes:
-  """Render a clean, standalone dark-themed login page matching the Web Guide UI."""
+  """Render a clean, standalone dark-themed login page matching the Web Guide
+  UI.
+  """
   safe_next = sanitize_next_url(next_url)
   esc_next = (
     safe_next.replace("&", "&amp;")

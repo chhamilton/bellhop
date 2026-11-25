@@ -1,4 +1,5 @@
-"""Relational SQLite 3 (WAL mode) backing store for EPG schedules and SD-JSON MD5 caches.
+"""Relational SQLite 3 (WAL mode) backing store for EPG schedules and SD-JSON
+MD5 caches.
 
 Manages the embedded SQLite database (`cache/epg.sqlite3`):
 - Safe concurrent access (`PRAGMA journal_mode=WAL`, `busy_timeout=5000`) across
@@ -32,6 +33,13 @@ from bellhop.common.file_utils import (
   chmod_private_file,
   ensure_private_dir,
 )
+from bellhop.epg.constants import EPG_RECENT_FLOOR_SEC
+from bellhop.epg.constants import (
+  SD_PROGRAM_RETENTION_DAYS as SD_PROGRAM_RETENTION_DAYS,
+)
+from bellhop.epg.constants import (
+  SD_PROGRAM_RETENTION_SEC as SD_PROGRAM_RETENTION_SEC,
+)
 from bellhop.epg.models import (
   GuideSnapshotProto,
   ProgramItem,
@@ -42,8 +50,6 @@ logger = logging.getLogger("bellhop.epg.db")
 
 EPG_DB_SCHEMA_VERSION = 1
 DEFAULT_EPG_DB_FILE = Path("cache/epg.sqlite3")
-SD_PROGRAM_RETENTION_DAYS = 14
-SD_PROGRAM_RETENTION_SEC = SD_PROGRAM_RETENTION_DAYS * 86400.0
 _SQL_CHUNK = 450
 _XMLTV_PAGE_ROWS = 2000
 _INCREMENTAL_VACUUM_PAGES = 256
@@ -202,7 +208,9 @@ class EpgDatabase:
   def cached_coverage_stats(
     self, *, now_ts: int | None = None
   ) -> EpgCoverageSummary:
-    """Return the latest in-memory `EpgCoverageSummary` without touching SQLite."""
+    """Return the latest in-memory `EpgCoverageSummary` without touching
+    SQLite.
+    """
     with self._summary_lock:
       summary = self._cached_summary
     if summary is None:
@@ -210,7 +218,7 @@ class EpgDatabase:
     if (
       now_ts is not None
       and summary.max_stop_timestamp > 0
-      and (now_ts - 3600) >= summary.max_stop_timestamp
+      and (now_ts - EPG_RECENT_FLOOR_SEC) >= summary.max_stop_timestamp
     ):
       return EpgCoverageSummary(
         total_programs=summary.total_programs,
@@ -224,7 +232,7 @@ class EpgDatabase:
   def _query_coverage_on_conn(
     conn: sqlite3.Connection, *, now_ts: int
   ) -> EpgCoverageSummary:
-    recent_floor = now_ts - 3600
+    recent_floor = now_ts - EPG_RECENT_FLOOR_SEC
     row = conn.execute(
       """
       SELECT
@@ -287,7 +295,9 @@ class EpgDatabase:
         cand.unlink(missing_ok=True)
 
   def ensure_initialized(self) -> None:
-    """Create or migrate SQLite tables under a thread-safe initialization lock."""
+    """Create or migrate SQLite tables under a thread-safe initialization
+    lock.
+    """
     if self._initialized and self.db_path.is_file():
       return
     with self._init_lock:
@@ -367,7 +377,9 @@ class EpgDatabase:
       }
 
   def has_sd_cache(self) -> bool:
-    """Return `True` if `sd_programs` or `sd_schedule_days` holds cached SD data."""
+    """Return `True` if `sd_programs` or `sd_schedule_days` holds cached SD
+    data.
+    """
     if not self.db_path.is_file():
       return False
     self.ensure_initialized()
@@ -378,7 +390,9 @@ class EpgDatabase:
       return bool(row and row[0])
 
   def prune_stale_airings(self, *, stale_cutoff_ts: int) -> tuple[int, int]:
-    """Delete `guide_airings` ending before `stale_cutoff_ts`; return `(evicted, remaining)`."""
+    """Delete `guide_airings` ending before `stale_cutoff_ts`; return `(evicted,
+    remaining)`.
+    """
     if not self.db_path.is_file():
       self._set_cached_summary(EpgCoverageSummary())
       return 0, 0
@@ -392,7 +406,7 @@ class EpgDatabase:
         )
         evicted = max(0, cur.rowcount)
         summary = self._query_coverage_on_conn(
-          conn, now_ts=stale_cutoff_ts + 3600
+          conn, now_ts=stale_cutoff_ts + EPG_RECENT_FLOOR_SEC
         )
         remaining = summary.total_programs
         if remaining == 0:
@@ -418,7 +432,9 @@ class EpgDatabase:
     guide_fingerprint: str = "",
     xmltv_url_redacted: str = "",
   ) -> int:
-    """Atomically replace all `guide_airings` and metadata inside one transaction."""
+    """Atomically replace all `guide_airings` and metadata inside one
+    transaction.
+    """
     self.ensure_initialized()
     rows: list[tuple[int, str, int, int, str, str, str, str, str, str]] = []
     emitted_epg_ids: set[str] = set()
@@ -519,7 +535,9 @@ class EpgDatabase:
   # Fast Indexed Read Queries (Web Guide, Health, XMLTV, & Xtream API)
   # ---------------------------------------------------------------------------
   def coverage_stats(self, *, now_ts: int | None = None) -> EpgCoverageSummary:
-    """Compute `(total_programs, active_programs, max_stop_ts, channels_with_epg)` in SQL."""
+    """Compute `(total_programs, active_programs, max_stop_ts,
+    channels_with_epg)` in SQL.
+    """
     if not self.db_path.is_file():
       empty = EpgCoverageSummary()
       self._set_cached_summary(empty)
@@ -539,7 +557,9 @@ class EpgDatabase:
     min_stop_ts: int = 0,
     limit: int = 120,
   ) -> list[ProgramItem]:
-    """Query ordered schedule items for one channel (`chno` primary, `epg_channel_id` fallback)."""
+    """Query ordered schedule items for one channel (`chno` primary,
+    `epg_channel_id` fallback).
+    """
     if not self.db_path.is_file():
       return []
     self.ensure_initialized()
@@ -588,7 +608,9 @@ class EpgDatabase:
     max_start_ts: int,
     per_channel_limit: int = 24,
   ) -> tuple[dict[int, list[ProgramItem]], dict[str, list[ProgramItem]]]:
-    """Query bounded timeline window across all channels in a single indexed scan."""
+    """Query bounded timeline window across all channels in a single indexed
+    scan.
+    """
     if not self.db_path.is_file():
       return {}, {}
     self.ensure_initialized()
@@ -637,7 +659,9 @@ class EpgDatabase:
     now_ts: int | None = None,
     limit: int = 4,
   ) -> list[dict[str, Any]]:
-    """Return Xtream `player_api.php` `epg_listings` (`get_short_epg` / `get_simple_data_table`)."""
+    """Return Xtream `player_api.php` `epg_listings` (`get_short_epg` /
+    `get_simple_data_table`).
+    """
     now = int(time.time()) if now_ts is None else now_ts
     items = self.query_channel_schedule(
       chno,
@@ -678,7 +702,9 @@ class EpgDatabase:
     chunk_target_bytes: int = 65536,
     page_rows: int = _XMLTV_PAGE_ROWS,
   ) -> Iterator[bytes]:
-    """Stream UTF-8 XMLTV chunks via short-lived keyset-paginated SQLite reads."""
+    """Stream UTF-8 XMLTV chunks via short-lived keyset-paginated SQLite
+    reads.
+    """
     self.ensure_initialized()
     buf: list[str] = [
       '<?xml version="1.0" encoding="UTF-8"?>\n',
@@ -784,7 +810,9 @@ class EpgDatabase:
   # Schedules Direct Relational Cache Operations
   # ---------------------------------------------------------------------------
   def load_sd_lineups(self) -> dict[str, SdLineupRecord]:
-    """Load cached Schedules Direct lineups, stations, and dial maps from SQLite."""
+    """Load cached Schedules Direct lineups, stations, and dial maps from
+    SQLite.
+    """
     if not self.db_path.is_file():
       return {}
     self.ensure_initialized()
@@ -822,7 +850,9 @@ class EpgDatabase:
     return out
 
   def save_sd_lineup(self, entry: SdLineupRecord) -> None:
-    """Persist one Schedules Direct lineup's metadata, stations, and channel map."""
+    """Persist one Schedules Direct lineup's metadata, stations, and channel
+    map.
+    """
     self.ensure_initialized()
     with self._connect() as conn:
       conn.execute("BEGIN IMMEDIATE")
@@ -875,7 +905,9 @@ class EpgDatabase:
   def touch_sd_lineup_fetched_at(
     self, lineup_id: str, fetched_at: float
   ) -> None:
-    """Update `fetched_at` after verifying `modified` is unchanged on SD `/status`."""
+    """Update `fetched_at` after verifying `modified` is unchanged on SD
+    `/status`.
+    """
     self.ensure_initialized()
     with self._connect() as conn:
       conn.execute(
@@ -886,7 +918,9 @@ class EpgDatabase:
   def get_sd_schedule_md5s(
     self, station_ids: Sequence[str], dates: Sequence[str]
   ) -> dict[tuple[str, str], str]:
-    """Return `(station_id, schedule_date) -> md5` for cached SD schedule days."""
+    """Return `(station_id, schedule_date) -> md5` for cached SD schedule
+    days.
+    """
     if not station_ids or not dates or not self.db_path.is_file():
       return {}
     self.ensure_initialized()
@@ -911,7 +945,9 @@ class EpgDatabase:
     *,
     min_keep_date: str,
   ) -> None:
-    """Upsert `(station_id, schedule_date, md5, airings)` rows and prune old dates."""
+    """Upsert `(station_id, schedule_date, md5, airings)` rows and prune old
+    dates.
+    """
     self.ensure_initialized()
     with self._connect() as conn:
       conn.execute("BEGIN IMMEDIATE")
@@ -1030,7 +1066,9 @@ class EpgDatabase:
     now_ts: float,
     retention_sec: float = SD_PROGRAM_RETENTION_SEC,
   ) -> int:
-    """Refresh `updated_at` for active `program_id`s and prune unreferenced rows older than `retention_sec`."""
+    """Refresh `updated_at` for active `program_id`s and prune unreferenced rows
+    older than `retention_sec`.
+    """
     if not self.db_path.is_file():
       return 0
     self.ensure_initialized()

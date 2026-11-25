@@ -1,4 +1,6 @@
-"""Abstract interface and shared types for pluggable cable/OTA lineup backends."""
+"""Abstract interface and shared types for pluggable cable/OTA lineup
+backends.
+"""
 
 from __future__ import annotations
 
@@ -13,12 +15,16 @@ if TYPE_CHECKING:
 
 
 class LineupBackendError(RuntimeError):
-  """Raised when a lineup backend fails authentication, discovery, or retrieval."""
+  """Raised when a lineup backend fails authentication, discovery, or
+  retrieval.
+  """
 
 
 @dataclass(frozen=True, slots=True)
 class ProviderHeadend:
-  """A discoverable TV service provider / headend lineup returned by a backend."""
+  """A discoverable TV service provider / headend lineup returned by a
+  backend.
+  """
 
   backend: str
   lineup_id: str
@@ -39,13 +45,17 @@ class ProviderHeadend:
 
 
 class LineupProvider(ABC):
-  """Interface implemented by all cable/satellite/OTA lineup retrieval backends."""
+  """Interface implemented by all cable/satellite/OTA lineup retrieval
+  backends.
+  """
 
   backend_name: str = "abstract"
 
   @abstractmethod
   def supports(self, lineup_id: str, *, backend_hint: str = "auto") -> bool:
-    """Return True if this backend can resolve `lineup_id` under `backend_hint`."""
+    """Return True if this backend can resolve `lineup_id` under
+    `backend_hint`.
+    """
 
   @abstractmethod
   async def discover_lineups(
@@ -55,7 +65,9 @@ class LineupProvider(ABC):
     postal_code: str = "",
     query: str = "",
   ) -> list[ProviderHeadend]:
-    """Search available provider headends/lineups for a country, ZIP/postal code, or name query."""
+    """Search available provider headends/lineups for a country, ZIP/postal
+    code, or name query.
+    """
 
   @abstractmethod
   async def retrieve_lineup(

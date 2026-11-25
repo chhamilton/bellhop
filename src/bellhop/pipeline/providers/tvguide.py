@@ -1,4 +1,6 @@
-"""TV Guide (`backend.tvguide.com`) lineup provider supporting US & Canadian headends."""
+"""TV Guide (`backend.tvguide.com`) lineup provider supporting US & Canadian
+headends.
+"""
 
 from __future__ import annotations
 
@@ -68,7 +70,9 @@ def parse_tvguide_provider_id(lineup_id: str) -> str | None:
 
 
 def _parse_channel_number(raw_num: Any, fallback_seq: int) -> int:
-  """Convert TVGuide channel number ('101', '1108', '2.1', '4-1', or None) into an int dial slot."""
+  """Convert TVGuide channel number ('101', '1108', '2.1', '4-1', or None) into
+  an int dial slot.
+  """
   if raw_num is None:
     return fallback_seq
   s = str(raw_num).strip()
@@ -76,7 +80,8 @@ def _parse_channel_number(raw_num: Any, fallback_seq: int) -> int:
     return fallback_seq
   if s.isdigit():
     return int(s)
-  # OTA subchannel like "2.1" or "17-1" -> encode major*10 + minor or major if .1
+  # OTA subchannel like "2.1" or "17-1" -> encode major*10 + minor or major if
+  # .1
   m_sub = re.match(r"^(\d+)[.-](\d+)$", s)
   if m_sub:
     major, minor = int(m_sub.group(1)), int(m_sub.group(2))
@@ -86,7 +91,9 @@ def _parse_channel_number(raw_num: Any, fallback_seq: int) -> int:
 
 
 class TvGuideLineupProvider(LineupProvider):
-  """Free multi-provider US & Canadian lineup backend powered by `backend.tvguide.com`."""
+  """Free multi-provider US & Canadian lineup backend powered by
+  `backend.tvguide.com`.
+  """
 
   backend_name = "tvguide"
 
@@ -203,7 +210,8 @@ class TvGuideLineupProvider(LineupProvider):
       if city_hint and city_hint in city.lower():
         city_matched_results.append(headend)
 
-    # If user gave an H2Y/M5V postal code without an explicit city query, prioritize that metro!
+    # If user gave an H2Y/M5V postal code without an explicit city query,
+    # prioritize that metro!
     final_list = (
       city_matched_results if (city_matched_results and not q_low) else results
     )

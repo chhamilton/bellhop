@@ -1,4 +1,5 @@
-"""Phase (2): Daily IPTV Playlist JSON Fetcher with snapshot state and stream diffing.
+"""Phase (2): Daily IPTV Playlist JSON Fetcher with snapshot state and stream
+diffing.
 
 Catalog Snapshot Schema (`state/catalogs/iptv_catalog_<sha256_16>.json`)
 ------------------------------------------------------------------------
@@ -6,7 +7,8 @@ Catalog Snapshot Schema (`state/catalogs/iptv_catalog_<sha256_16>.json`)
 {
   "saved_timestamp": 1763510400.0,
   "fetched_at": "2026-11-19T00:00:00+00:00",
-  "account": { "username": "...", "status": "Active", "max_connections": 1, ... },
+  "account": { "username": "...", "status": "Active", "max_connections": 1, ...
+  },
   "categories": { "1": "CA: Francophone", ... },
   "stream_count": 16622,
   "streams_with_native_epg": 1156,
@@ -52,7 +54,9 @@ from bellhop.xtream.client import (
 
 @dataclass(slots=True)
 class CatalogDiff:
-  """Changes detected between yesterday's IPTV catalog and today's fetched catalog."""
+  """Changes detected between yesterday's IPTV catalog and today's fetched
+  catalog.
+  """
 
   added_stream_ids: list[int] = field(default_factory=list)
   removed_stream_ids: list[int] = field(default_factory=list)
@@ -186,7 +190,9 @@ async def fetch_daily_iptv_catalog(
   input_json: Path | None = None,
   client: aiohttp.ClientSession | None = None,
 ) -> CatalogFetchResult:
-  """Fetch IPTV live channels on a daily cadence (default 24h), tracking catalog diffs."""
+  """Fetch IPTV live channels on a daily cadence (default 24h), tracking catalog
+  diffs.
+  """
   xt = config.xtream
   state_dir = config.resolve_path(config.state.state_dir)
   snap_path = _catalog_snapshot_path(state_dir, xt.server_url, xt.username)
@@ -247,7 +253,8 @@ async def fetch_daily_iptv_catalog(
       snapshot_path=snap_path,
     )
 
-  # Fetch from Xtream client (which will also reuse fresh cache/xtream_catalog_*.json if within 24h!)
+  # Fetch from Xtream client (which will also reuse fresh
+  # cache/xtream_catalog_*.json if within 24h!)
   try:
     fresh = await fetch_xtream_catalog(
       config,

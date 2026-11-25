@@ -20,7 +20,9 @@ class _ProgramItemRequiredDict(TypedDict):
 
 
 class ProgramItemDict(_ProgramItemRequiredDict, total=False):
-  """Serialized program schedule entry in `/api/lineup` and `/api/epg/<chno>`."""
+  """Serialized program schedule entry in `/api/lineup` and
+  `/api/epg/<chno>`.
+  """
 
   id: str
   channel_id: str
@@ -62,7 +64,9 @@ class PublicChannelDict(TypedDict):
 
 
 class EpgStatusDict(TypedDict):
-  """Serialized EPG refresh & coverage telemetry in `/api/lineup` & `/api/health`."""
+  """Serialized EPG refresh & coverage telemetry in `/api/lineup` &
+  `/api/health`.
+  """
 
   enabled: bool
   configured: bool
@@ -347,7 +351,9 @@ def _type_to_json_schema(tp: Any) -> dict[str, Any]:
 
 
 def build_api_json_schemas() -> dict[str, Any]:
-  """Build a Draft 2020-12 JSON Schema bundle (`$defs`) for all API contracts."""
+  """Build a Draft 2020-12 JSON Schema bundle (`$defs`) for all API
+  contracts.
+  """
   defs: dict[str, Any] = {}
   for td_cls, ts_name in API_CONTRACT_TYPES:
     hints = get_type_hints(td_cls)

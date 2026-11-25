@@ -4,7 +4,8 @@ Implements multi-day schedule & program retrieval from Schedules Direct:
 1. Delegates `/token` SHA-1 authentication, `0o600` token persistence, and
    `4001/4003/4004/4007/4009` retry transport to `SchedulesDirectSession`.
 2. Resolves channel slots to Gracenote `stationID`s via native IDs or the
-   account's subscribed Schedules Direct lineups (`GET /status`, `GET /lineups/{id}`,
+   account's subscribed Schedules Direct lineups (`GET /status`, `GET
+   /lineups/{id}`,
    and optional `GET /headends` + `PUT /lineups/{id}` auto-subscription) cached
    in `sd_lineups`, `sd_stations`, and `sd_channel_map`.
 3. Checks `POST /schedules/md5` against `sd_schedule_days` and fetches
@@ -29,6 +30,10 @@ import aiohttp
 from bellhop.common.http_utils import (
   ClientSessionFactory,
   default_session_factory,
+)
+from bellhop.epg.constants import (
+  EPG_STALE_ENTRY_GRACE_SEC,
+  SD_LINEUP_MAP_TTL_SEC,
 )
 from bellhop.epg.db import (
   DEFAULT_EPG_DB_FILE,
@@ -64,7 +69,7 @@ __all__ = [
 
 logger = logging.getLogger("bellhop.epg.sd")
 
-LINEUP_MAP_TTL_SEC = 24 * 3600
+LINEUP_MAP_TTL_SEC = SD_LINEUP_MAP_TTL_SEC
 MAX_SCHEDULE_BATCH = 500
 MAX_PROGRAM_BATCH = 500
 
@@ -125,7 +130,9 @@ class SchedulesDirectEpgConfig:
 
   @property
   def enabled(self) -> bool:
-    """Return `True` when both Schedules Direct username and password are set."""
+    """Return `True` when both Schedules Direct username and password are
+    set.
+    """
     return bool(self.username.strip() and self.password.strip())
 
 
@@ -140,7 +147,9 @@ class SdFetchSummary:
 
 
 class SchedulesDirectEpgClient:
-  """SQLite-backed SD-JSON (`20141201`) EPG fetcher with MD5 differential sync."""
+  """SQLite-backed SD-JSON (`20141201`) EPG fetcher with MD5 differential
+  sync.
+  """
 
   def __init__(
     self,
@@ -574,13 +583,15 @@ class SchedulesDirectEpgClient:
     now_ts: int | None = None,
     max_per_channel: int = 120,
   ) -> SdFetchSummary:
-    """Fetch Schedules Direct listings for `snap` using SQLite MD5 differential caching."""
+    """Fetch Schedules Direct listings for `snap` using SQLite MD5 differential
+    caching.
+    """
     if not self.enabled or not snap.channels:
       return SdFetchSummary(programs_by_chno={})
 
     await asyncio.to_thread(self.db.ensure_initialized)
     ref_now = int(self._clock()) if now_ts is None else now_ts
-    recent_cutoff = ref_now - 7200
+    recent_cutoff = ref_now - EPG_STALE_ENTRY_GRACE_SEC
     base_date = datetime.fromtimestamp(recent_cutoff, tz=timezone.utc).date()
     num_days = max(1, min(14, self.config.days))
     dates = [
@@ -640,7 +651,8 @@ class SchedulesDirectEpgClient:
           if needed_dts:
             stale_requests.append({"stationID": sid, "date": needed_dts})
 
-      # 2. Fetch changed station-day schedules (`POST /schedules`) & commit to SQLite
+      # 2. Fetch changed station-day schedules (`POST /schedules`) & commit to
+      #    SQLite
       fetched_sched_days = 0
       new_sched_rows: list[tuple[str, str, str, list[dict[str, Any]]]] = []
       for start_idx in range(0, len(stale_requests), MAX_SCHEDULE_BATCH):
@@ -691,7 +703,8 @@ class SchedulesDirectEpgClient:
         min_keep_date=min_keep,
       )
 
-      # 3. Load active airings from SQLite and diff `programID` MD5s against `sd_programs`
+      # 3. Load active airings from SQLite and diff `programID` MD5s against
+      #    `sd_programs`
       airings_by_sid = await asyncio.to_thread(
         self.db.load_sd_airings, unique_sids, dates
       )
@@ -742,7 +755,8 @@ class SchedulesDirectEpgClient:
             updated_at=float(self._clock()),
           )
 
-      # 4. Touch active `programID`s, prune >14d unreferenced rows, & load active metadata
+      # 4. Touch active `programID`s, prune >14d unreferenced rows, & load
+      #    active metadata
       await asyncio.to_thread(
         self.db.touch_and_prune_sd_programs,
         list(wanted_pids),

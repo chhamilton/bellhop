@@ -1,4 +1,5 @@
-"""Shared typed reader and hot-reload cache for Phase (6) `output/xtream/` export bundles.
+"""Shared typed reader and hot-reload cache for Phase (6) `output/xtream/`
+export bundles.
 
 Consumed by `bellhop.web.store.LineupGuideStore` (Web TV Guide UI),
 `bellhop.xtream.server.XtreamExportStore` (Passthrough Xtream Codes API server),
@@ -31,7 +32,9 @@ def as_str_dict(val: object) -> dict[str, Any]:
 
 @dataclass(slots=True)
 class ExportCategoryRecord:
-  """Normalized category parsed from an Xtream export bundle or M3U8 fallback."""
+  """Normalized category parsed from an Xtream export bundle or M3U8
+  fallback.
+  """
 
   category_id: str
   category_name: str
@@ -152,7 +155,9 @@ def parse_m3u8_fallback(
 
 
 class ExportBundleReader:
-  """Mtime-aware reader & shared cache for `output/xtream/` JSON bundles with M3U8 fallback."""
+  """Mtime-aware reader & shared cache for `output/xtream/` JSON bundles with
+  M3U8 fallback.
+  """
 
   def __init__(
     self,
@@ -175,7 +180,9 @@ class ExportBundleReader:
     force_reload: bool = False,
     fallback_xmltv_url: str = "",
   ) -> tuple[tuple[float, ...], ExportBundleData]:
-    """Return `(signature, bundle_data)`, reloading from disk only when mtimes change."""
+    """Return `(signature, bundle_data)`, reloading from disk only when mtimes
+    change.
+    """
     sig = self.compute_signature()
     eff_fallback = fallback_xmltv_url.strip() or self.fallback_xmltv_url
     if (
@@ -204,7 +211,9 @@ class ExportBundleReader:
     return files
 
   def compute_signature(self) -> tuple[float, ...]:
-    """Compute `(mtime_ns, size)` signature tuple across all watched export files."""
+    """Compute `(mtime_ns, size)` signature tuple across all watched export
+    files.
+    """
     sig: list[float] = []
     for path in self.watched_files():
       try:

@@ -13,6 +13,7 @@ import aiohttp
 
 from bellhop.common.http_utils import UPSTREAM_ERRORS, upstream_url
 from bellhop.config import AppConfig
+from bellhop.epg.constants import EPG_STALE_ENTRY_GRACE_SEC
 from bellhop.epg.models import (
   ProgramItem,
   open_xml_stream,
@@ -38,7 +39,9 @@ class EpgVerificationDict(TypedDict):
 
 @dataclass(slots=True)
 class EpgVerificationResult:
-  """Result of a lightweight passthrough probe against the upstream XMLTV endpoint."""
+  """Result of a lightweight passthrough probe against the upstream XMLTV
+  endpoint.
+  """
 
   url: str = ""
   url_redacted: str = ""
@@ -96,7 +99,9 @@ async def verify_epg_endpoint(
   timeout_sec: float = 15.0,
   client: aiohttp.ClientSession | None = None,
 ) -> EpgVerificationResult:
-  """Verify the upstream XMLTV endpoint is reachable and returns XMLTV without downloading it."""
+  """Verify the upstream XMLTV endpoint is reachable and returns XMLTV without
+  downloading it.
+  """
   if config.epg.xmltv_file is not None:
     resolved = config.resolve_path(config.epg.xmltv_file)
     if not resolved.is_file():
@@ -199,12 +204,14 @@ def parse_xmltv_for_channels(
   max_per_channel: int = 120,
   now_timestamp: int | None = None,
 ) -> dict[str, list[ProgramItem]]:
-  """Stream-parse an XMLTV file using priority fallback per channel and non-overlapping reconciliation."""
+  """Stream-parse an XMLTV file using priority fallback per channel and
+  non-overlapping reconciliation.
+  """
   if not xml_path.is_file() or (not channel_id_map and not candidate_chains):
     return {}
 
   ref_now = int(time.time()) if now_timestamp is None else now_timestamp
-  recent_cutoff = ref_now - 7200
+  recent_cutoff = ref_now - EPG_STALE_ENTRY_GRACE_SEC
 
   effective_chains: dict[str, tuple[str, ...]] = {}
   if candidate_chains is not None:

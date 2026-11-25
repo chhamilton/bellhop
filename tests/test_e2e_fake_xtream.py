@@ -1,4 +1,6 @@
-"""End-to-end integration tests driving `PipelineRunner` + `WebGuideApp` against `FakeXtreamServer`."""
+"""End-to-end integration tests driving `PipelineRunner` + `WebGuideApp` against
+`FakeXtreamServer`.
+"""
 
 from __future__ import annotations
 
@@ -91,7 +93,8 @@ async def test_e2e_pipeline_to_web_guide_passthrough_epg_and_single_tuner(
       {"category_id": "99", "category_name": "CA| FR RAW", "parent_id": 0}
     ],
     streams=[
-      # Higher-ranked 4K stream redirects to /video/black.ts offline placeholder -> validator must reject!
+      # Higher-ranked 4K stream redirects to /video/black.ts offline placeholder
+      # -> validator must reject!
       FakeStreamDef(
         stream_id=410100,
         name="CA FR: ICI MONTREAL 4K",
@@ -99,7 +102,8 @@ async def test_e2e_pipeline_to_web_guide_passthrough_epg_and_single_tuner(
         epg_channel_id="ICITeleMontreal.ca",
         offline_placeholder=True,
       ),
-      # Working fallback FHD stream -> validator must rescue Ch 1101 with this stream!
+      # Working fallback FHD stream -> validator must rescue Ch 1101 with this
+      # stream!
       FakeStreamDef(
         stream_id=410101,
         name="CA FR: ICI MONTREAL FHD",
@@ -205,7 +209,8 @@ pipeline:
       encoding="utf-8"
     )
 
-    # Validator rejected /video/black.ts (#410100) and rescued Ch 1101 with #410101
+    # Validator rejected /video/black.ts (#410100) and rescued Ch 1101 with
+    # #410101
     exported_streams = json.loads(
       (xt_dir / "get_live_streams.json").read_text(encoding="utf-8")
     )
@@ -213,7 +218,8 @@ pipeline:
     assert stream_by_chno[1101]["stream_id"] == 410101
     assert stream_by_chno[1108]["stream_id"] == 410108
 
-    # 2. Boot real Bellhop Web Guide server against the exported files & FakeXtreamServer
+    # 2. Boot real Bellhop Web Guide server against the exported files &
+    #    FakeXtreamServer
     store = LineupGuideStore(xt_dir)
     epg_cache = tmp_path / "cache" / "epg.sqlite3"
     refresher = EpgRefreshService(
@@ -267,7 +273,8 @@ pipeline:
         assert ch_1101["now_playing"]["title"] == "Le Téléjournal"
         assert "Montréal en direct" in ch_1101["now_playing"]["description"]
 
-        # Stream Ch 1101 live, then switch to Ch 1108 without releasing first (tuner preemption!)
+        # Stream Ch 1101 live, then switch to Ch 1108 without releasing first
+        # (tuner preemption!)
         async with client.get("/api/stream/1101.ts?client=viewer-1") as s1:
           assert s1.status == 200
           data1 = await _read_first_ts_chunk(s1)
@@ -331,7 +338,8 @@ async def test_e2e_reload_channel_deep_link_race_placeholder_failover_and_hls(
         "epg_channel_id": "ch1101.ca",
         "category_id": "1",
         "category_name": "General",
-        # Primary redirects to /video/black.ts -> WebGuideApp must fail over to #101!
+        # Primary redirects to /video/black.ts -> WebGuideApp must fail over to
+        # #101!
         "direct_source": fake.stream_url(100),
         "guide": {
           "language": "fr",
@@ -392,9 +400,11 @@ async def test_e2e_reload_channel_deep_link_race_placeholder_failover_and_hls(
           json={"username": "e2e_admin", "password": "e2e_web_pw"},
         ) as login_r:
           assert login_r.status == 200
-        # 1. Reload race: tab-old is streaming Ch 1101 (failing over past /video/black.ts to #101),
+        # 1. Reload race: tab-old is streaming Ch 1101 (failing over past
+        #    /video/black.ts to #101),
         #    then reloaded tab-new opens /api/stream/1101.ts?client=tab-new,
-        #    then tab-old's delayed pagehide beacon hits /api/tuner/release?client=tab-old!
+        # then tab-old's delayed pagehide beacon hits
+        # /api/tuner/release?client=tab-old!
         async with client.get("/api/stream/1101.ts?client=tab-old") as old_st:
           assert old_st.status == 200
           old_chunk = await _read_first_ts_chunk(old_st)
@@ -408,7 +418,8 @@ async def test_e2e_reload_channel_deep_link_race_placeholder_failover_and_hls(
             new_chunk_1 = await asyncio.wait_for(anext(new_iter), timeout=5.0)
             assert new_chunk_1[0] == 0x47 and new_chunk_1[4] == 0x55
 
-            # Delayed pagehide beacon from tab-old arrives AFTER tab-new acquired the tuner
+            # Delayed pagehide beacon from tab-old arrives AFTER tab-new
+            # acquired the tuner
             async with client.post(
               "/api/tuner/release?client=tab-old"
             ) as stale_rel:
@@ -430,7 +441,8 @@ async def test_e2e_reload_channel_deep_link_race_placeholder_failover_and_hls(
         assert fake.peak_concurrent_streams == 1
         assert fake.connection_limit_violations == 0
 
-        # 2. HLS mode: 302 edge redirect + manifest rewrite + 60s edge session affinity
+        # 2. HLS mode: 302 edge redirect + manifest rewrite + 60s edge session
+        #    affinity
         async with client.get("/api/hls/1108/index.m3u8?client=hls-tab") as h1:
           assert h1.status == 200
           hls1_text = await h1.text()
@@ -444,7 +456,8 @@ async def test_e2e_reload_channel_deep_link_race_placeholder_failover_and_hls(
           seg_bytes = await seg_resp.read()
         assert seg_bytes[0] == 0x47 and seg_bytes[4] == 0x77
 
-        # Second manifest refresh reuses cached /edge/tok1/108.m3u8 without minting tok2
+        # Second manifest refresh reuses cached /edge/tok1/108.m3u8 without
+        # minting tok2
         async with client.get("/api/hls/1108/index.m3u8?client=hls-tab") as h2:
           assert h2.status == 200
         assert fake.hls_manifest_requests == [

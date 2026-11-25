@@ -22,7 +22,9 @@ from bellhop.pipeline.providers.base import (
 
 
 class YamlLineupProvider(LineupProvider):
-  """Loads cable lineups from a local curated YAML definition (e.g. Bell Fibe Montréal)."""
+  """Loads cable lineups from a local curated YAML definition (e.g. Bell Fibe
+  Montréal).
+  """
 
   backend_name = "yaml"
 

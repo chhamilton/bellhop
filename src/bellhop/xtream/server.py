@@ -1,15 +1,30 @@
-"""Passthrough Xtream Codes API server (`bellhop serve`, aiohttp) backed by pipeline outputs.
+"""Passthrough Xtream Codes & SQLite EPG server (`bellhop serve`, aiohttp).
 
 Xtream Codes HTTP Contract & Wire Layouts
 -----------------------------------------
 - `GET/POST /player_api.php` (and `/player.php`):
-  - No `action`: returns `{"user_info": {...}, "server_info": {...}}` (`{"user_info": {"auth": 0}}` on invalid credentials).
+  - No `action`: returns `{"user_info": {...}, "server_info": {...}}`
+    (`{"user_info": {"auth": 0}}` on invalid credentials, rate-limited per IP).
   - `action=get_live_categories`: returns `list[PassthroughCategoryDict]`.
-  - `action=get_live_streams` (+ optional `category_id`): returns `list[PlayerApiStreamDict]` (`direct_source` is always `""` so upstream credentials never leak).
-  - VOD / Series / Short-EPG actions return valid empty Xtream structures (`[]` or `{...}`).
-- `GET/POST /panel_api.php`: returns unified `user_info`, `server_info`, `categories.live`, and `available_channels` keyed by channel number.
-- `GET/HEAD /get.php`, `/playlist.m3u`, `/playlist.m3u8`: dynamically renders `m3u` or `m3u_plus` playlists (`output=ts` or `hls`/`m3u8`, optional `category_id` filter) pointing at this server's `/live/<user>/<pass>/<id>.<ext>` and `/xmltv.php` endpoints.
-- `GET/HEAD /xmltv.php`, `/epg.xml`, `/live/<user>/<pass>/<id>[.<ext>]`, `/<user>/<pass>/<id>[.<ext>]`: authenticates `serve` credentials and issues an HTTP `302` redirect to the upstream IPTV server.
+  - `action=get_live_streams` (+ optional `category_id`): returns
+    `list[PlayerApiStreamDict]` (`direct_source` is always `""` so upstream
+    credentials never leak).
+  - `action=get_short_epg` / `get_simple_data_table`: serves lineup-filtered,
+    base64-encoded UTF-8 listings locally from `cache/epg.sqlite3` (`limit`
+    clamped to `1..200`).
+  - VOD / Series actions return valid empty Xtream structures (`[]` or `{...}`).
+- `GET/POST /panel_api.php`: returns unified `user_info`, `server_info`,
+  `categories.live`, and `available_channels` keyed by channel number.
+- `GET/HEAD /get.php`, `/playlist.m3u`, `/playlist.m3u8`: dynamically renders
+  `m3u` or `m3u_plus` playlists (`output=ts` or `hls`/`m3u8`, optional
+  `category_id` filter) pointing at this server's `/live/<user>/<pass>/<id>`
+  and `/xmltv.php` endpoints.
+- `GET/HEAD /xmltv.php`, `/epg.xml`: streams lineup-filtered XMLTV directly
+  from `cache/epg.sqlite3` via keyset pagination (`302` redirecting to the
+  upstream XMLTV URL only as a fallback when SQLite has 0 listings).
+- `GET/HEAD /live/<user>/<pass>/<id>[.<ext>]`, `/<user>/<pass>/<id>[.<ext>]`:
+  authenticates `xtream_server` credentials and issues an HTTP `302` redirect
+  to the upstream IPTV stream URL.
 """
 
 from __future__ import annotations
@@ -97,7 +112,9 @@ def _as_dict(val: object) -> dict[str, Any]:
 
 
 def _rewrite_stream_extension(upstream_url: str, requested_ext: str) -> str:
-  """Adapt `.ts` / `.m3u8` extension on an upstream stream URL when requested by a client."""
+  """Adapt `.ts` / `.m3u8` extension on an upstream stream URL when requested by
+  a client.
+  """
   ext = requested_ext.strip().lstrip(".").lower()
   if not ext or ext not in {"ts", "m3u8"}:
     return upstream_url
@@ -154,7 +171,9 @@ class PassthroughStream:
   gracenote_station_id: str = ""
 
   def to_player_api_dict(self) -> PlayerApiStreamDict:
-    """Serialize public Xtream `player_api.php` stream item (never exposing `upstream_url`)."""
+    """Serialize public Xtream `player_api.php` stream item (never exposing
+    `upstream_url`).
+    """
     return {
       "num": self.num,
       "name": self.name,
@@ -175,7 +194,9 @@ class PassthroughStream:
 
 @dataclass(slots=True)
 class XtreamExportSnapshot:
-  """Hot-reloadable snapshot of Phase (6) exported lineup categories, streams, and passthrough URLs."""
+  """Hot-reloadable snapshot of Phase (6) exported lineup categories, streams,
+  and passthrough URLs.
+  """
 
   lineup_id: str = "CAN-BELLFIBE-MTL-X"
   provider: str = "Bell Fibe TV"
@@ -196,7 +217,9 @@ class XtreamExportSnapshot:
 
 
 class XtreamExportStore:
-  """Reads Phase (6) `output/xtream/` artifacts with automatic mtime-based hot reload."""
+  """Reads Phase (6) `output/xtream/` artifacts with automatic mtime-based hot
+  reload.
+  """
 
   def __init__(
     self,

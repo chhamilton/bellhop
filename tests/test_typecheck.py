@@ -29,7 +29,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def _resolve_venv_tool(name: str) -> str | None:
   """Resolve an executable in the active Python environment or PATH."""
-  # Do NOT `.resolve()` sys.executable: venv python is a symlink to system python.
+  # Do NOT `.resolve()` sys.executable: venv python is a symlink to system
+  # python.
   candidate = Path(sys.executable).parent / name
   if candidate.is_file():
     return str(candidate)
@@ -178,7 +179,9 @@ def test_frontend_unit_tests_pass() -> None:
 
 
 def test_repository_and_private_permissions_hygiene(tmp_path: Path) -> None:
-  """Ensure repo trees are never group/world-writable and private files stay 0600/0700."""
+  """Ensure repo trees are never group/world-writable and private files stay
+  0600/0700.
+  """
   executable_scripts = {
     Path(".agents/scripts/bootstrap.sh"),
     Path("docker/entrypoint.sh"),
@@ -231,8 +234,10 @@ def test_repository_and_private_permissions_hygiene(tmp_path: Path) -> None:
     f"Unexpected executable permission bits in repository: {exec_violations}"
   )
 
-  # Even under a permissive `umask(0)`, `ensure_private_dir`, `write_private_text`,
-  # and `EpgDatabase` must enforce strict `0o700` / `0o600` on all created paths.
+  # Even under a permissive `umask(0)`, `ensure_private_dir`,
+  # `write_private_text`,
+  # and `EpgDatabase` must enforce strict `0o700` / `0o600` on all created
+  # paths.
   prev_umask = os.umask(0)
   try:
     nested_dir = tmp_path / "perm_check" / "cache" / "nested"

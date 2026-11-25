@@ -1,4 +1,6 @@
-"""Shared pytest configuration, deterministic clock fixture, and opt-in hooks."""
+"""Shared pytest configuration, deterministic clock fixture, and opt-in
+hooks.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +16,8 @@ from typing import Any
 import pytest
 
 # Normalize permissive container/CI umasks (e.g. `0000`) so pytest, mypy, ruff,
-# and bytecode generation never leave group- or world-writable directories/files.
+# and bytecode generation never leave group- or world-writable
+# directories/files.
 os.umask(0o022)
 
 
@@ -31,7 +34,9 @@ async def await_until(
   interval_sec: float = 0.03,
   description: str = "condition",
 ) -> None:
-  """Poll `predicate` until truthy or fail deterministically with `AssertionError`."""
+  """Poll `predicate` until truthy or fail deterministically with
+  `AssertionError`.
+  """
   deadline = time.monotonic() + timeout_sec
   while True:
     res = predicate()
@@ -116,7 +121,9 @@ def write_minimal_xtream_export(
 
 @dataclass(slots=True)
 class FakeClock:
-  """Deterministic controllable clock replacing `time.time` / `time.monotonic`."""
+  """Deterministic controllable clock replacing `time.time` /
+  `time.monotonic`.
+  """
 
   now: float = 1_763_510_400.0
 
@@ -137,7 +144,9 @@ def fake_clock() -> FakeClock:
 
 @pytest.fixture(autouse=True)
 def _hermetic_default_iptv_org(monkeypatch: pytest.MonkeyPatch) -> None:
-  """Prevent hermetic tests from hitting live `iptv-org.github.io` unless mocked."""
+  """Prevent hermetic tests from hitting live `iptv-org.github.io` unless
+  mocked.
+  """
   from bellhop.pipeline.iptv_org import (
     DEFAULT_IPTV_ORG_API_URL,
     IptvOrgClient,
@@ -184,12 +193,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
-  """Relax global `--cov-fail-under` only for targeted file/`-k` or narrow marker runs."""
+  """Relax global `--cov-fail-under` only for targeted file/`-k` or narrow
+  marker runs.
+  """
   keyword = str(config.getoption("keyword", default="") or "").strip()
   markexpr = str(config.getoption("markexpr", default="") or "").strip()
   file_or_dir = list(config.getoption("file_or_dir", default=[]) or [])
   normalized_targets = [str(x).rstrip("/") for x in file_or_dir]
-  # Keep the 85% coverage gate enforced on full runs AND `-m "not docker"` CI runs.
+  # Keep the 85% coverage gate enforced on full runs AND `-m "not docker"` CI
+  # runs.
   narrow_marker = bool(markexpr) and markexpr not in {
     "not docker",
     "not real_outputs",

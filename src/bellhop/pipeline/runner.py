@@ -1,4 +1,6 @@
-"""Reusable 6-phase pipeline runner engine for CLI execution and persistent scheduling."""
+"""Reusable 6-phase pipeline runner engine for CLI execution and persistent
+scheduling.
+"""
 
 from __future__ import annotations
 
@@ -90,7 +92,9 @@ class PipelineConfigError(ValueError):
 def parse_phase_tokens(
   raw_values: list[str] | tuple[str, ...] | None,
 ) -> list[str]:
-  """Expand comma-separated phase names/aliases into canonical ordered phase names."""
+  """Expand comma-separated phase names/aliases into canonical ordered phase
+  names.
+  """
   if not raw_values:
     return []
 
@@ -140,7 +144,9 @@ def resolve_active_phases(
   include_phases: list[str] | None = None,
   skip_phases: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
-  """Return `(active_phases, skipped_phases)` in canonical pipeline execution order."""
+  """Return `(active_phases, skipped_phases)` in canonical pipeline execution
+  order.
+  """
   skipped_req = set(parse_phase_tokens(skip_phases))
 
   if include_phases:
@@ -304,7 +310,8 @@ class PipelineRunner:
       )
       catalog_res = cat_res
 
-    # Phase (3): Stateful Rough Channel Matcher (or load existing mapping for downstream phases)
+    # Phase (3): Stateful Rough Channel Matcher (or load existing mapping for
+    # downstream phases)
     if "match" in active_phases:
       assert lineup is not None and catalog_res is not None
       existing_doc = (
@@ -334,7 +341,8 @@ class PipelineRunner:
         False if opts.reprobe_all else self.config.validation.only_changed
       )
 
-      # Count eligible slots first (used both for dry-run preview & progress totals)
+      # Count eligible slots first (used both for dry-run preview & progress
+      # totals)
       for sl in doc.slots.values():
         if not sl.candidates:
           continue
@@ -350,7 +358,8 @@ class PipelineRunner:
         account = catalog_res.catalog.account if catalog_res else None
         xt = self.config.xtream
         # If Phase (2) served a cached snapshot, verify `player_api.php` account
-        # status first so an expired/inactive account implicitly skips `validate`
+        # status first so an expired/inactive account implicitly skips
+        # `validate`
         # instead of poisoning mapping state.
         if (
           self._custom_validator is None
@@ -414,7 +423,8 @@ class PipelineRunner:
         mapping_summary=doc.last_summary.to_dict(),
       )
 
-    # Phase (6): Official Xtream API JSON Playlist Export (with Passthrough & SD EPG sync)
+    # Phase (6): Official Xtream API JSON Playlist Export (with Passthrough & SD
+    # EPG sync)
     if "xtream" in active_phases and not opts.dry_run:
       assert lineup is not None
       account = catalog_res.catalog.account if catalog_res is not None else None

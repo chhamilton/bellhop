@@ -1,4 +1,6 @@
-"""Tests for Stage 2/3 black-screen detection, audio-language track checking, and stateful feedback."""
+"""Tests for Stage 2/3 black-screen detection, audio-language track checking,
+and stateful feedback.
+"""
 
 from __future__ import annotations
 
@@ -44,7 +46,9 @@ def _make_mpegts_payload(packets: int = 55) -> bytes:
 
 
 def _write_fake_ffprobe_and_ffmpeg(bin_dir: Path) -> tuple[str, str]:
-  """Create executable Python stand-ins for `ffprobe` and `ffmpeg` driven by URL stream ID."""
+  """Create executable Python stand-ins for `ffprobe` and `ffmpeg` driven by URL
+  stream ID.
+  """
   bin_dir.mkdir(parents=True, exist_ok=True)
   py = sys.executable
 
@@ -174,7 +178,8 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
         language="fr",
         aliases=["Canal Famille"],
       ),
-      # 1140: Top candidate #5001 has English audio (Yes TV!) -> must demote #5001 for 1140 and pick #5002 (fra)!
+      # 1140: Top candidate #5001 has English audio (Yes TV!) -> must demote
+      # #5001 for 1140 and pick #5002 (fra)!
       LineupChannel(
         chno=1140,
         name="Télétoon",
@@ -182,7 +187,8 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
         language="fr",
         aliases=["Teletoon", "Telemagino"],
       ),
-      # 1651: English channel sharing #5001 -> must ACCEPT #5001 (en == en) from cache!
+      # 1651: English channel sharing #5001 -> must ACCEPT #5001 (en == en) from
+      # cache!
       LineupChannel(
         chno=1651,
         name="Yes TV",
@@ -190,7 +196,8 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
         language="en",
         aliases=["Yes TV", "Telemagino"],
       ),
-      # 1120: Untagged audio ("und") on #6001 -> treated as neutral and accepted!
+      # 1120: Untagged audio ("und") on #6001 -> treated as neutral and
+      # accepted!
       LineupChannel(
         chno=1120,
         name="Addik",
@@ -198,7 +205,8 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
         language="fr",
         aliases=["Addik"],
       ),
-      # 146: #7001 has muxer-stamped 'eng' audio while #7002 is dead (HTTP 502) ->
+      # 146: #7001 has muxer-stamped 'eng' audio while #7002 is dead (HTTP 502)
+      # ->
       # must probe #7002 first, then select #7001 as last-resort fallback!
       LineupChannel(
         chno=146,
@@ -266,7 +274,8 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
     ),
   )
 
-  # Phase (3) initial rough mapping: #4001 and #5001 win initially by FHD + EPG score
+  # Phase (3) initial rough mapping: #4001 and #5001 win initially by FHD + EPG
+  # score
   doc1 = reconcile_rough_mapping(None, lineup, catalog, cfg)
   assert doc1.slots[1143].preferred_stream_id == 4001
   assert doc1.slots[1140].preferred_stream_id == 5001
@@ -300,7 +309,8 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
   assert cand_4001.probe.ok is False
   assert "Black screen" in (cand_4001.probe.error or "")
 
-  # 2. French Slot 1140 demoted English-audio #5001 behind verified French #5002!
+  # 2. French Slot 1140 demoted English-audio #5001 behind verified French
+  #    #5002!
   slot_1140 = doc1.slots[1140]
   assert slot_1140.preferred_stream_id == 5002
   assert slot_1140.candidates[0].stream_id == 5002
@@ -311,7 +321,8 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
   assert cand_5001_fr.probe.audio_language_mismatch is True
   assert "Audio track language mismatch" in (cand_5001_fr.probe.error or "")
 
-  # 3. English Slot 1651 ACCEPTED the exact same stream #5001 (en == en, no mismatch)!
+  # 3. English Slot 1651 ACCEPTED the exact same stream #5001 (en == en, no
+  #    mismatch)!
   slot_1651 = doc1.slots[1651]
   assert slot_1651.preferred_stream_id == 5001
   cand_5001_en = next(c for c in slot_1651.candidates if c.stream_id == 5001)
@@ -326,7 +337,8 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
   assert doc1.slots[1120].candidates[0].probe is not None
   assert doc1.slots[1120].candidates[0].probe.audio_languages == []
 
-  # 5. Slot 146 probed #7002 (HTTP 502) and fell back to working #7001 as last resort!
+  # 5. Slot 146 probed #7002 (HTTP 502) and fell back to working #7001 as last
+  #    resort!
   slot_146 = doc1.slots[146]
   assert slot_146.preferred_stream_id == 7001
   assert "audio language mismatch" in slot_146.change_detail
@@ -337,8 +349,10 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
   assert cand_7001.probe is not None
   assert cand_7001.probe.audio_language_mismatch is True
 
-  # 6. Reload `channel_mapping.json` and run Phase (3) `reconcile_rough_mapping` again
-  #    (including a new unvalidated #7003 candidate for 146 to verify it queues ahead of
+  # 6. Reload `channel_mapping.json` and run Phase (3) `reconcile_rough_mapping`
+  #    again
+  # (including a new unvalidated #7003 candidate for 146 to verify it queues
+  # ahead of
   #    the demoted #7001 fallback without dropping #7001 until validated!):
   save_mapping_document(doc1, mapping_path)
   reloaded: MappingDocument = load_mapping_document(
@@ -362,7 +376,8 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
   assert doc2.slots[1140].preferred_stream_id == 5002
   assert doc2.slots[1651].preferred_stream_id == 5001
 
-  # Slot 146 keeps working #7001 active while queuing unvalidated #7003 at index 0!
+  # Slot 146 keeps working #7001 active while queuing unvalidated #7003 at index
+  # 0!
   assert doc2.slots[146].preferred_stream_id == 7001
   assert doc2.slots[146].change_status == "upgraded_pending_validation"
   assert doc2.slots[146].candidates[0].stream_id == 7003
@@ -391,7 +406,8 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
     r.startswith("audio_lang_mismatch:") for r in c5001_fr_day2.reasons
   )
 
-  # Unclaimed #7001 on 146 also retains its demoted language-mismatch state behind #7003
+  # Unclaimed #7001 on 146 also retains its demoted language-mismatch state
+  # behind #7003
   c7001_fr_day2 = next(
     c for c in doc2.slots[146].candidates if c.stream_id == 7001
   )

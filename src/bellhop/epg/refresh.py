@@ -1,4 +1,5 @@
-"""Dynamic Schedules Direct & XMLTV EPG refresher backed by WAL-mode SQLite (`epg.sqlite3`).
+"""Dynamic Schedules Direct & XMLTV EPG refresher backed by WAL-mode SQLite
+(`epg.sqlite3`).
 
 Fetches multi-day Schedules Direct (`20141201`) and passthrough XMLTV guide data
 in the background, reconciles non-overlapping per-slot schedules, and commits
@@ -12,7 +13,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import re
 import sqlite3
 import tempfile
 import time
@@ -27,7 +27,13 @@ from bellhop.common.file_utils import ensure_private_dir
 from bellhop.common.http_utils import (
   ClientSessionFactory,
   default_session_factory,
+  redact_url_secrets,
   upstream_url,
+)
+from bellhop.epg.constants import (
+  EPG_MIN_FUTURE_COVERAGE_SEC,
+  EPG_STALE_ENTRY_GRACE_SEC,
+  MAX_XMLTV_DOWNLOAD_BYTES,
 )
 from bellhop.epg.db import DEFAULT_EPG_DB_FILE, EpgDatabase
 from bellhop.epg.models import (
@@ -56,14 +62,13 @@ __all__ = [
 
 logger = logging.getLogger("bellhop.epg")
 
-STALE_ENTRY_GRACE_SEC = 7200  # keep shows ending within the last 2 hours
-_PASSWORD_QS_RE = re.compile(r"(password=)([^&\s'\"\\]+)", re.IGNORECASE)
+STALE_ENTRY_GRACE_SEC = EPG_STALE_ENTRY_GRACE_SEC
 
 
 def _format_safe_error(exc: Exception) -> str:
   raw = str(exc).strip()
   msg = f"{type(exc).__name__}: {raw}" if raw else type(exc).__name__
-  return _PASSWORD_QS_RE.sub(r"\1***", msg)
+  return redact_url_secrets(msg)
 
 
 @dataclass(slots=True)
@@ -123,14 +128,17 @@ class EpgRefreshConfig:
   xmltv_file: Path | None = None
   cache_file: Path = DEFAULT_EPG_DB_FILE
   check_interval_sec: float = 900.0
-  min_future_coverage_sec: float = 7200.0
+  min_future_coverage_sec: float = EPG_MIN_FUTURE_COVERAGE_SEC
   min_retry_sec: float = 300.0
   max_per_channel: int = 120
+  max_xmltv_bytes: int = MAX_XMLTV_DOWNLOAD_BYTES
   sd_epg: SchedulesDirectEpgConfig | None = None
 
 
 class EpgRefreshService:
-  """Dynamically fetches Schedules Direct & XMLTV EPG into SQLite (`epg.sqlite3`)."""
+  """Dynamically fetches Schedules Direct & XMLTV EPG into SQLite
+  (`epg.sqlite3`).
+  """
 
   def __init__(
     self,
@@ -234,7 +242,9 @@ class EpgRefreshService:
       self._last_updated = fetched_at
 
   def sync_external_if_needed(self, now_ts: int) -> None:
-    """Worker-thread helper: refresh cached coverage and detect external DB writes."""
+    """Worker-thread helper: refresh cached coverage and detect external DB
+    writes.
+    """
     if not self.db.db_path.is_file():
       return
     cur_mtime = self._current_db_mtime_ns()
@@ -248,7 +258,9 @@ class EpgRefreshService:
           self._state = "ok"
 
   def _sync_disk_state(self, now_ts: int) -> None:
-    """Periodic worker-thread check: recompute active coverage and sync external writes."""
+    """Periodic worker-thread check: recompute active coverage and sync external
+    writes.
+    """
     if not self.db.db_path.is_file():
       return
     cur_mtime = self._current_db_mtime_ns()
@@ -414,7 +426,9 @@ class EpgRefreshService:
   def trigger_background_if_needed(
     self, *, reason_prefix: str = "on_demand"
   ) -> bool:
-    """Non-blocking check: kick off a background refresh if EPG is stale or empty."""
+    """Non-blocking check: kick off a background refresh if EPG is stale or
+    empty.
+    """
     if not self.config.enabled or not self.is_configured:
       return False
     if self._in_flight is not None and not self._in_flight.done():
@@ -486,7 +500,9 @@ class EpgRefreshService:
   async def refresh_now(
     self, *, force: bool = True, reason: str = "manual"
   ) -> EpgStatusDict:
-    """Run or join an EPG refresh immediately and return the updated status payload."""
+    """Run or join an EPG refresh immediately and return the updated status
+    payload.
+    """
     if not self.is_configured:
       self._state = "error"
       self._last_error = (
@@ -604,11 +620,26 @@ class EpgRefreshService:
       )
       owns_client = self._client is None
       client = self._client if self._client is not None else self._new_session()
+      max_bytes = max(1024, self.config.max_xmltv_bytes)
       try:
         with open(fd, "wb") as out_fh:
           async with client.get(upstream_url(effective_url)) as resp:
             resp.raise_for_status()
+            if (
+              resp.content_length is not None
+              and resp.content_length > max_bytes
+            ):
+              raise ValueError(
+                f"Upstream XMLTV Content-Length ({resp.content_length} bytes) "
+                f"exceeds safety limit ({max_bytes} bytes)."
+              )
+            downloaded = 0
             async for chunk in resp.content.iter_chunked(65536):
+              downloaded += len(chunk)
+              if downloaded > max_bytes:
+                raise ValueError(
+                  f"Upstream XMLTV response exceeded {max_bytes} bytes."
+                )
               out_fh.write(chunk)
       finally:
         if owns_client:
@@ -636,11 +667,11 @@ class EpgRefreshService:
     guide_fp: str,
     effective_url: str,
   ) -> float:
-    """Merge SD primary + XMLTV backfill schedules and commit atomically to SQLite."""
+    """Merge SD primary + XMLTV backfill schedules and commit atomically to
+    SQLite.
+    """
     now_epoch = self._clock()
-    redacted_url = (
-      _PASSWORD_QS_RE.sub(r"\1***", effective_url) if effective_url else ""
-    )
+    redacted_url = redact_url_secrets(effective_url) if effective_url else ""
     if sd_by_chno:
       merged_by_chno: dict[int, list[ProgramItem]] = {}
       merged_by_id: dict[str, list[ProgramItem]] = dict(xmltv_programs)

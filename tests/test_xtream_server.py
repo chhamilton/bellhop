@@ -156,7 +156,8 @@ pipeline:
     assert run_res.xtream_result is not None
     assert run_res.xtream_result.epg_verified is True
 
-    # 2. Launch unified `bellhop serve` (Web Guide + Xtream API on the same port!)
+    # 2. Launch unified `bellhop serve` (Web Guide + Xtream API on the same
+    #    port!)
     unified_srv = UnifiedServeServer.from_config(cfg)
     assert unified_srv.shared_listener is True
     await unified_srv.start()
@@ -207,7 +208,8 @@ pipeline:
         ch_ici = next(c for c in lu["channels"] if c["chno"] == 1101)
         assert ch_ici["now_playing"]["title"] == "Le Téléjournal"
 
-        # Xtream `get_short_epg` serves SQLite listings (base64 UTF-8 title/description)
+        # Xtream `get_short_epg` serves SQLite listings (base64 UTF-8
+        # title/description)
         short_epg = (
           await client.get(
             "/player_api.php",
@@ -227,7 +229,8 @@ pipeline:
           == "Le Téléjournal"
         )
 
-        # Critical routing check: `/api/stream/1101.ts` MUST hit WebGuideApp (200 TS stream),
+        # Critical routing check: `/api/stream/1101.ts` MUST hit WebGuideApp
+        # (200 TS stream),
         # NOT Xtream's `/<user>/<pass>/<id>.ts` (401/302)!
         web_ts = await client.get("/api/stream/1101.ts?client=web-tab")
         assert web_ts.status_code == 200
@@ -278,7 +281,8 @@ pipeline:
           assert body["server_info"]["url"] == "127.0.0.1"
           assert body["server_info"]["port"] == str(unified_srv.bound_port)
 
-        # Categories reflect lineup retrieval groups (NOT upstream "RAW| UNSORTED")
+        # Categories reflect lineup retrieval groups (NOT upstream "RAW|
+        # UNSORTED")
         cats = (
           await client.get(
             "/player_api.php",
@@ -371,7 +375,8 @@ pipeline:
         assert "1101" in panel_json["available_channels"]
         assert "upstream_secret_pw" not in panel.text
 
-        # Auth-checked non-live routes return 401 on bad creds and 404 on valid creds
+        # Auth-checked non-live routes return 401 on bad creds and 404 on valid
+        # creds
         assert (
           await client.get("/movie/client_alice/wrong/123.mp4")
         ).status_code == 401
@@ -379,7 +384,8 @@ pipeline:
           await client.get("/movie/client_alice/client_secret_42/123.mp4")
         ).status_code == 404
 
-        # XMLTV endpoint (+ /epg.xml alias) -> served locally (200) from SQLite with zero upstream secret leak!
+        # XMLTV endpoint (+ /epg.xml alias) -> served locally (200) from SQLite
+        # with zero upstream secret leak!
         for epg_path in ("/xmltv.php", "/epg.xml"):
           xmltv_local = await client.get(
             epg_path,
@@ -394,7 +400,8 @@ pipeline:
         )
         assert head_xmltv.status_code == 200
 
-        # When SQLite EPG database is empty, /xmltv.php gracefully falls back to 302 upstream redirect!
+        # When SQLite EPG database is empty, /xmltv.php gracefully falls back to
+        # 302 upstream redirect!
         assert unified_srv.web_app.epg_refresher is not None
         unified_srv.web_app.epg_refresher.db.delete_database()
         xmltv_redir = await client.get(
@@ -407,7 +414,8 @@ pipeline:
           force=True, reason="restore"
         )
 
-        # Stream endpoints -> 302 passthrough redirects (TS, HLS, and shorthand without /live)
+        # Stream endpoints -> 302 passthrough redirects (TS, HLS, and shorthand
+        # without /live)
         ts_redir = await client.get(
           "/live/client_alice/client_secret_42/410101.ts"
         )
@@ -428,7 +436,8 @@ pipeline:
           410108, "ts"
         )
 
-        # /get.php M3U modes: m3u_plus (ts & hls), basic m3u, category filter, HEAD, & /playlist.m3u8
+        # /get.php M3U modes: m3u_plus (ts & hls), basic m3u, category filter,
+        # HEAD, & /playlist.m3u8
         m3u_plus_ts = await client.get(
           "/get.php",
           params={
@@ -490,7 +499,8 @@ pipeline:
         assert head_m3u.status_code == 200
         assert int(head_m3u.headers["content-length"]) > 0
 
-      # Follow redirects end-to-end: XMLTV and live TS bytes come directly from upstream
+      # Follow redirects end-to-end: XMLTV and live TS bytes come directly from
+      # upstream
       async with TestHttpClient(
         base_url=serve_base, timeout=10.0, follow_redirects=True
       ) as follow_client:
@@ -617,7 +627,8 @@ web_server:
   with pytest.raises(ValueError, match="Web Guide login cannot be disabled"):
     UnifiedServeServer.from_config(load_config(cfg_no_web_creds_path))
 
-  # Custom bind address/port with Web Guide credentials only: Web Guide works, Xtream API stays locked
+  # Custom bind address/port with Web Guide credentials only: Web Guide works,
+  # Xtream API stays locked
   cfg_custom_path = tmp_path / "custom_cfg.yaml"
   cfg_custom_path.write_text(
     f"""\
@@ -695,7 +706,8 @@ async def test_bellhop_serve_separate_ports_mode(tmp_path: Path) -> None:
     json.dumps(bundle), encoding="utf-8"
   )
 
-  # Pick two distinct free ports to verify explicit separate-port configuration in config.yaml
+  # Pick two distinct free ports to verify explicit separate-port configuration
+  # in config.yaml
   import socket
 
   def _free_port() -> int:
@@ -785,7 +797,8 @@ xtream_server:
         == "http://upstream.example/xmltv.php?username=u&password=p"
       )
 
-      # Repeated bad Xtream credentials trigger 429 LoginRateLimiter brute-force protection
+      # Repeated bad Xtream credentials trigger 429 LoginRateLimiter brute-force
+      # protection
       for _ in range(10):
         await client.get(
           f"{xt_base}/xmltv.php",
@@ -872,7 +885,8 @@ xtream_server:
     async with TestHttpClient(
       base_url=base, timeout=5.0, follow_redirects=False
     ) as client:
-      # 1. Unauthenticated browser request redirects to /login preserving stateful query string
+      # 1. Unauthenticated browser request redirects to /login preserving
+      #    stateful query string
       redir = await client.get("/?cat=1&view=timeline&ch=1108")
       assert redir.status_code == 302
       assert (
@@ -913,7 +927,8 @@ xtream_server:
       assert "SameSite=Lax" in set_cookie
       assert "Max-Age=86400" in set_cookie
 
-      # Authenticated session accesses Web Guide, static assets, and APIs cleanly
+      # Authenticated session accesses Web Guide, static assets, and APIs
+      # cleanly
       assert (await client.get("/")).status_code == 200
       assert (await client.get("/static/app.js")).status_code == 200
       assert (await client.get("/api/lineup")).status_code == 200
@@ -942,8 +957,10 @@ xtream_server:
       assert "Max-Age=0" in logout.headers.get("set-cookie", "")
       assert (await client.get("/api/lineup")).status_code == 401
 
-    # 6. Visiting a specific deep-link URL with an invalid/expired token clears the bad cookie,
-    #    redirects to /login?next=..., and form login redirects back to the exact original URL
+    # 6. Visiting a specific deep-link URL with an invalid/expired token clears
+    #    the bad cookie,
+    # redirects to /login?next=..., and form login redirects back to the exact
+    # original URL
     deep_target = "/?cat=1&q=T%C3%A9l%C3%A9&view=timeline&ch=1108"
     async with TestHttpClient(
       base_url=base, timeout=5.0, follow_redirects=False
@@ -962,7 +979,8 @@ xtream_server:
         in r_login_page.text
       )
 
-      # Submit HTML form login with preserved `next` -> 302 right back to exact original URL
+      # Submit HTML form login with preserved `next` -> 302 right back to exact
+      # original URL
       r_post = await bad_client.post(
         "/api/auth/login",
         data={
@@ -975,7 +993,8 @@ xtream_server:
       assert r_post.headers["location"] == deep_target
       assert "bellhop_session=" in r_post.headers.get("set-cookie", "")
 
-      # Following the redirect now loads the Web Guide at the exact deep-link URL
+      # Following the redirect now loads the Web Guide at the exact deep-link
+      # URL
       r_final = await bad_client.get(r_post.headers["location"])
       assert r_final.status_code == 200
       assert "player-overlay" in r_final.text
@@ -1115,8 +1134,10 @@ pipeline:
       )
       assert login_resp.status_code == 200
 
-      # 2. GET /api/config exposes ONLY upstream_xtream, xtream_server, and pipeline
-      #    with ZERO credentials, ZERO web_server settings, and ZERO filesystem paths/directories
+      # 2. GET /api/config exposes ONLY upstream_xtream, xtream_server, and
+      #    pipeline
+      # with ZERO credentials, ZERO web_server settings, and ZERO filesystem
+      # paths/directories
       get_resp = await client.get("/api/config")
       assert get_resp.status_code == 200
       raw_text = get_resp.text
@@ -1260,7 +1281,8 @@ pipeline:
         is True
       )
 
-      # Live runtime operational knobs applied immediately; server bind/xtream_server untouched
+      # Live runtime operational knobs applied immediately; server
+      # bind/xtream_server untouched
       assert srv.web_app.tuner.settle_sec == pytest.approx(0.18)
       assert srv.web_app.epg_refresher is not None
       assert srv.web_app.epg_refresher.config.refresh_hours == pytest.approx(
@@ -1269,7 +1291,8 @@ pipeline:
       assert srv.xtream_app.public_host is None
       assert srv.xtream_app.server_protocol == "http"
 
-      # Reload from disk: ALL credentials, web_server settings, paths, AND comments were preserved!
+      # Reload from disk: ALL credentials, web_server settings, paths, AND
+      # comments were preserved!
       saved_yaml = cfg_path.read_text(encoding="utf-8")
       assert (
         "# Tier-1 infrastructure settings (must survive PUT /api/config)"
@@ -1310,7 +1333,8 @@ pipeline:
       )
       assert wrong_ct.status_code == 415
 
-      # 5. Invalid operational config values return 400 and leave config.yaml valid
+      # 5. Invalid operational config values return 400 and leave config.yaml
+      #    valid
       bad_resp = await client.put(
         "/api/config",
         json={"upstream_xtream": {"stream_format": "flv"}},
@@ -1342,7 +1366,9 @@ async def test_short_epg_limit_clamping_and_unknown_stream_ids(
   raw_limit: str,
   expected_limit: int,
 ) -> None:
-  """Verify `get_short_epg` / `get_simple_data_table` clamp `limit` and handle bad `stream_id`s."""
+  """Verify `get_short_epg` / `get_simple_data_table` clamp `limit` and handle
+  bad `stream_id`s.
+  """
   xt_dir = write_minimal_xtream_export(tmp_path / "output" / "xtream")
   observed_limits: list[int] = []
 
@@ -1398,7 +1424,9 @@ async def test_short_epg_limit_clamping_and_unknown_stream_ids(
 async def test_xmltv_head_and_small_chunk_streaming_and_xtream_only_health(
   tmp_path: Path,
 ) -> None:
-  """Verify `HEAD /xmltv.php`, multi-chunk `GET /xmltv.php`, and Xtream-only `/health`."""
+  """Verify `HEAD /xmltv.php`, multi-chunk `GET /xmltv.php`, and Xtream-only
+  `/health`.
+  """
   from collections.abc import Iterator
 
   from bellhop.config import (
@@ -1473,7 +1501,8 @@ async def test_xmltv_head_and_small_chunk_streaming_and_xtream_only_health(
   try:
     base_url = f"http://127.0.0.1:{xt_srv.bound_port}"
     async with new_test_session() as session:
-      # 1. `HEAD /xmltv.php` returns 200 XML headers, empty body, and closes generator cleanly
+      # 1. `HEAD /xmltv.php` returns 200 XML headers, empty body, and closes
+      #    generator cleanly
       async with session.head(
         f"{base_url}/xmltv.php",
         params={"username": "xt_u", "password": "xt_p"},
@@ -1483,7 +1512,8 @@ async def test_xmltv_head_and_small_chunk_streaming_and_xtream_only_health(
         assert await r_head.read() == b""
       assert closed_box["count"] == 1
 
-      # 2. `GET /xmltv.php` flushes multiple 64-byte chunks into complete valid XMLTV
+      # 2. `GET /xmltv.php` flushes multiple 64-byte chunks into complete valid
+      #    XMLTV
       async with session.get(
         f"{base_url}/xmltv.php",
         params={"username": "xt_u", "password": "xt_p"},
@@ -1499,7 +1529,8 @@ async def test_xmltv_head_and_small_chunk_streaming_and_xtream_only_health(
   finally:
     await xt_srv.stop()
 
-  # 3. Xtream-only `UnifiedServeServer` (`web.enabled=False`) serves `/health` cleanly
+  # 3. Xtream-only `UnifiedServeServer` (`web.enabled=False`) serves `/health`
+  #    cleanly
   cfg_xt_only = AppConfig(
     project_root=tmp_path,
     xtream=XtreamConfig(

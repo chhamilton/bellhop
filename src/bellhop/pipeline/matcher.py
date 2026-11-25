@@ -1,4 +1,6 @@
-"""Multi-signal channel matcher mapping Xtream streams to cable/OTA lineup slots."""
+"""Multi-signal channel matcher mapping Xtream streams to cable/OTA lineup
+slots.
+"""
 
 from __future__ import annotations
 
@@ -58,7 +60,9 @@ from bellhop.pipeline.models import (
 
 
 def strip_accents(text: str) -> str:
-  """Convert accented Latin characters and ligatures (Montréal, Cœur, Écran) to ASCII."""
+  """Convert accented Latin characters and ligatures (Montréal, Cœur, Écran) to
+  ASCII.
+  """
   return fold_latin_accents(text)
 
 
@@ -66,7 +70,8 @@ def _normalize_symbols(text: str) -> str:
   s = strip_accents(text)
   s = re.sub(r"\bat&t\b", "att", s, flags=re.IGNORECASE)
   s = E_EXCLAMATION_RE.sub(" eexclamation ", s)
-  # Spaced infix " + " between words acts as conjunction "&" ("Crime + Investigation")
+  # Spaced infix " + " between words acts as conjunction "&" ("Crime +
+  # Investigation")
   s = INFIX_PLUS_RE.sub(" & ", s)
   # Attached/trailing "+" stays "+" unless it is a timeshift like +1 / +2
   s = re.sub(r"\+(?![123]\b)", " + ", s)
@@ -121,7 +126,8 @@ def _strip_quality_tokens(tokens: Iterable[str]) -> list[str]:
 def _score_quality_tags(
   raw_name: str, category_name: str = ""
 ) -> tuple[float, str, list[str]]:
-  # Normalize Unicode superscripts (e.g. ᴴᴰ -> HD, ᴿᴬᵂ -> RAW, ⁶⁰ᶠᵖˢ -> 60FPS, ⁽ᴮᴷ⁾ -> (BK))
+  # Normalize Unicode superscripts (e.g. ᴴᴰ -> HD, ᴿᴬᵂ -> RAW, ⁶⁰ᶠᵖˢ -> 60FPS,
+  # ⁽ᴮᴷ⁾ -> (BK))
   upper = strip_accents(raw_name).upper()
   cat_upper = strip_accents(category_name).upper()
   score = 0.0
@@ -180,7 +186,9 @@ def _is_plausible_native_epg(
   callsign_tok: str | None,
   alias_specs: list[tuple[int, str, tuple[str, ...]]],
 ) -> bool:
-  """Verify a provider's epg_channel_id plausibly belongs to this channel (filters panel typos)."""
+  """Verify a provider's epg_channel_id plausibly belongs to this channel
+  (filters panel typos).
+  """
   if not epg_id_lower:
     return False
   if tvg_id_lower and epg_id_lower == tvg_id_lower:
@@ -232,8 +240,10 @@ def _is_plausible_native_epg(
       if len(tok) >= 3 and tok in epg_compact:
         return True
 
-  # If all tokens of every alias are common network words (e.g. "ICI Montreal" / "Radio-Canada"),
-  # require all tokens of at least one multi-word alias to appear in epg_compact.
+  # If all tokens of every alias are common network words (e.g. "ICI Montreal" /
+  # "Radio-Canada"),
+  # require all tokens of at least one multi-word alias to appear in
+  # epg_compact.
   if not distinctive_found_in_aliases:
     for _, _, a_toks in alias_specs:
       if len(a_toks) >= 2 and all(tok in epg_compact for tok in a_toks):
@@ -280,7 +290,8 @@ def _prepare_stream(stream: XtreamStream) -> _PreparedStream | None:
   # Split on explicit prefix delimiters like "CA | RDS HD" or "VIP | QC | TVA"
   parts = [p.strip() for p in DELIMITER_SPLIT_RE.split(working) if p.strip()]
   if len(parts) >= 2:
-    # Treat short leading segments (e.g. "CA", "QC", "VIP", "CA-FR", "CANADA") as prefix metadata
+    # Treat short leading segments (e.g. "CA", "QC", "VIP", "CA-FR", "CANADA")
+    # as prefix metadata
     idx = 0
     while idx < len(parts) - 1:
       seg_tokens = _tokenize_raw(parts[idx], split_alnum=False)
@@ -315,7 +326,8 @@ def _prepare_stream(stream: XtreamStream) -> _PreparedStream | None:
   else:
     core_source = working
 
-  # Remove parenthetical codec/resolution suffixes while preserving city/callsign hints in full_tokens
+  # Remove parenthetical codec/resolution suffixes while preserving
+  # city/callsign hints in full_tokens
   core_cleaned = CODEC_CLEAN_RE.sub(" ", core_source)
   raw_core_tokens = _strip_quality_tokens(
     _tokenize_raw(core_cleaned, split_alnum=True)
@@ -338,7 +350,8 @@ def _prepare_stream(stream: XtreamStream) -> _PreparedStream | None:
   else:
     trimmed_core_tokens = core_tokens
 
-  # Build full token set (without codec noise like h264/mpeg2 so "2" won't false-trigger exclusions)
+  # Build full token set (without codec noise like h264/mpeg2 so "2" won't
+  # false-trigger exclusions)
   combined_meta = f"{' '.join(prefix_chunks)} {stream.category_name} {CODEC_CLEAN_RE.sub(' ', raw_name)}"
   full_token_list = _strip_quality_tokens(
     _tokenize_raw(combined_meta, split_alnum=True)
@@ -461,7 +474,9 @@ def _weighted_levenshtein(
   t_chars: str,
   t_weights: list[float],
 ) -> float:
-  """Compute weighted Levenshtein distance with cheap separator & `+`↔`&` costs."""
+  """Compute weighted Levenshtein distance with cheap separator & `+`↔`&`
+  costs.
+  """
   m = len(s_chars)
   n = len(t_chars)
   prev = [0.0] * (n + 1)
@@ -491,7 +506,9 @@ def _weighted_levenshtein(
 
 
 def _station_group_key(ch: LineupChannel) -> str:
-  """Group identical stations placed at multiple dial slots (scoped by language)."""
+  """Group identical stations placed at multiple dial slots (scoped by
+  language).
+  """
   if ch.gracenote_station_id and ch.gracenote_station_id.strip():
     return f"gn:{ch.language}:{ch.gracenote_station_id.strip()}"
   cs = (ch.callsign or "").strip().upper()
@@ -502,7 +519,9 @@ def _station_group_key(ch: LineupChannel) -> str:
 
 
 def _is_high_confidence_claim(cand: MatchCandidate, ch: LineupChannel) -> bool:
-  """Return True when `cand` matches `ch`'s primary brand strongly enough to claim in Pass 1."""
+  """Return True when `cand` matches `ch`'s primary brand strongly enough to
+  claim in Pass 1.
+  """
   if cand.score >= 1000.0:
     return True
   if cand.score < 76.0:
@@ -542,7 +561,9 @@ def _is_high_confidence_claim(cand: MatchCandidate, ch: LineupChannel) -> bool:
 
 
 class ChannelMatcher:
-  """Indexes an Xtream catalog and ranks candidate streams for each cable lineup channel."""
+  """Indexes an Xtream catalog and ranks candidate streams for each cable lineup
+  channel.
+  """
 
   def __init__(
     self,
@@ -589,14 +610,17 @@ class ChannelMatcher:
     max_candidates: int = 10,
     invalid_stream_ids_by_chno: dict[int, set[int]] | None = None,
   ) -> list[MappedChannel]:
-    """Multipass lineup matcher: high-confidence stations claim streams before fuzzy pass."""
+    """Multipass lineup matcher: high-confidence stations claim streams before
+    fuzzy pass.
+    """
     channel_list = list(channels)
     pool_limit = max(max_candidates * 2, 20)
     raw_by_chno: dict[int, list[MatchCandidate]] = {
       ch.chno: self.find_candidates(ch, limit=pool_limit) for ch in channel_list
     }
 
-    # Pass 1: Aggregate best high-confidence claim scores per (stream_id, station_group)
+    # Pass 1: Aggregate best high-confidence claim scores per (stream_id,
+    # station_group)
     group_by_chno: dict[int, str] = {
       ch.chno: _station_group_key(ch) for ch in channel_list
     }
@@ -650,7 +674,8 @@ class ChannelMatcher:
       if win_score >= runner_score + 6.0 or distinct_cities:
         exclusive_owner[sid] = win_gk
 
-    # Pass 2: Filter each channel's candidate list against streams claimed by stronger stations
+    # Pass 2: Filter each channel's candidate list against streams claimed by
+    # stronger stations
     out: list[MappedChannel] = []
     for ch in channel_list:
       gk = group_by_chno[ch.chno]
@@ -711,7 +736,8 @@ class ChannelMatcher:
       if ex_toks:
         exclude_phrases.append(f" {' '.join(ex_toks)} ")
 
-    # 2. Gather candidate indices via inverted index (avoids scanning 50k+ unrelated streams)
+    # 2. Gather candidate indices via inverted index (avoids scanning 50k+
+    #    unrelated streams)
     candidate_indices: set[int] = set()
     if tvg_id_lower and tvg_id_lower in self._epg_index:
       candidate_indices.update(self._epg_index[tvg_id_lower])
@@ -726,7 +752,8 @@ class ChannelMatcher:
           cs_epg = f"{cs_variant}{sfx}"
           if cs_epg in self._epg_index:
             candidate_indices.update(self._epg_index[cs_epg])
-      # US 4-letter OTA callsign on-air branding tail (e.g. WPIX -> "PIX" in "CW PIX 11")
+      # US 4-letter OTA callsign on-air branding tail (e.g. WPIX -> "PIX" in "CW
+      # PIX 11")
       if US_OTA_CALLSIGN_RE.match(cs_root):
         cs_tail = cs_root[1:]
         if (
@@ -737,7 +764,8 @@ class ChannelMatcher:
 
     selective_cap = max(220, len(self._prepared) // 25)
     for _, _, a_toks in alias_specs:
-      # Spaceless compound lookup (e.g. "Deja View" <-> "DEJAVIEW", "CTV Sci-Fi" <-> "CTVSCIFI")
+      # Spaceless compound lookup (e.g. "Deja View" <-> "DEJAVIEW", "CTV Sci-Fi"
+      # <-> "CTVSCIFI")
       compound_key = "".join(t for t in a_toks if t not in {"+", "&"})
       if len(compound_key) >= 4 and compound_key in self._compound_index:
         candidate_indices.update(self._compound_index[compound_key])
@@ -764,7 +792,8 @@ class ChannelMatcher:
       ):
         candidate_indices.update(self._token_index[a_toks[0]])
 
-      # Fuzzy anchor retrieval via highest-IDF tokens (catches omitted/added generic words)
+      # Fuzzy anchor retrieval via highest-IDF tokens (catches omitted/added
+      # generic words)
       ranked_anchors = sorted(
         (
           t
@@ -838,7 +867,8 @@ class ChannelMatcher:
           )
         )
 
-    # Sort by descending score, preferring native EPG and lower stream_id on exact ties
+    # Sort by descending score, preferring native EPG and lower stream_id on
+    # exact ties
     results.sort(
       key=lambda c: (-c.score, not c.has_native_epg, c.stream.stream_id)
     )
@@ -849,7 +879,9 @@ class ChannelMatcher:
     toks: tuple[str, ...],
     allowed_extra: AbstractSet[str],
   ) -> tuple[str, list[float]]:
-    """Build character sequence and corpus-IDF weights for weighted Levenshtein."""
+    """Build character sequence and corpus-IDF weights for weighted
+    Levenshtein.
+    """
     chars: list[str] = []
     weights: list[float] = []
     n_toks = len(toks)
@@ -887,7 +919,9 @@ class ChannelMatcher:
     c_toks: tuple[str, ...],
     allowed_extra: AbstractSet[str],
   ) -> bool:
-    """Return True when `a_toks`/`c_toks` share an ultra-rare non-umbrella brand (`df <= 3`)."""
+    """Return True when `a_toks`/`c_toks` share an ultra-rare non-umbrella brand
+    (`df <= 3`).
+    """
     alias_set = set(a_toks)
     cand_set = set(c_toks)
     if (alias_set | cand_set) & MAJOR_SPINOFF_UMBRELLA_BRANDS:
@@ -915,7 +949,9 @@ class ChannelMatcher:
     allowed_extra: AbstractSet[str],
     effective_spinoff_tokens: AbstractSet[str],
   ) -> float:
-    """Compute IDF-weighted edit similarity in `[0, 1]` with numeric & spin-off safety."""
+    """Compute IDF-weighted edit similarity in `[0, 1]` with numeric & spin-off
+    safety.
+    """
     if not a_toks or not c_toks:
       return 0.0
     a_nums = {t for t in a_toks if DECADE_OR_NUM_RE.match(t)}
@@ -932,8 +968,10 @@ class ChannelMatcher:
     cand_set = set(c_toks)
     added_spinoffs = (cand_set - alias_set) & effective_spinoff_tokens
     if added_spinoffs:
-      # Allow "international" or "news" feed suffixes ONLY on ultra-rare specialty brands
-      # (df <= 3 in catalog, e.g. "Aaj Tak" -> "AAJTAK INTERNATIONAL", "NTD" -> "NTD NEWS")
+      # Allow "international" or "news" feed suffixes ONLY on ultra-rare
+      # specialty brands
+      # (df <= 3 in catalog, e.g. "Aaj Tak" -> "AAJTAK INTERNATIONAL", "NTD" ->
+      # "NTD NEWS")
       if not (
         added_spinoffs <= {"international", "news"}
         and self._is_rare_specialty_brand(a_toks, c_toks, allowed_extra)
@@ -943,7 +981,8 @@ class ChannelMatcher:
 
     dropped_spinoffs = (alias_set - cand_set) & SPINOFF_MODIFIER_TOKENS
     if dropped_spinoffs:
-      # Only allow omitting a redundant genre suffix ("Hollywood Suite 70s+ Movies" ->
+      # Only allow omitting a redundant genre suffix ("Hollywood Suite 70s+
+      # Movies" ->
       # "Hollywood Suite 70s+") when >= 2 distinctive brand tokens remain!
       soft_genre_spinoffs = {"movies", "movie", "cinema", "+"}
       if not (
@@ -952,12 +991,15 @@ class ChannelMatcher:
       ):
         return 0.0
 
-    # 1-char brands ("Z", "W") must match on word boundaries, never inside unrelated words
+    # 1-char brands ("Z", "W") must match on word boundaries, never inside
+    # unrelated words
     if len(a_toks) == 1 and len(a_toks[0]) <= 2 and a_toks[0] not in cand_set:
       return 0.0
 
-    # Leading brand anchor safety: prevent matching solely on trailing boilerplate
-    # ("MBC America" != "BBC America", "RAI International" != "CNN International",
+    # Leading brand anchor safety: prevent matching solely on trailing
+    # boilerplate
+    # ("MBC America" != "BBC America", "RAI International" != "CNN
+    # International",
     # "ABP News" != "ABC News", "CCTV Documentary" != "Documentary")
     a_brand = [
       t for t in a_toks if t not in allowed_extra and t not in {"+", "&"}
@@ -985,7 +1027,8 @@ class ChannelMatcher:
           pass
         else:
           return 0.0
-      # Short distinctive brand words (<= 4 chars, e.g. "Pop", "Hits") cannot be silently dropped
+      # Short distinctive brand words (<= 4 chars, e.g. "Pop", "Hits") cannot be
+      # silently dropped
       for short_tok in a_brand:
         if (
           2 <= len(short_tok) <= 4
@@ -1037,7 +1080,9 @@ class ChannelMatcher:
     bool,
     tuple[tuple[str, ...], ...],
   ]:
-    """Derive callsign, qualifier, spinoff, and core-token context for Signal A–C."""
+    """Derive callsign, qualifier, spinoff, and core-token context for Signal
+    A–C.
+    """
     cs_root = (
       CALLSIGN_ROOT_RE.sub("", callsign_tok).strip("-")
       if callsign_tok
@@ -1146,7 +1191,9 @@ class ChannelMatcher:
     edit_cache: dict[tuple[tuple[str, ...], tuple[str, ...]], float]
     | None = None,
   ) -> tuple[float, str]:
-    """Signal A: Score exact, compound, phrase, fuzzy edit, subsequence, & acronym alias hits."""
+    """Signal A: Score exact, compound, phrase, fuzzy edit, subsequence, &
+    acronym alias hits.
+    """
     best_alias_score = 0.0
     best_alias_reason = ""
 
@@ -1329,7 +1376,9 @@ class ChannelMatcher:
     channel: LineupChannel,
     target_regions: set[str],
   ) -> tuple[float, list[str]]:
-    """Signal D: Score metro/province/country alignment, foreign penalties, timezone, & language."""
+    """Signal D: Score metro/province/country alignment, foreign penalties,
+    timezone, & language.
+    """
     delta = 0.0
     notes: list[str] = []
 

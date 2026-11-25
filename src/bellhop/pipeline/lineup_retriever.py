@@ -1,4 +1,5 @@
-"""Phase (1): Multi-backend Cable Lineup Retriever (TV Guide JSON, Schedules Direct SD-JSON, and YAML).
+"""Phase (1): Multi-backend Cable Lineup Retriever (TV Guide JSON, Schedules
+Direct SD-JSON, and YAML).
 
 Lineup Snapshot Schema (`state/lineups/<lineup_id>.json`)
 ---------------------------------------------------------
@@ -62,19 +63,24 @@ from bellhop.pipeline.providers.normalizer import populate_sibling_exclusions
 
 # Gracenote / Schedules Direct SD-JSON lineupId convention:
 # <ISO3_COUNTRY>-<HEADEND_CODE>-<DEVICE_TYPE>
-# Examples: "CAN-0005993-X", "CAN-QC67412-X", "CAN-BELLFIBE-MTL-X", "CAN-OTA-H2Y1C6"
+# Examples: "CAN-0005993-X", "CAN-QC67412-X", "CAN-BELLFIBE-MTL-X",
+# "CAN-OTA-H2Y1C6"
 GRACENOTE_LINEUP_ID_RE = re.compile(
   r"^(?P<country>[A-Z]{3})-(?P<headend>[A-Z0-9][A-Z0-9_-]*?)(?:-(?P<device>[A-Z0-9]+))?$"
 )
 
 
 class LineupRetrieverError(LineupBackendError):
-  """Raised when a lineup identifier is invalid or retrieval fails across configured backends."""
+  """Raised when a lineup identifier is invalid or retrieval fails across
+  configured backends.
+  """
 
 
 @dataclass(frozen=True, slots=True)
 class GracenoteLineupId:
-  """Parsed lineup identifier (Gracenote `<ISO3>-<HEADEND>-<DEVICE>` or TVGuide `TVG-<id>`)."""
+  """Parsed lineup identifier (Gracenote `<ISO3>-<HEADEND>-<DEVICE>` or TVGuide
+  `TVG-<id>`).
+  """
 
   raw_id: str
   country: str
@@ -117,7 +123,9 @@ class GracenoteLineupId:
 
 @dataclass(slots=True)
 class LineupDiff:
-  """Changes detected between the previous monthly cable lineup and the newly retrieved one."""
+  """Changes detected between the previous monthly cable lineup and the newly
+  retrieved one.
+  """
 
   added_chnos: list[int] = field(default_factory=list)
   removed_chnos: list[int] = field(default_factory=list)
@@ -185,14 +193,17 @@ def select_lineup_provider(
   backend_hint: str = "auto",
   providers: list[LineupProvider],
 ) -> LineupProvider:
-  """Select the matching `LineupProvider` implementation for `lineup_id` and `backend_hint`."""
+  """Select the matching `LineupProvider` implementation for `lineup_id` and
+  `backend_hint`.
+  """
   norm_hint = (backend_hint or "auto").strip().lower().replace("-", "_")
   if norm_hint == "sd":
     norm_hint = "schedules_direct"
   elif norm_hint == "tvg":
     norm_hint = "tvguide"
 
-  # In "auto" mode, prefer curated YAML for the built-in Bell Fibe default ID when YAML exists
+  # In "auto" mode, prefer curated YAML for the built-in Bell Fibe default ID
+  # when YAML exists
   if norm_hint == "auto":
     for p in providers:
       if (
@@ -223,7 +234,9 @@ async def discover_provider_lineups(
   query: str = "",
   providers: list[LineupProvider] | None = None,
 ) -> list[ProviderHeadend]:
-  """Query one or all lineup backends for available regional provider headends."""
+  """Query one or all lineup backends for available regional provider
+  headends.
+  """
   active_providers = (
     providers if providers is not None else build_default_providers(config)
   )
@@ -319,7 +332,9 @@ async def retrieve_cable_lineup(
   providers: list[LineupProvider] | None = None,
   iptv_org_client: IptvOrgClient | None = None,
 ) -> LineupRetrievalResult:
-  """Retrieve target cable lineup on a monthly cadence (default 30 days), persisting state & diff."""
+  """Retrieve target cable lineup on a monthly cadence (default 30 days),
+  persisting state & diff.
+  """
   raw_id_input = config.lineup.lineup_id
   parsed_id = GracenoteLineupId.parse(raw_id_input)
   active_providers = (

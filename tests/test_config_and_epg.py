@@ -1,4 +1,6 @@
-"""Unit tests for two-tier config loading, public config updates, and EPG verification."""
+"""Unit tests for two-tier config loading, public config updates, and EPG
+verification.
+"""
 
 from __future__ import annotations
 
@@ -210,7 +212,8 @@ pipeline:
   assert updated.xtream.password == "up_p"
   assert updated.state.upgrade_hysteresis_score == 8.0
   assert updated.output.m3u8_enabled is False
-  # Server properties (`xtream_server` / `web_server`) are config-file-only and ignored!
+  # Server properties (`xtream_server` / `web_server`) are config-file-only and
+  # ignored!
   assert updated.serve.xtream.public_host is None
   assert updated.serve.xtream.enabled is True
   assert updated.serve.xtream.password == "xt_p"
@@ -271,8 +274,9 @@ def test_apply_public_config_update_preserves_comments_and_env_placeholders(
   )
   assert "host: null" in saved_example_text
 
-  # 2. Docker config with `${ENV}` placeholders on both secrets AND `server_url`:
-  #    saving unrelated Settings in the Web UI keeps `${XTREAM_SERVER_URL}` intact!
+  # 2. Docker config with `${ENV}` placeholders on both secrets AND
+  #    `server_url`:
+  # saving unrelated Settings in the Web UI keeps `${XTREAM_SERVER_URL}` intact!
   monkeypatch.setenv("XTREAM_SERVER_URL", "http://env-provider.example:8080")
   monkeypatch.setenv("XTREAM_USERNAME", "env_xt_user")
   monkeypatch.setenv("XTREAM_PASSWORD", "env_xt_pass")
@@ -290,7 +294,8 @@ def test_apply_public_config_update_preserves_comments_and_env_placeholders(
   before_docker = load_config(docker_cfg_path)
   assert before_docker.xtream.server_url == "http://env-provider.example:8080"
 
-  # Browser receives resolved `server_url` from GET /api/config and sends it back unchanged
+  # Browser receives resolved `server_url` from GET /api/config and sends it
+  # back unchanged
   # alongside an edited pipeline knob (`upgrade_hysteresis_score: 7.5`).
   public_doc = export_public_config(before_docker)
   save_body: dict[str, object] = {
@@ -320,7 +325,8 @@ def test_apply_public_config_update_preserves_comments_and_env_placeholders(
   assert "# 1. HOST & INFRASTRUCTURE" in raw_disk
   assert "# 2. OPERATIONAL SETTINGS" in raw_disk
 
-  # Explicitly changing `server_url` to a new URL DOES replace `${XTREAM_SERVER_URL}`.
+  # Explicitly changing `server_url` to a new URL DOES replace
+  # `${XTREAM_SERVER_URL}`.
   changed_url_cfg, _ = apply_public_config_update(
     docker_cfg_path,
     {"upstream_xtream": {"server_url": "http://explicit-new.example:8080"}},

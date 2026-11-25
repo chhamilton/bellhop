@@ -1,4 +1,6 @@
-"""Tests for `iptv-org` ETag conditional caching, `closed`/`replaced_by`, and 2D MDL dial grouping."""
+"""Tests for `iptv-org` ETag conditional caching, `closed`/`replaced_by`, and 2D
+MDL dial grouping.
+"""
 
 from __future__ import annotations
 
@@ -37,7 +39,9 @@ from tests.http_mock import MockHttpServer
 def _assert_strictly_dial_contiguous(
   channels: list[LineupChannel],
 ) -> list[str]:
-  """Assert `channels` are sorted by `chno` and each `group` forms one contiguous slice."""
+  """Assert `channels` are sorted by `chno` and each `group` forms one
+  contiguous slice.
+  """
   chnos = [c.chno for c in channels]
   assert chnos == sorted(chnos)
   seen_groups: list[str] = []
@@ -287,7 +291,8 @@ async def test_iptv_org_etag_conditional_cache_304_revalidation_and_lineup_regro
     assert res_local.from_cache is True
     assert state["channels_hits"] == hits_after_initial
 
-    # 4. Past `recheck_hours` (25h), sends `If-None-Match` + `If-Modified-Since` -> 304 Not Modified!
+    # 4. Past `recheck_hours` (25h), sends `If-None-Match` + `If-Modified-Since`
+    #    -> 304 Not Modified!
     fake_clock.advance(25.0 * 3600.0)
     res_304 = await iptv_client.fetch_index()
     assert res_304.channels_status == "not_modified_304"
@@ -297,7 +302,8 @@ async def test_iptv_org_etag_conditional_cache_304_revalidation_and_lineup_regro
     assert '"ch-etag-v1"' in state["seen_if_none_match"]
     assert "Mon, 16 Nov 2026 00:00:00 GMT" in state["seen_if_modified_since"]
 
-    # 5. Wire into Phase (1) `retrieve_cable_lineup`: initial snapshot saved, then upstream ETag rotates!
+    # 5. Wire into Phase (1) `retrieve_cable_lineup`: initial snapshot saved,
+    #    then upstream ETag rotates!
     tvg = TvGuideLineupProvider(
       base_url=f"{mock.base_url}/tvschedules/tvguide",
       client=session,
@@ -331,7 +337,8 @@ async def test_iptv_org_etag_conditional_cache_304_revalidation_and_lineup_regro
     )
     assert lu_cached.from_cache is True
 
-    # Rotate upstream `channels.json` to v2 (`MysteryBox.ca` gains `movies` + `"Mystery Cinema"` alias)
+    # Rotate upstream `channels.json` to v2 (`MysteryBox.ca` gains `movies` +
+    # `"Mystery Cinema"` alias)
     state["version"] = 2
     fake_clock.advance(25.0 * 3600.0)
     lu_res2 = await retrieve_cable_lineup(
@@ -343,14 +350,16 @@ async def test_iptv_org_etag_conditional_cache_304_revalidation_and_lineup_regro
     assert "Mystery Cinema" in ch_1301.aliases
     assert "Movies" in ch_1301.group
 
-    # 6. Upstream 503 outage falls back cleanly to cached disk files (`stale_cache_fallback`)
+    # 6. Upstream 503 outage falls back cleanly to cached disk files
+    #    (`stale_cache_fallback`)
     state["fail_network"] = True
     fake_clock.advance(25.0 * 3600.0)
     res_fallback = await iptv_client.fetch_index()
     assert res_fallback.channels_status == "stale_cache_fallback"
     assert res_fallback.index.station_count == 5
 
-    # 7. Uncached client with `allow_offline_empty=False` raises `IptvOrgError` on outage
+    # 7. Uncached client with `allow_offline_empty=False` raises `IptvOrgError`
+    #    on outage
     empty_client = IptvOrgClient(
       cache_dir=tmp_path / "empty_cache",
       base_url=f"{mock.base_url}/iptv-org",
@@ -383,7 +392,8 @@ def test_closed_and_replaced_by_lifecycle_resolution() -> None:
         "closed": "2024-01-11",
         "replaced_by": None,
       },
-      # Multi-step / `@FeedId` rebrand chain: Discovery -> USANetwork.ca@East -> active USANetwork.ca
+      # Multi-step / `@FeedId` rebrand chain: Discovery -> USANetwork.ca@East ->
+      # active USANetwork.ca
       {
         "id": "DiscoveryChannel.ca",
         "name": "Discovery Channel",
@@ -428,7 +438,8 @@ def test_closed_and_replaced_by_lifecycle_resolution() -> None:
     ],
   )
 
-  # 1. Defunct unreplaced aliases (`Telemagino`, `Yoopa`) are stripped while primary/active survive
+  # 1. Defunct unreplaced aliases (`Telemagino`, `Yoopa`) are stripped while
+  #    primary/active survive
   assert idx.is_permanently_closed_alias("Telemagino", country="CA") is True
   assert idx.is_permanently_closed_alias("Yoopa", country="CA") is True
   assert (
@@ -464,7 +475,8 @@ def test_closed_and_replaced_by_lifecycle_resolution() -> None:
   assert "Disney Channel" in disney.aliases
   assert disney.tvg_id == "DisneyChannel.ca"
 
-  # 2. Stale "Discovery Channel" slot resolves `replaced_by: USANetwork.ca@East` -> `USANetwork.ca`
+  # 2. Stale "Discovery Channel" slot resolves `replaced_by: USANetwork.ca@East`
+  #    -> `USANetwork.ca`
   rebranded = channels[1]
   assert rebranded.tvg_id == "USANetwork.ca"
   assert "USA Network" in rebranded.aliases
@@ -543,7 +555,8 @@ def test_2d_language_genre_mdl_segmentation_across_bilingual_intl_and_french_maj
         "country": "CA",
         "categories": ["movies"],
       },
-      # International news block (different minority languages, same genre = news!)
+      # International news block (different minority languages, same genre =
+      # news!)
       {
         "id": "DW.de",
         "name": "Deutsche Welle",
@@ -799,7 +812,8 @@ def test_2d_language_genre_mdl_segmentation_across_bilingual_intl_and_french_maj
   )
 
   raw_slots = [
-    # 700s: International News run across 5 languages -> "International — News & Info"
+    # 700s: International News run across 5 languages -> "International — News &
+    # Info"
     RawProviderSlot(chno=701, raw_name="Deutsche Welle", country="CAN"),
     RawProviderSlot(chno=702, raw_name="Al Jazeera Arabic", country="CAN"),
     RawProviderSlot(chno=703, raw_name="NHK World Japan", country="CAN"),
@@ -824,7 +838,8 @@ def test_2d_language_genre_mdl_segmentation_across_bilingual_intl_and_french_maj
     RawProviderSlot(chno=1162, raw_name="Super Écran 2", country="CAN"),
     RawProviderSlot(chno=1163, raw_name="Super Écran 3", country="CAN"),
     RawProviderSlot(chno=1164, raw_name="Cinépop", country="CAN"),
-    # 1300s–1550s: English majority blocks + unknown slot absorbed cleanly into Sports
+    # 1300s–1550s: English majority blocks + unknown slot absorbed cleanly into
+    # Sports
     RawProviderSlot(chno=1300, raw_name="Crave 1", country="CAN"),
     RawProviderSlot(chno=1301, raw_name="HBO 1", country="CAN"),
     RawProviderSlot(chno=1302, raw_name="Starz 1", country="CAN"),
@@ -842,7 +857,8 @@ def test_2d_language_genre_mdl_segmentation_across_bilingual_intl_and_french_maj
     RawProviderSlot(chno=1551, raw_name="Treehouse", country="CAN"),
     RawProviderSlot(chno=1552, raw_name="Cartoon Network", country="CAN"),
     RawProviderSlot(chno=1553, raw_name="Disney Channel", country="CAN"),
-    # 1640s: Second non-adjacent Music & Audio block -> disambiguated by dial range!
+    # 1640s: Second non-adjacent Music & Audio block -> disambiguated by dial
+    # range!
     RawProviderSlot(chno=1640, raw_name="Stingray Loud", country="CAN"),
     RawProviderSlot(chno=1641, raw_name="Stingray Retro", country="CAN"),
     RawProviderSlot(chno=1642, raw_name="Stingray Vibe", country="CAN"),
@@ -865,7 +881,8 @@ def test_2d_language_genre_mdl_segmentation_across_bilingual_intl_and_french_maj
   assert by_chno[1150].group == "French — Kids & Family (1150–1152)"
   assert by_chno[1161].group == "French — Movies (1161–1164)"
   assert by_chno[1300].group == "Movies (1300–1303)"
-  # Unknown channel 1402 ("Mystery Arena Feed") absorbed into surrounding Sports run!
+  # Unknown channel 1402 ("Mystery Arena Feed") absorbed into surrounding Sports
+  # run!
   assert by_chno[1402].group == "Sports (1400–1404)"
   assert by_chno[1520].group == "Science & Docs (1520–1523)"
   assert by_chno[1550].group == "Kids & Family (1550–1553)"
@@ -875,7 +892,8 @@ def test_2d_language_genre_mdl_segmentation_across_bilingual_intl_and_french_maj
   assert len(ordered_groups) == len(set(ordered_groups))
 
   # Flip market majority: French-majority lineup (no Quebec hardcoding!) ->
-  # French becomes default ("Sports", "Movies") and minority English gets "English — ..."!
+  # French becomes default ("Sports", "Movies") and minority English gets
+  # "English — ..."!
   fr_majority_slots = [
     RawProviderSlot(chno=101, raw_name="RDS HD", country="CAN"),
     RawProviderSlot(chno=102, raw_name="RDS 2 HD", country="CAN"),
@@ -953,7 +971,8 @@ def test_latin_accent_ligature_folding_and_corpus_idf_fuzzy_matching() -> None:
         "country": "CA",
         "categories": ["sports"],
       },
-      # Extra background stations so generic words ("channel", "tv") naturally carry lower IDF
+      # Extra background stations so generic words ("channel", "tv") naturally
+      # carry lower IDF
       *[
         {
           "id": f"Generic{i}.ca",
@@ -990,13 +1009,15 @@ def test_latin_accent_ligature_folding_and_corpus_idf_fuzzy_matching() -> None:
     ],
   )
 
-  # 1. Domestic CA fuzzy match ("National Geographic") beats foreign FR exact ("National Geographic Channel")!
+  # 1. Domestic CA fuzzy match ("National Geographic") beats foreign FR exact
+  #    ("National Geographic Channel")!
   natgeo_hit = idx.lookup("National Geographic Channel", country="CA")
   assert natgeo_hit is not None
   assert natgeo_hit.channel.channel_id == "NationalGeographic.ca"
   assert natgeo_hit.channel.languages == ("eng",)
 
-  # 2. Enrich slots via `normalize_provider_slots` and match against raw IPTV catalog
+  # 2. Enrich slots via `normalize_provider_slots` and match against raw IPTV
+  #    catalog
   slots = normalize_provider_slots(
     [
       RawProviderSlot(
@@ -1057,7 +1078,8 @@ def test_latin_accent_ligature_folding_and_corpus_idf_fuzzy_matching() -> None:
   matched_1524_ids = {c.stream.stream_id for c in c1524}
   assert {524, 525} <= matched_1524_ids
 
-  # Also verify direct fuzzy matching WITHOUT alias expansion ("National Geographic Channel" -> "NATIONAL GEOGRAPHIC")
+  # Also verify direct fuzzy matching WITHOUT alias expansion ("National
+  # Geographic Channel" -> "NATIONAL GEOGRAPHIC")
   bare_natgeo = LineupChannel(
     chno=1524,
     name="National Geographic Channel",
@@ -1073,7 +1095,8 @@ def test_latin_accent_ligature_folding_and_corpus_idf_fuzzy_matching() -> None:
   rds_cands = matcher.find_candidates(by_no[1108])
   assert rds_cands == []
 
-  # Corporate parent `network` field must NOT collide with station names (`Cinemax` has `network="HBO"`)
+  # Corporate parent `network` field must NOT collide with station names
+  # (`Cinemax` has `network="HBO"`)
   hbo_idx = IptvOrgIndex.from_json_payloads(
     channels_raw=[
       {

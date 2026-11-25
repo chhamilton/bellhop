@@ -1,14 +1,18 @@
 """In-process Fake Xtream Codes HTTP/1.1 server for realistic end-to-end tests.
 
 Emulates:
-- `player_api.php` (auth, `get_live_categories`, `get_live_streams`, `max_connections`)
-- `xmltv.php` (XMLTV & optional gzipped XMLTV with configurable live/upcoming programmes)
+- `player_api.php` (auth, `get_live_categories`, `get_live_streams`,
+  `max_connections`)
+- `xmltv.php` (XMLTV & optional gzipped XMLTV with configurable live/upcoming
+  programmes)
 - `/live/<user>/<pass>/<stream_id>.ts` (continuous chunked MPEG-TS streaming)
-- `/live/<user>/<pass>/<stream_id>.m3u8` (302 redirect to edge manifest + segment delivery)
+- `/live/<user>/<pass>/<stream_id>.m3u8` (302 redirect to edge manifest +
+  segment delivery)
 - Real provider quirks:
   - HTTP 513 on wrong or masked (`***`) passwords
   - 302 redirect to `/video/black.ts` static Apache placeholder for dead streams
-  - Strict concurrent live-stream connection tracking (`max_connections=1` enforcement)
+  - Strict concurrent live-stream connection tracking (`max_connections=1`
+    enforcement)
 """
 
 from __future__ import annotations
@@ -28,7 +32,9 @@ from urllib.parse import parse_qs, unquote, urlsplit
 def make_valid_mpegts_chunk(
   packet_count: int = 32, *, marker_byte: int = 0xAA
 ) -> bytes:
-  """Build valid 188-byte MPEG-TS packets with 0x47 sync byte and PAT/PMT-like header."""
+  """Build valid 188-byte MPEG-TS packets with 0x47 sync byte and PAT/PMT-like
+  header.
+  """
   pkt = bytes([0x47, 0x40, 0x00, 0x10]) + bytes([marker_byte]) * 184
   return pkt * packet_count
 
@@ -240,7 +246,7 @@ class FakeXtreamServer:
       return
 
     if path == "/video/black.ts":
-      # Static Apache-style offline placeholder matching provider.example quirk
+      # Static Apache-style offline placeholder matching upstream panel quirks
       body = make_valid_mpegts_chunk(4, marker_byte=0x00)
       await self._send_raw(
         writer,

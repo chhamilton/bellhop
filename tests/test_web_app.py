@@ -204,7 +204,8 @@ async def test_web_guide_api_filtering_search_and_stream_proxy(
           json={"username": "admin", "password": "secret"},
         ) as sign_in:
           assert sign_in.status == 200
-        # 1. Root index.html (including stateful query-param deep links) & assets
+        # 1. Root index.html (including stateful query-param deep links) &
+        #    assets
         async with client.get("/") as idx_resp:
           assert idx_resp.status == 200
           idx_text = await idx_resp.text()
@@ -261,7 +262,8 @@ async def test_web_guide_api_filtering_search_and_stream_proxy(
           search_lu = await r_q.json()
         assert [c["chno"] for c in search_lu["channels"]] == [1101]
 
-        # Remove TSN1.ca from SQLite EPG schedules and confirm `has_epg=1` hides it
+        # Remove TSN1.ca from SQLite EPG schedules and confirm `has_epg=1` hides
+        # it
         refresher.db.replace_guide_schedules(
           snap=store.get_snapshot(),
           programs_by_id={"ICITeleMontreal.ca": ici_progs},
@@ -288,7 +290,8 @@ async def test_web_guide_api_filtering_search_and_stream_proxy(
         async with client.post("/api/tuner/release") as rel_resp:
           assert rel_resp.status == 200
 
-        # 7. HLS manifest rewrite & segment relay (opaque asset tokens — zero upstream URLs/secrets)
+        # 7. HLS manifest rewrite & segment relay (opaque asset tokens — zero
+        #    upstream URLs/secrets)
         async with client.get("/api/hls/1101/index.m3u8") as hls_resp:
           assert hls_resp.status == 200
           hls_text = await hls_resp.text()
@@ -304,7 +307,8 @@ async def test_web_guide_api_filtering_search_and_stream_proxy(
           assert seg_resp.status == 200
           assert await seg_resp.read() == ts_bytes
 
-        # 8. Server hardening: no wildcard CORS on Web Guide routes, path traversal 403, 404, 413
+        # 8. Server hardening: no wildcard CORS on Web Guide routes, path
+        #    traversal 403, 404, 413
         async with client.options("/api/lineup") as opt_resp:
           assert opt_resp.headers.get("Access-Control-Allow-Origin") is None
 
@@ -352,12 +356,14 @@ async def test_tuner_release_scoped_by_client_id_prevents_reload_race() -> None:
     mode="mpegts",
     client_id="new-tab",
   )
-  # A delayed pagehide beacon from the previous page must NOT kill the reloaded page's session
+  # A delayed pagehide beacon from the previous page must NOT kill the reloaded
+  # page's session
   assert await mgr.release_all(client_id="old-tab") is False
   assert not session.cancel_event.is_set()
   assert mgr.active_info is not None and mgr.active_info["chno"] == 1108
 
-  # Closing from the owning tab (or unscoped release) DOES cancel the active session
+  # Closing from the owning tab (or unscoped release) DOES cancel the active
+  # session
   async def _finish() -> None:
     await session.cancel_event.wait()
     await mgr.mark_closed(session)
@@ -473,7 +479,8 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
 
         assert fetch_count == 1
         assert cache_file.is_file()
-        # bellhop-web keeps output/xtream/ read-only and stores its own SQLite EPG database
+        # bellhop-web keeps output/xtream/ read-only and stores its own SQLite
+        # EPG database
         assert not (xt_dir / "get_epg.json").exists()
         assert b"super_secret_epg_pw" not in cache_file.read_bytes()
         assert "super_secret_epg_pw" not in json.dumps(health)
@@ -506,7 +513,8 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
       await runner.cleanup()
       await app.shutdown()
 
-    # Simulate restart: fresh store + refresher hydrate from bellhop-web's cache with 0 network calls
+    # Simulate restart: fresh store + refresher hydrate from bellhop-web's cache
+    # with 0 network calls
     store_restarted = LineupGuideStore(xt_dir)
     refresher_restarted = EpgRefreshService(
       store_restarted,
@@ -525,7 +533,8 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
     assert reason == "fresh"
     assert fetch_count == 2  # no redundant fetch after restart!
 
-    # Simulate restart after time advances: mix of stale + fresh entries evicts stale from SQLite
+    # Simulate restart after time advances: mix of stale + fresh entries evicts
+    # stale from SQLite
     import contextlib
     import sqlite3
 
@@ -566,7 +575,8 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
       )
     )
 
-    # Simulate restart when ALL cached entries are stale: evicts cache file & schedules fresh fetch
+    # Simulate restart when ALL cached entries are stale: evicts cache file &
+    # schedules fresh fetch
     store_expired = LineupGuideStore(xt_dir)
     refresher_expired = EpgRefreshService(
       store_expired,
@@ -586,7 +596,8 @@ def test_store_m3u8_and_gzip_xmltv_fallbacks(tmp_path: Path) -> None:
   import gzip
   from datetime import datetime, timezone
 
-  # M3U8 fallback + gzipped XMLTV fallback in LineupGuideStore when output/xtream is empty
+  # M3U8 fallback + gzipped XMLTV fallback in LineupGuideStore when
+  # output/xtream is empty
   empty_xtream = tmp_path / "output" / "xtream"
   empty_xtream.mkdir(parents=True)
   m3u8_file = tmp_path / "output" / "lineup.m3u8"
@@ -650,7 +661,8 @@ async def test_public_logo_and_favicon_served_before_auth(
 
   try:
     async with new_test_session(base) as client:
-      # Unauthenticated /login renders centered Bellhop splash logo, favicons & theme toggle
+      # Unauthenticated /login renders centered Bellhop splash logo, favicons &
+      # theme toggle
       async with client.get("/login", allow_redirects=False) as login_resp:
         assert login_resp.status == 200
         csp = login_resp.headers.get("Content-Security-Policy", "")
@@ -670,7 +682,8 @@ async def test_public_logo_and_favicon_served_before_auth(
         assert 'class="icon-sun"' in login_text
         assert 'class="icon-moon"' in login_text
 
-      # Brand, favicon, shared stylesheet, prefs & login controller are public before auth
+      # Brand, favicon, shared stylesheet, prefs & login controller are public
+      # before auth
       async with client.get("/static/styles.css") as pre_styles:
         assert pre_styles.status == 200
         assert "text/css" in pre_styles.headers["Content-Type"]
@@ -704,7 +717,8 @@ async def test_public_logo_and_favicon_served_before_auth(
         async with client.get(protected_js, allow_redirects=False) as r_app:
           assert r_app.status == 401
 
-      # Authenticated index.html renders upper-left logo, favicons, prefs.js & theme toggle
+      # Authenticated index.html renders upper-left logo, favicons, prefs.js &
+      # theme toggle
       async with client.post(
         "/api/auth/login",
         json={"username": "admin", "password": "secret"},
@@ -802,7 +816,8 @@ def test_wcag_aa_contrast_landmarks_and_keyboard_a11y_contracts() -> None:
   assert "--tl-col-width" in compiled_js
   assert ".tl-ch-cell:focus-visible" in styles_css
 
-  # 3. WCAG 2.1 AA contrast >= 4.5:1 for muted/empty category text in both themes
+  # 3. WCAG 2.1 AA contrast >= 4.5:1 for muted/empty category text in both
+  #    themes
   def _hex_to_rgb(hex_str: str) -> tuple[int, int, int]:
     h = hex_str.strip().lstrip("#")
     return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
@@ -854,7 +869,9 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
   tmp_path: Path,
   caplog: pytest.LogCaptureFixture,
 ) -> None:
-  """Verify `/api/health` exposes `lineup_updated_at`, logs reload, & auto-fetches EPG."""
+  """Verify `/api/health` exposes `lineup_updated_at`, logs reload, &
+  auto-fetches EPG.
+  """
   import logging
   from datetime import datetime, timezone
 
@@ -924,7 +941,8 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
         ) as sign_in:
           assert sign_in.status == 200
 
-        # 1. Wait for initial EPG fetch (only initial channels extracted; ASN.ca not yet in lineup)
+        # 1. Wait for initial EPG fetch (only initial channels extracted; ASN.ca
+        #    not yet in lineup)
         async def _first_xmltv_done() -> bool:
           async with client.get("/api/health") as r_h:
             h1 = await r_h.json()
@@ -944,13 +962,15 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
         assert isinstance(ts1, (int, float)) and ts1 > 0
         init_count = lu1["lineup"]["total_channels"]
 
-        # 2. Repeated `/api/health` checks with no disk change keep `lineup_updated_at` identical
+        # 2. Repeated `/api/health` checks with no disk change keep
+        #    `lineup_updated_at` identical
         async with client.get("/api/health") as r_h_idle:
           h_idle = await r_h_idle.json()
         assert h_idle["lineup_updated_at"] == ts1
         assert xmltv_fetches == 1
 
-        # 3. Simulate `bellhop run` exporting a newly matched channel (`1258 A Atlantic`, `ASN.ca`)
+        # 3. Simulate `bellhop run` exporting a newly matched channel (`1258 A
+        #    Atlantic`, `ASN.ca`)
         bundle_data["live_streams"].append(
           {
             "num": 1258,
@@ -971,7 +991,8 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
         )
         bundle_path.write_text(json.dumps(bundle_data), encoding="utf-8")
 
-        # 4. `/api/health` immediately bumps `lineup_updated_at`, logs reload, & kicks off EPG refresh
+        # 4. `/api/health` immediately bumps `lineup_updated_at`, logs reload, &
+        #    kicks off EPG refresh
         async with client.get("/api/health") as r_h2:
           h2 = await r_h2.json()
         assert h2["lineup_updated_at"] > ts1
@@ -990,7 +1011,8 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
         assert xmltv_fetches == 2
         assert "lineup_changed" in refresher.status_dict()["last_reason"]
 
-        # 5. Reloaded `/api/lineup` includes channel 1258 AND its newly fetched `ASN.ca` guide data!
+        # 5. Reloaded `/api/lineup` includes channel 1258 AND its newly fetched
+        #    `ASN.ca` guide data!
         async with client.get("/api/lineup") as r_lu2:
           lu2 = await r_lu2.json()
         assert lu2["lineup"]["lineup_updated_at"] >= h2["lineup_updated_at"]
@@ -1005,7 +1027,9 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
 def test_epg_priority_fallback_and_weighted_interval_deoverlapping(
   tmp_path: Path,
 ) -> None:
-  """Verify EPG alias priority fallback (no cross-feed pooling), v1 cache invalidation, and DP de-overlapping."""
+  """Verify EPG alias priority fallback (no cross-feed pooling), v1 cache
+  invalidation, and DP de-overlapping.
+  """
   now_ts = 1_764_000_000
   xt_dir = tmp_path / "xtream"
   xt_dir.mkdir(parents=True, exist_ok=True)
@@ -1065,7 +1089,8 @@ def test_epg_priority_fallback_and_weighted_interval_deoverlapping(
   store = LineupGuideStore(xt_dir)
   snap = store.get_snapshot()
   lookup = snap.build_epg_channel_lookup()
-  # Primary `Cinemax.us` on 1307 must NEVER be overwritten by 1306's secondary alias
+  # Primary `Cinemax.us` on 1307 must NEVER be overwritten by 1306's secondary
+  # alias
   assert lookup["hbo.us"] == "HBO.us"
   assert lookup["cinemax.us"] == "Cinemax.us"
   assert lookup["bbcnews.uk"] == "BBCWorld.ca"
@@ -1104,16 +1129,19 @@ def test_epg_priority_fallback_and_weighted_interval_deoverlapping(
     candidate_chains=chains,
     now_timestamp=now_ts,
   )
-  # 1306 (`HBO.us`) keeps ONLY `HBO.us` programmes — never interleaved with `Cinemax.us`!
+  # 1306 (`HBO.us`) keeps ONLY `HBO.us` programmes — never interleaved with
+  # `Cinemax.us`!
   assert [p.title for p in parsed["HBO.us"]] == [
     "The Gilded Age",
     "This Is Not a War Story",
   ]
   assert [p.title for p in parsed["Cinemax.us"]] == ["Happy Death Day"]
-  # 1510 (`BBCWorld.ca`) has no primary XMLTV entries, so it cleanly falls back to `BBCNews.uk`
+  # 1510 (`BBCWorld.ca`) has no primary XMLTV entries, so it cleanly falls back
+  # to `BBCNews.uk`
   assert [p.title for p in parsed["BBCWorld.ca"]] == ["BBC News Now"]
 
-  # Pre-fix `v1` EPG cache files on disk must be ignored so stale merged feeds re-fetch cleanly
+  # Pre-fix `v1` EPG cache files on disk must be ignored so stale merged feeds
+  # re-fetch cleanly
   v1_cache = tmp_path / "epg_cache.json"
   v1_cache.write_text(
     json.dumps(
@@ -1143,7 +1171,8 @@ def test_epg_priority_fallback_and_weighted_interval_deoverlapping(
   )
   assert refresher.hydrate_from_cache(now_ts=now_ts) == 0
 
-  # Single-channel multi-grabber overlaps: shifted duplicates, <=5m bumper overlap, & live sports preemption
+  # Single-channel multi-grabber overlaps: shifted duplicates, <=5m bumper
+  # overlap, & live sports preemption
   base = now_ts
   messy_items = [
     # Movie 1 ending 3m after Movie 2's grabber A start (`<=5m` boundary bumper)
@@ -1154,7 +1183,8 @@ def test_epg_priority_fallback_and_weighted_interval_deoverlapping(
       start_timestamp=base,
       stop_timestamp=base + 5400,
     ),
-    # Shifted duplicate pair from 2 grabbers (`+5220..+11340` vs `+5400..+12600`)
+    # Shifted duplicate pair from 2 grabbers (`+5220..+11340` vs
+    # `+5400..+12600`)
     ProgramItem(
       id="2",
       channel_id="TSN3.ca",
@@ -1170,7 +1200,8 @@ def test_epg_priority_fallback_and_weighted_interval_deoverlapping(
       start_timestamp=base + 5400,
       stop_timestamp=base + 12600,
     ),
-    # Competing afternoon tracks: generic `SportsCentre` filler vs `SC` + `Live: FIFA World Cup` preemption
+    # Competing afternoon tracks: generic `SportsCentre` filler vs `SC` + `Live:
+    # FIFA World Cup` preemption
     ProgramItem(
       id="4",
       channel_id="TSN3.ca",

@@ -1,4 +1,6 @@
-"""Tests for Bell Fibe Montreal YAML lineup integrity and multi-signal channel matching."""
+"""Tests for Bell Fibe Montreal YAML lineup integrity and multi-signal channel
+matching.
+"""
 
 from __future__ import annotations
 
@@ -114,7 +116,8 @@ def test_matcher_prioritizes_montreal_and_isolates_siblings() -> None:
 
   matcher = ChannelMatcher(sample_streams, pinned_streams={1401: 501})
 
-  # 1101 ICI Radio-Canada Montreal: picks Montreal FHD (#103), ranks generic (#102) 2nd, excludes Ottawa (#101)
+  # 1101 ICI Radio-Canada Montreal: picks Montreal FHD (#103), ranks generic
+  # (#102) 2nd, excludes Ottawa (#101)
   rc_cands = matcher.find_candidates(by_chno[1101])
   assert [c.stream.stream_id for c in rc_cands] == [103, 102]
 
@@ -147,7 +150,9 @@ def test_matcher_prioritizes_montreal_and_isolates_siblings() -> None:
 
 
 def test_every_bell_fibe_channel_matches_canonical_xtream_stream() -> None:
-  """Verify all 163 Bell Fibe Montreal channels match realistic CA/QC Xtream stream names."""
+  """Verify all 163 Bell Fibe Montreal channels match realistic CA/QC Xtream
+  stream names.
+  """
   lineup = load_lineup(LINEUP_PATH)
   synthetic_streams = [
     XtreamStream(
@@ -172,7 +177,9 @@ def test_every_bell_fibe_channel_matches_canonical_xtream_stream() -> None:
 
 
 def test_non_montreal_lineup_regional_and_timezone_generalization() -> None:
-  """Verify Toronto, Vancouver, New York, and LA lineups infer local feeds & logos."""
+  """Verify Toronto, Vancouver, New York, and LA lineups infer local feeds &
+  logos.
+  """
   streams = [
     XtreamStream(
       stream_id=101,
@@ -233,7 +240,8 @@ def test_non_montreal_lineup_regional_and_timezone_generalization() -> None:
   matcher = ChannelMatcher(streams)
 
   # 1. Rogers Toronto (M5V): chno 1101 keeps its CFTO logo (not Bell Fibe CBFT)
-  #    and prioritizes CTV Toronto (#102), while out-of-market CTV Vancouver (#1250)
+  # and prioritizes CTV Toronto (#102), while out-of-market CTV Vancouver
+  # (#1250)
   #    picks #103.
   toronto_channels = normalize_provider_slots(
     [
@@ -264,7 +272,8 @@ def test_non_montreal_lineup_regional_and_timezone_generalization() -> None:
   assert matcher.find_candidates(tor_by_chno[1101])[0].stream.stream_id == 102
   assert matcher.find_candidates(tor_by_chno[1250])[0].stream.stream_id == 103
 
-  # Snapshot round-trip of non-Bell-Fibe lineup also avoids Bell Fibe chno logo bleed
+  # Snapshot round-trip of non-Bell-Fibe lineup also avoids Bell Fibe chno logo
+  # bleed
   reloaded_tor = CableLineup.from_dict(
     {
       "lineup_id": "TVG-9100009999",
@@ -276,7 +285,8 @@ def test_non_montreal_lineup_regional_and_timezone_generalization() -> None:
   )
   assert reloaded_tor.channels[0].logo is None
 
-  # 2. Telus Vancouver (V6B): CBC picks Vancouver (#202) and TSN prefers West (#302)
+  # 2. Telus Vancouver (V6B): CBC picks Vancouver (#202) and TSN prefers West
+  #    (#302)
   van_channels = normalize_provider_slots(
     [
       RawProviderSlot(

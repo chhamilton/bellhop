@@ -1,10 +1,13 @@
-"""End-to-end tests for Bellhop's Alpine Docker packaging, entrypoint, and runtime.
+"""End-to-end tests for Bellhop's Alpine Docker packaging, entrypoint, and
+runtime.
 
 Covers:
   1. Static contract validation of `Dockerfile`, `docker/entrypoint.sh`,
-     `docker/config.docker.yaml`, `docker-compose.example.yml`, and `.env.example`.
+     `docker/config.docker.yaml`, `docker-compose.example.yml`, and
+     `.env.example`.
   2. Live subprocess end-to-end execution of `docker/entrypoint.sh` driving both
-     `bellhop run --skip validate` and `bellhop serve` against `FakeXtreamServer`
+     `bellhop run --skip validate` and `bellhop serve` against
+     `FakeXtreamServer`
      with surfaced login credentials, `TZ`, isolated mount dirs, and `SIGTERM`.
   3. Live `docker build` + `docker run` container end-to-end test (executed
      automatically whenever a Docker/Podman daemon is available; skipped cleanly
@@ -84,7 +87,8 @@ def test_dockerfile_compose_and_env_contract(
   assert 'CMD ["bellhop", "serve"]' in dockerfile
   assert "bellhop-web" not in dockerfile
 
-  # Validate POSIX shell syntax and executable bit of docker/entrypoint.sh & bellhop-shim.sh.
+  # Validate POSIX shell syntax and executable bit of docker/entrypoint.sh &
+  # bellhop-shim.sh.
   for script_name in ("entrypoint.sh", "bellhop-shim.sh"):
     script_path = REPO_ROOT / "docker" / script_name
     assert script_path.is_file()
@@ -106,6 +110,7 @@ def test_dockerfile_compose_and_env_contract(
   )
   assert "chown -R" not in entrypoint_text
   assert "find " in entrypoint_text
+  assert "refusing to run as root" in entrypoint_text
 
   # Validate docker-compose.example.yml structure & surfaced credentials/mounts.
   compose: dict[str, Any] = yaml.safe_load(
@@ -177,7 +182,9 @@ def test_dockerfile_compose_and_env_contract(
 
 
 def test_requirements_lock_and_vendored_player_provenance() -> None:
-  """Verify pinned `requirements.lock` and `static/vendor/VERSIONS.md` digests."""
+  """Verify pinned `requirements.lock` and `static/vendor/VERSIONS.md`
+  digests.
+  """
   import hashlib
   import importlib.metadata as md
   import re
@@ -194,7 +201,8 @@ def test_requirements_lock_and_vendored_player_provenance() -> None:
     pkg_name, pkg_ver = spec_part.split("==", 1)
     norm_name = re.sub(r"[-_.]+", "-", pkg_name.strip()).lower()
     locked[norm_name] = pkg_ver.strip()
-    # If marker applies to the running interpreter, verify .venv matches lockfile.
+    # If marker applies to the running interpreter, verify .venv matches
+    # lockfile.
     if ";" not in line or (sys.version_info < (3, 11)):
       installed_ver = md.version(pkg_name.strip())
       assert installed_ver == pkg_ver.strip(), (
@@ -246,7 +254,9 @@ def test_requirements_lock_and_vendored_player_provenance() -> None:
 async def test_container_entrypoint_end_to_end_pipeline_and_serve(
   tmp_path: Path,
 ) -> None:
-  """Execute `docker/entrypoint.sh` end-to-end with isolated mount directories."""
+  """Execute `docker/entrypoint.sh` end-to-end with isolated mount
+  directories.
+  """
   now_ts = int(time.time())
   fake_xtream = FakeXtreamServer(
     username="up_user",
@@ -280,7 +290,8 @@ async def test_container_entrypoint_end_to_end_pipeline_and_serve(
     output_dir = tmp_path / "data" / "output"
     port = _pick_free_port()
 
-    # Build a minimal container-layout default config template for entrypoint seeding.
+    # Build a minimal container-layout default config template for entrypoint
+    # seeding.
     lineup_yaml = tmp_path / "mini_lineup.yaml"
     lineup_yaml.write_text(
       """\
@@ -358,7 +369,8 @@ channels:
 
     entrypoint = str(REPO_ROOT / "docker" / "entrypoint.sh")
 
-    # 1. First invocation seeds /config/config.yaml and runs pipeline via entrypoint.
+    # 1. First invocation seeds /config/config.yaml and runs pipeline via
+    #    entrypoint.
     run_proc = await asyncio.to_thread(
       subprocess.run,
       [entrypoint, "bellhop", "run", "--skip", "validate", "--quiet"],
@@ -377,7 +389,8 @@ channels:
     assert (output_dir / "bellhop.m3u8").is_file()
     assert (output_dir / "xtream" / "bellhop_xtream_playlist.json").is_file()
 
-    # 2. Launch `entrypoint.sh` with default CMD (`bellhop serve`) and verify HTTP E2E.
+    # 2. Launch `entrypoint.sh` with default CMD (`bellhop serve`) and verify
+    #    HTTP E2E.
     serve_proc = subprocess.Popen(
       [entrypoint, "bellhop", "serve", "--quiet"],
       cwd=REPO_ROOT,
@@ -406,7 +419,8 @@ channels:
           await asyncio.sleep(0.1)
       assert ready, "bellhop serve did not become healthy in time"
 
-      # Unauthenticated `/` redirects to `/login`, while logo/favicon/prefs are public.
+      # Unauthenticated `/` redirects to `/login`, while logo/favicon/prefs are
+      # public.
       root_r = await client.get("/")
       assert root_r.status_code == 302
       assert root_r.headers["location"] == "/login"
@@ -414,7 +428,8 @@ channels:
       assert (await client.get("/favicon.ico")).status_code == 200
       assert (await client.get("/static/prefs.js")).status_code == 200
 
-      # Authenticate using the surfaced BELLHOP_WEB_USERNAME / PASSWORD env vars.
+      # Authenticate using the surfaced BELLHOP_WEB_USERNAME / PASSWORD env
+      # vars.
       login_r = await client.post(
         "/api/auth/login",
         json={"username": "e2e_admin", "password": "e2e_web_password"},
@@ -438,7 +453,8 @@ channels:
             break
         assert first_chunk[0] == 0x47
 
-      # Passthrough Xtream API honors surfaced BELLHOP_SERVE_USERNAME / PASSWORD.
+      # Passthrough Xtream API honors surfaced BELLHOP_SERVE_USERNAME /
+      # PASSWORD.
       xt_r = await client.get(
         "/player_api.php",
         params={"username": "e2e_xt_user", "password": "e2e_xt_password"},
@@ -470,7 +486,9 @@ channels:
 @pytest.mark.slow
 @pytest.mark.asyncio
 async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
-  """Build the real Alpine Docker image and test it E2E against FakeXtreamServer."""
+  """Build the real Alpine Docker image and test it E2E against
+  FakeXtreamServer.
+  """
   container_cli = _detect_container_cli()
   if container_cli is None:
     if os.environ.get("BELLHOP_REQUIRE_DOCKER") == "1":
@@ -492,7 +510,8 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
   )
   assert build.returncode == 0, f"Container build failed:\n{build.stderr}"
 
-  # Start a live FakeXtreamServer on the host reachable from inside the container.
+  # Start a live FakeXtreamServer on the host reachable from inside the
+  # container.
   now_ts = int(time.time())
   fake_xtream = FakeXtreamServer(
     host="0.0.0.0",
@@ -625,7 +644,8 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
           f"STDOUT:\n{logs.stdout}\nSTDERR:\n{logs.stderr}"
         )
 
-      # 2. Verify auto-seeded config, PUID/PGID ownership, non-root process, and TZ.
+      # 2. Verify auto-seeded config, PUID/PGID ownership, non-root process, and
+      #    TZ.
       seeded = cfg_dir / "config.yaml"
       assert seeded.is_file()
       st = seeded.stat()
@@ -644,7 +664,8 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
       assert tz_check.stdout.strip() in {"EST", "EDT"}
 
       # 3. Run the 6-phase pipeline via plain `docker exec` (NO `-u` flag!):
-      #    `docker exec` starts as uid 0, and `/usr/local/bin/bellhop` must auto-drop
+      # `docker exec` starts as uid 0, and `/usr/local/bin/bellhop` must
+      # auto-drop
       #    privileges to PUID:PGID so volume files are never created as root.
       raw_exec_id = await asyncio.to_thread(
         subprocess.run,
@@ -677,7 +698,8 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
         f"In-container `bellhop run` failed:\n{run_pipe.stdout}\n{run_pipe.stderr}"
       )
 
-      # Verify mounted state & output artifacts exist on host with PUID:PGID ownership.
+      # Verify mounted state & output artifacts exist on host with PUID:PGID
+      # ownership.
       mapping_file = state_dir / "channel_mapping.json"
       m3u8_file = output_dir / "bellhop.m3u8"
       xt_bundle = output_dir / "xtream" / "bellhop_xtream_playlist.json"
@@ -686,7 +708,8 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
         assert artifact.stat().st_uid == uid
         assert artifact.stat().st_gid == gid
 
-      # 4. Verify unauthenticated redirect, public brand/favicon/prefs assets, and login.
+      # 4. Verify unauthenticated redirect, public brand/favicon/prefs assets,
+      #    and login.
       root_r = await client.get("/")
       assert root_r.status_code == 302
       assert root_r.headers["location"] == "/login"
@@ -710,7 +733,8 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
       assert "/static/prefs.js" in index_r.text
       assert (await client.get("/static/guide_logic.js")).status_code == 200
 
-      # 5. Verify hot-reloaded lineup + dynamic passthrough EPG from FakeXtreamServer.
+      # 5. Verify hot-reloaded lineup + dynamic passthrough EPG from
+      #    FakeXtreamServer.
       refresh_r = await client.post("/api/epg/refresh")
       assert refresh_r.status_code == 200
 
@@ -737,7 +761,8 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
       assert "container_pw" not in cfg_r.text
       assert "up_secret" not in cfg_r.text
 
-      # 6. Verify live MPEG-TS streaming + single-tuner HLS preemption through container.
+      # 6. Verify live MPEG-TS streaming + single-tuner HLS preemption through
+      #    container.
       async with client.stream("GET", "/api/stream/1101.ts?client=c1") as st_r:
         assert st_r.status_code == 200
         ts_buf = b""
@@ -761,7 +786,8 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
       assert seg_r.content[0] == 0x47
       assert fake_xtream.connection_limit_violations == 0
 
-      # 7. Verify Passthrough Xtream Codes API with surfaced BELLHOP_SERVE credentials.
+      # 7. Verify Passthrough Xtream Codes API with surfaced BELLHOP_SERVE
+      #    credentials.
       xt_auth = await client.get(
         "/player_api.php",
         params={"username": "container_xt", "password": "container_xt_pw"},

@@ -1,4 +1,6 @@
-"""Owner-only (`0o600` / `0o700`) atomic file and directory persistence helpers."""
+"""Owner-only (`0o600` / `0o700`) atomic file and directory persistence
+helpers.
+"""
 
 from __future__ import annotations
 
@@ -50,7 +52,8 @@ def chmod_private_file(path: Path) -> None:
 
 
 def write_private_bytes(path: Path, data: bytes) -> None:
-  """Atomically write `data` to `path` with strict `0o600` owner-only permissions.
+  """Atomically write `data` to `path` with strict `0o600` owner-only
+  permissions.
 
   Creates the temporary sibling file with mode `0o600` at `os.open()` time so
   sensitive bytes are never readable by group or world users.

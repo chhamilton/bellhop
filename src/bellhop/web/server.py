@@ -1,4 +1,6 @@
-"""aiohttp web application and single-tuner stream relay for the Bellhop Web Guide."""
+"""aiohttp web application and single-tuner stream relay for the Bellhop Web
+Guide.
+"""
 
 from __future__ import annotations
 
@@ -43,6 +45,7 @@ from bellhop.common.http_utils import (
   detect_device_ip,
   json_response,
   parse_trusted_proxy_networks,
+  redact_url_secrets,
   redirect_response,
   resolve_request_client_ip,
   upstream_url,
@@ -53,6 +56,7 @@ from bellhop.common.http_utils import (
 from bellhop.common.http_utils import (
   resolve_bind_host as _resolve_bind_host,
 )
+from bellhop.epg.constants import EPG_RECENT_FLOOR_SEC
 from bellhop.epg.refresh import (
   EpgRefreshService,
   EpgRefreshStatus,
@@ -91,23 +95,11 @@ HLS_URI_ATTR_RE = re.compile(r'URI="([^"]+)"')
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 HLS_ASSET_TTL_SEC = 300.0
 HLS_MAX_ASSETS = 1024
-_URL_SECRET_RE = re.compile(
-  r"(/(?:live|movie|series|timeshift)/[^/\s]+/)([^/\s]+)(/|password=)([^&\s'\"\\]*)",
-  re.IGNORECASE,
-)
 
 
 def _redact_upstream_text(text: str) -> str:
   """Mask upstream credentials in logged error strings."""
-  masked = re.sub(
-    r"(/(?:live|movie|series|timeshift)/[^/\s]+/)([^/\s]+)(/)",
-    r"\1***\3",
-    text,
-    flags=re.IGNORECASE,
-  )
-  return re.sub(
-    r"(password=)([^&\s'\"\\]+)", r"\1***", masked, flags=re.IGNORECASE
-  )
+  return redact_url_secrets(text)
 
 
 def _to_hls_url(direct_source: str) -> str:
@@ -127,7 +119,9 @@ def rewrite_hls_manifest(
   *,
   register_asset: Callable[[int, str], str],
 ) -> str:
-  """Rewrite relative and absolute URIs in an M3U8 manifest to opaque local tokens."""
+  """Rewrite relative and absolute URIs in an M3U8 manifest to opaque local
+  tokens.
+  """
   out_lines: list[str] = []
 
   def _proxy_uri(raw_uri: str) -> str:
@@ -171,7 +165,9 @@ class ActiveTunerSession:
 
 
 class TunerSessionManager:
-  """Coordinates single-tuner stream handoffs so max_connections=1 accounts never collide."""
+  """Coordinates single-tuner stream handoffs so max_connections=1 accounts
+  never collide.
+  """
 
   def __init__(
     self,
@@ -304,18 +300,22 @@ class WebGuideApp:
       session_factory or default_session_factory
     )
     self._client: aiohttp.ClientSession | None = None
-    # Active HLS edge playlist URL cache: chno -> (resolved_edge_url, last_used_epoch)
+    # Active HLS edge playlist URL cache: chno -> (resolved_edge_url,
+    # last_used_epoch)
     self._hls_edge_urls: dict[int, tuple[str, float]] = {}
     self._hls_owner_client: str = ""
     self._hls_secret: bytes = secrets.token_bytes(32)
-    # Opaque server-side HLS asset table: token -> (chno, resolved_url, expires_at)
+    # Opaque server-side HLS asset table: token -> (chno, resolved_url,
+    # expires_at)
     self._hls_assets: dict[str, tuple[int, str, float]] = {}
 
   # ---------------------------------------------------------------------------
   # Lifecycle
   # ---------------------------------------------------------------------------
   async def startup(self) -> None:
-    """Create the upstream HTTP client and start the EPG refresher (idempotent)."""
+    """Create the upstream HTTP client and start the EPG refresher
+    (idempotent).
+    """
     if self._client is None:
       self._client = self._session_factory(
         timeout=aiohttp.ClientTimeout(
@@ -327,7 +327,9 @@ class WebGuideApp:
       await self.epg_refresher.start()
 
   async def shutdown(self) -> None:
-    """Stop the EPG refresher, release the tuner, and close the upstream client."""
+    """Stop the EPG refresher, release the tuner, and close the upstream
+    client.
+    """
     if self.epg_refresher is not None:
       await self.epg_refresher.stop()
     await self.tuner.release_all()
@@ -353,7 +355,8 @@ class WebGuideApp:
     r = app.router
     protect = self._protected
 
-    # Public brand, favicon, stylesheet & client-prefs/login assets (needed by `/login`).
+    # Public brand, favicon, stylesheet & client-prefs/login assets (needed by
+    # `/login`).
     for path, asset in (
       ("/favicon.ico", "favicon.ico"),
       ("/static/favicon.ico", "favicon.ico"),
@@ -403,7 +406,9 @@ class WebGuideApp:
 
   @staticmethod
   def _is_cross_site_mutation(request: web.Request) -> bool:
-    """Reject cross-site state-changing requests (`Sec-Fetch-Site` / `Origin`)."""
+    """Reject cross-site state-changing requests (`Sec-Fetch-Site` /
+    `Origin`).
+    """
     sec_site = (request.headers.get("Sec-Fetch-Site") or "").strip().lower()
     if sec_site == "cross-site":
       return True
@@ -416,6 +421,33 @@ class WebGuideApp:
       if not origin_host or (req_host and origin_host != req_host):
         return True
     return False
+
+  def _is_https_request(self, request: web.Request) -> bool:
+    """Return `True` when `request` arrived over TLS or a trusted HTTPS
+    proxy.
+    """
+    if request.secure:
+      return True
+    if not self.trust_proxy_headers:
+      return False
+    peer_ip = (request.remote or "").strip()
+    if not peer_ip:
+      return False
+    try:
+      import ipaddress
+
+      parsed_peer = ipaddress.ip_address(peer_ip)
+    except ValueError:
+      return False
+    if not any(parsed_peer in net for net in self._trusted_proxy_networks):
+      return False
+    xf_proto = (
+      (request.headers.get("X-Forwarded-Proto") or "")
+      .split(",", 1)[0]
+      .strip()
+      .lower()
+    )
+    return xf_proto == "https"
 
   def is_authenticated(
     self, request: web.Request, *, now_ts: int | None = None
@@ -433,14 +465,17 @@ class WebGuideApp:
     )
 
   def _protected(self, handler: _Handler) -> _Handler:
-    """Wrap `handler` with mandatory Web Guide session enforcement & sliding renewal."""
+    """Wrap `handler` with mandatory Web Guide session enforcement & sliding
+    renewal.
+    """
 
     async def _wrapped(request: web.Request) -> web.StreamResponse:
       now_ts = int(self._clock())
       session = self._session_for(request, now_ts=now_ts)
       if session is None:
+        is_https = self._is_https_request(request)
         clear_hdr = (
-          {"Set-Cookie": self.auth.build_clear_cookie_header()}
+          {"Set-Cookie": self.auth.build_clear_cookie_header(secure=is_https)}
           if f"{SESSION_COOKIE_NAME}=" in request.headers.get("Cookie", "")
           else None
         )
@@ -469,7 +504,10 @@ class WebGuideApp:
           session.username, now_ts=now_ts
         )
         response.headers.add(
-          "Set-Cookie", self.auth.build_set_cookie_header(new_tok)
+          "Set-Cookie",
+          self.auth.build_set_cookie_header(
+            new_tok, secure=self._is_https_request(request)
+          ),
         )
       return response
 
@@ -579,7 +617,11 @@ class WebGuideApp:
     self.login_limiter.record_success(client_ip)
 
     token, session = self.auth.create_session_token(username)
-    set_cookie = {"Set-Cookie": self.auth.build_set_cookie_header(token)}
+    set_cookie = {
+      "Set-Cookie": self.auth.build_set_cookie_header(
+        token, secure=self._is_https_request(request)
+      )
+    }
     if is_json:
       return json_response(
         {
@@ -599,10 +641,15 @@ class WebGuideApp:
         {"error": "Cross-site logout is forbidden"},
         status=HTTPStatus.FORBIDDEN,
       )
+    self.auth.revoke_session_from_headers(request.headers)
     client_id = request.query.get("client", "").strip() or None
     if client_id:
       await self.tuner.release_all(client_id=client_id)
-    extra = {"Set-Cookie": self.auth.build_clear_cookie_header()}
+    extra = {
+      "Set-Cookie": self.auth.build_clear_cookie_header(
+        secure=self._is_https_request(request)
+      )
+    }
     return json_response({"authenticated": False}, headers=extra)
 
   # ---------------------------------------------------------------------------
@@ -748,7 +795,7 @@ class WebGuideApp:
       ]:
         refresher.sync_external_if_needed(now_ts)
         return refresher.db.query_lineup_window(
-          min_stop_ts=now_ts - 3600,
+          min_stop_ts=now_ts - EPG_RECENT_FLOOR_SEC,
           max_start_ts=now_ts + 172800,
           per_channel_limit=48,
         )
@@ -880,7 +927,9 @@ class WebGuideApp:
     )
 
   def _register_hls_asset(self, chno: int, resolved_url: str) -> str:
-    """Register an HTTP(S) HLS segment/playlist URL and return its opaque token."""
+    """Register an HTTP(S) HLS segment/playlist URL and return its opaque
+    token.
+    """
     parsed = urlsplit(resolved_url)
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
       return ""
@@ -1026,7 +1075,8 @@ class WebGuideApp:
         {"error": f"Channel {chno} not found"}, status=HTTPStatus.NOT_FOUND
       )
 
-    # Close any continuous .ts connection and drop stale HLS sessions for OTHER channels
+    # Close any continuous .ts connection and drop stale HLS sessions for OTHER
+    # channels
     await self.tuner.release_all()
     if client_id:
       self._hls_owner_client = client_id
@@ -1037,7 +1087,8 @@ class WebGuideApp:
       if asset_ch != chno:
         self._hls_assets.pop(tok, None)
 
-    # 1. Reuse the cached edge playlist URL so 5s hls.js polls stay on one edge session.
+    # 1. Reuse the cached edge playlist URL so 5s hls.js polls stay on one edge
+    #    session.
     cached = self._hls_edge_urls.get(chno)
     if cached is not None:
       edge_url, ts = cached
@@ -1058,7 +1109,8 @@ class WebGuideApp:
           pass
       self._hls_edge_urls.pop(chno, None)
 
-    # 2. Acquire a fresh HLS session across candidate URLs (skipping black.ts placeholders).
+    # 2. Acquire a fresh HLS session across candidate URLs (skipping black.ts
+    #    placeholders).
     last_err = "Upstream HLS unavailable"
     for idx, raw_src in enumerate(cand_urls):
       if idx > 0 and self.tuner.settle_sec > 0:

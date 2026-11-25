@@ -1,4 +1,6 @@
-"""Declarative 6-phase Bellhop lineup curation, stream matching, validation, and export pipeline."""
+"""Declarative 6-phase Bellhop lineup curation, stream matching, validation, and
+export pipeline.
+"""
 
 from __future__ import annotations
 

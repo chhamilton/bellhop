@@ -1,4 +1,5 @@
-"""Shared Schedules Direct SD-JSON (`20141201`) authentication and HTTP session transport.
+"""Shared Schedules Direct SD-JSON (`20141201`) authentication and HTTP session
+transport.
 
 Used by both `bellhop.epg.sd_epg` (multi-day EPG schedules & program metadata)
 and `bellhop.pipeline.providers.schedules_direct` (lineup headend discovery &
@@ -22,10 +23,11 @@ import aiohttp
 
 from bellhop.common.file_utils import chmod_private_file, write_private_text
 from bellhop.common.http_utils import upstream_url
+from bellhop.epg.constants import SD_TOKEN_TTL_SEC
 
 DEFAULT_SD_BASE_URL = "https://json.schedulesdirect.org/20141201"
 SD_USER_AGENT = "Bellhop/0.1"
-TOKEN_TTL_SEC = 23.0 * 3600.0
+TOKEN_TTL_SEC = SD_TOKEN_TTL_SEC
 REAUTH_ERROR_CODES: frozenset[int] = frozenset({4001, 4003, 4004, 4007, 4009})
 
 SHA1_HEX_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -51,7 +53,14 @@ class SchedulesDirectApiError(RuntimeError):
 
 
 def hash_sd_password(password: str) -> str:
-  """Return lowercase SHA-1 hex digest required by Schedules Direct `/token`."""
+  """Return lowercase SHA-1 hex digest required by Schedules Direct `/token`.
+
+  Args:
+    password: Raw plaintext password or pre-hashed 40-char SHA-1 hex string.
+
+  Returns:
+    Lowercase 40-character hexadecimal SHA-1 digest.
+  """
   cleaned = password.strip()
   if SHA1_HEX_RE.match(cleaned.lower()):
     return cleaned.lower()
@@ -59,7 +68,14 @@ def hash_sd_password(password: str) -> str:
 
 
 def clean_sd_lineup_id(lineup_id: str) -> str | None:
-  """Validate and uppercase a Schedules Direct Gracenote lineup ID."""
+  """Validate and uppercase a Schedules Direct Gracenote lineup ID.
+
+  Args:
+    lineup_id: Candidate lineup identifier (e.g., `CAN-0004980-X`).
+
+  Returns:
+    Canonical uppercase SD lineup ID, or `None` if not an SD lineup ID.
+  """
   m = SD_LINEUP_ID_RE.match(lineup_id.strip())
   if not m:
     return None
@@ -72,7 +88,15 @@ def clean_sd_lineup_id(lineup_id: str) -> str | None:
 def normalize_sd_postal(
   raw_postal: str, *, explicit_country: str | None = None
 ) -> tuple[str, str]:
-  """Normalize a Canadian postal code / FSA or US 5-digit ZIP into `(postal, ISO3)`."""
+  """Normalize a Canadian postal code / FSA or US ZIP into `(postal, ISO3)`.
+
+  Args:
+    raw_postal: Raw postal code, 3-character Canadian FSA, or 5-digit US ZIP.
+    explicit_country: Optional ISO-2 / ISO-3 country override.
+
+  Returns:
+    Tuple `(normalized_postal, country_iso3)`.
+  """
   clean = re.sub(r"\s+", "", raw_postal.strip().upper())
   if explicit_country:
     c_up = explicit_country.strip().upper()
@@ -93,7 +117,9 @@ def normalize_sd_postal(
 
 
 class SchedulesDirectSession:
-  """Manages Schedules Direct `/token` caching (`0o600`) and authenticated JSON requests."""
+  """Manages Schedules Direct `/token` caching (`0o600`) and authenticated JSON
+  requests.
+  """
 
   def __init__(
     self,
@@ -113,7 +139,9 @@ class SchedulesDirectSession:
 
   @property
   def has_credentials(self) -> bool:
-    """Return `True` when both Schedules Direct username and password are set."""
+    """Return `True` when both Schedules Direct username and password are
+    set.
+    """
     return bool(self.username and self.password)
 
   def load_cached_token(self) -> str | None:
@@ -205,7 +233,9 @@ class SchedulesDirectSession:
     json_body: Any = None,
     allow_error_codes: frozenset[int] = frozenset(),
   ) -> Any:
-    """Execute an authenticated SD-JSON request with 1x automatic token refresh."""
+    """Execute an authenticated SD-JSON request with 1x automatic token
+    refresh.
+    """
     token = self.load_cached_token() or await self.authenticate(client)
     url = f"{self.base_url}/{path.lstrip('/')}"
 

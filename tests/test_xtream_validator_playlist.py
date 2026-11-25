@@ -1,4 +1,6 @@
-"""Tests for Xtream API client, two-stage stream validator, M3U8 output, and CLI."""
+"""Tests for Xtream API client, two-stage stream validator, M3U8 output, and
+CLI.
+"""
 
 from __future__ import annotations
 
@@ -383,7 +385,8 @@ pipeline:
     encoding="utf-8",
   )
 
-  # 1. Default (collapse_sd_dupes: false): emits both 101 (SD) and 1101 (HD) + 148 + 901
+  # 1. Default (collapse_sd_dupes: false): emits both 101 (SD) and 1101 (HD) +
+  #    148 + 901
   assert main(["-c", str(cfg_full), "--quiet"]) == 0
   full_text = out_full.read_text(encoding="utf-8")
   assert 'tvg-chno="101"' in full_text
@@ -391,7 +394,8 @@ pipeline:
   assert 'tvg-chno="148"' in full_text
   assert 'tvg-chno="901"' in full_text
 
-  # 2. With collapse_sd_dupes: true in config.yaml: collapses 101 duplicate, keeps 1101 HD + 148 & 901
+  # 2. With collapse_sd_dupes: true in config.yaml: collapses 101 duplicate,
+  #    keeps 1101 HD + 148 & 901
   cfg_collapsed = tmp_path / "config_collapsed.yaml"
   cfg_collapsed.write_text(
     f"""\
@@ -424,7 +428,9 @@ pipeline:
 def test_exported_group_dial_ranges_reflect_surviving_validated_channels(
   tmp_path: Path,
 ) -> None:
-  """Verify every exported group carries `(lo–hi)` computed from surviving channels only."""
+  """Verify every exported group carries `(lo–hi)` computed from surviving
+  channels only.
+  """
   from bellhop.pipeline.xtream_exporter import build_xtream_export_bundle
 
   lineup = CableLineup(
@@ -433,7 +439,8 @@ def test_exported_group_dial_ranges_reflect_surviving_validated_channels(
     market="Montréal, QC",
     postal_prefix="H2Y",
     channels=[
-      # Science & Docs initially had no range, and ch 1520 failed validation -> (1522–1528)
+      # Science & Docs initially had no range, and ch 1520 failed validation ->
+      # (1522–1528)
       LineupChannel(
         chno=1520, name="Dead Doc", group="Science & Docs", language="en"
       ),
@@ -443,7 +450,8 @@ def test_exported_group_dial_ranges_reflect_surviving_validated_channels(
       LineupChannel(
         chno=1528, name="Discovery", group="Science & Docs", language="en"
       ),
-      # Entertainment initially had stale raw range (1600–2309); 1600 & 2309 failed -> (1602–1660)
+      # Entertainment initially had stale raw range (1600–2309); 1600 & 2309
+      # failed -> (1602–1660)
       LineupChannel(
         chno=1600,
         name="Dead Lifestyle",

@@ -52,7 +52,9 @@ class _LoopbackResolver(aiohttp.abc.AbstractResolver):
 
 
 class MockHttpServer:
-  """Ephemeral `127.0.0.1:0` `aiohttp.web` server for unit-test upstream mocks."""
+  """Ephemeral `127.0.0.1:0` `aiohttp.web` server for unit-test upstream
+  mocks.
+  """
 
   def __init__(self, handler: MockHandler) -> None:
     self._handler = handler
@@ -152,7 +154,9 @@ class TestHttpResponse:
 
 
 class TestStreamResponse:
-  """Streaming `aiohttp.ClientResponse` wrapper for live MPEG-TS test assertions."""
+  """Streaming `aiohttp.ClientResponse` wrapper for live MPEG-TS test
+  assertions.
+  """
 
   __test__ = False
 
@@ -188,7 +192,9 @@ class TestCookieHelper:
 
 
 class TestHttpClient:
-  """Thin `aiohttp.ClientSession` test wrapper with buffered & streaming helpers."""
+  """Thin `aiohttp.ClientSession` test wrapper with buffered & streaming
+  helpers.
+  """
 
   __test__ = False
 

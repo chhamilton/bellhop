@@ -1,4 +1,6 @@
-"""Tests for Phase (6): Official Xtream Codes API JSON playlist & passthrough EPG verification."""
+"""Tests for Phase (6): Official Xtream Codes API JSON playlist & passthrough
+EPG verification.
+"""
 
 from __future__ import annotations
 
@@ -193,7 +195,8 @@ async def test_phase6_xtream_export_collapsed_hd_and_passthrough_epg(
     },
   ]
 
-  # 2. Inspect get_live_streams.json (Xtream player_api format with official Bell Fibe metadata)
+  # 2. Inspect get_live_streams.json (Xtream player_api format with official
+  #    Bell Fibe metadata)
   streams = json.loads(res.live_streams_path.read_text(encoding="utf-8"))
   assert len(streams) == 2
 
@@ -215,7 +218,8 @@ async def test_phase6_xtream_export_collapsed_hd_and_passthrough_epg(
   )
   assert "epg_listings" not in s_ici["guide"]
 
-  # 3. Inspect unified bundle passthrough EPG metadata & round-trip via load_catalog_from_json()
+  # 3. Inspect unified bundle passthrough EPG metadata & round-trip via
+  #    load_catalog_from_json()
   bundle = json.loads(res.bundle_path.read_text(encoding="utf-8"))
   assert bundle["server_info"]["xmltv_url"] == res.xmltv_url
   assert bundle["epg_guide"]["mode"] == "passthrough"
@@ -348,7 +352,8 @@ pipeline:
   assert not (xtream_dir / "xmltv.xml").exists()
   assert not (xtream_dir / "get_epg.json").exists()
 
-  # Now run single-phase `bellhop run --phase xtream` with collapse_sd_dupes: true in config
+  # Now run single-phase `bellhop run --phase xtream` with collapse_sd_dupes:
+  # true in config
   xtream_hd_dir = tmp_path / "output" / "xtream_hd"
   cfg_hd_path = tmp_path / "config_hd.yaml"
   cfg_hd_path.write_text(

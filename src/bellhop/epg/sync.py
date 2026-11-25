@@ -75,7 +75,9 @@ class BundleGuideSnapshot:
 
 
 class ExportBundleGuideStore:
-  """Headless `GuideStoreProto` adapter over `ExportBundleReader` for `bellhop run`."""
+  """Headless `GuideStoreProto` adapter over `ExportBundleReader` for `bellhop
+  run`.
+  """
 
   def __init__(
     self,
@@ -129,7 +131,17 @@ def build_epg_refresher_from_config(
   session_factory: ClientSessionFactory | None = None,
   enabled: bool = True,
 ) -> EpgRefreshService:
-  """Construct an `EpgRefreshService` wired to `config`'s SD-JSON & XMLTV settings."""
+  """Construct an `EpgRefreshService` wired to `config`'s SD-JSON & XMLTV.
+
+  Args:
+    config: Loaded application configuration.
+    store: Optional guide store (defaults to `ExportBundleGuideStore`).
+    session_factory: Optional `aiohttp.ClientSession` factory override.
+    enabled: Whether background refresh timers are enabled on startup.
+
+  Returns:
+    Configured `EpgRefreshService` backed by `cache/epg.sqlite3`.
+  """
   xmltv_override = (
     config.resolve_path(config.epg.xmltv_file)
     if config.epg.xmltv_file is not None

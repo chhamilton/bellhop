@@ -94,7 +94,9 @@ def _is_audio_lang_mismatch(cand: CandidateRecord) -> bool:
 
 @dataclass(slots=True)
 class CandidateRecord:
-  """A ranked potential stream candidate stored in the persistent channel mapping."""
+  """A ranked potential stream candidate stored in the persistent channel
+  mapping.
+  """
 
   stream_id: int
   name: str
@@ -303,7 +305,9 @@ class MappingUpdateSummary:
 
 @dataclass(slots=True)
 class MappingDocument:
-  """Persistent channel mapping file updated across monthly lineup and daily catalog runs."""
+  """Persistent channel mapping file updated across monthly lineup and daily
+  catalog runs.
+  """
 
   lineup_id: str = DEFAULT_BELL_FIBE_MTL_LINEUP_ID
   provider: str = "Bell Fibe TV"
@@ -366,7 +370,9 @@ class MappingDocument:
 def load_mapping_document(
   path: Path, lineup_id: str = DEFAULT_BELL_FIBE_MTL_LINEUP_ID
 ) -> MappingDocument:
-  """Load an existing channel mapping from disk, or return an empty document on first run."""
+  """Load an existing channel mapping from disk, or return an empty document on
+  first run.
+  """
   if not path.is_file():
     return MappingDocument.empty(lineup_id=lineup_id)
   with path.open("r", encoding="utf-8") as fh:
@@ -398,7 +404,9 @@ def reconcile_rough_mapping(
   catalog: XtreamCatalog,
   config: AppConfig,
 ) -> MappingDocument:
-  """Phase (3): Reconcile an existing (or empty) mapping against current lineup & IPTV catalog."""
+  """Phase (3): Reconcile an existing (or empty) mapping against current lineup
+  & IPTV catalog.
+  """
   now = datetime.now(timezone.utc).isoformat()
   is_initial = existing is None or len(existing.slots) == 0
   base_created = (
@@ -425,7 +433,8 @@ def reconcile_rough_mapping(
           None,
         )
 
-  # Merge config-level pinned streams with any slot-level pins stored in existing mapping
+  # Merge config-level pinned streams with any slot-level pins stored in
+  # existing mapping
   effective_pins: dict[int, int] = dict(config.lineup.pinned_streams)
   for chno, old_slot in prev_slots.items():
     if old_slot.pinned_stream_id is not None and chno not in effective_pins:
@@ -446,7 +455,8 @@ def reconcile_rough_mapping(
   lineup_chnos = {ch.chno for ch in lineup.channels}
   summary.removed_lineup_chnos = sorted(set(prev_slots) - lineup_chnos)
 
-  # Build per-slot set of known-dead or audio-language-mismatched stream IDs so Pass 1
+  # Build per-slot set of known-dead or audio-language-mismatched stream IDs so
+  # Pass 1
   # does not hoard streams that failed or had cross-wired audio on that slot
   globally_invalid_ids = {
     sid for sid, (st, _pr) in prior_validation.items() if st == "invalid"
@@ -553,7 +563,8 @@ def reconcile_rough_mapping(
         )
       )
 
-    # Rank compatible/unvalidated ahead of demoted language-mismatch fallbacks, and invalid last
+    # Rank compatible/unvalidated ahead of demoted language-mismatch fallbacks,
+    # and invalid last
     cand_records.sort(
       key=lambda c: (
         c.validation_status == "invalid",
@@ -762,7 +773,8 @@ def _reconcile_single_slot(
       candidates=candidates,
     )
 
-  # A new stream outscored (or outranked a language-mismatched fallback) the previous stream!
+  # A new stream outscored (or outranked a language-mismatched fallback) the
+  # previous stream!
   escaping_lang_mismatch = _is_audio_lang_mismatch(
     prev_in_cands
   ) and not _is_audio_lang_mismatch(top)
@@ -794,8 +806,10 @@ def _reconcile_single_slot(
     )
 
   # Significant upgrade (e.g. higher resolution or native EPG added):
-  # If previous stream was already live-validated and new top isn't yet validated, keep
-  # known-good stream active while queuing the upgrade at candidates[0] for Phase (4)!
+  # If previous stream was already live-validated and new top isn't yet
+  # validated, keep
+  # known-good stream active while queuing the upgrade at candidates[0] for
+  # Phase (4)!
   if (
     prev_in_cands.validation_status == "valid"
     and top.validation_status != "valid"
@@ -917,7 +931,9 @@ async def validate_mapping_candidates(
   redact_secret: str = "",
   checkpoint_interval: int = 20,
 ) -> int:
-  """Phase (4): Validate ONLY candidate streams in the mapping document (never raw catalog)."""
+  """Phase (4): Validate ONLY candidate streams in the mapping document (never
+  raw catalog).
+  """
   active_validator = validator or StreamValidator(config, account)
   lineup_by_no = {ch.chno: ch for ch in lineup.channels}
 
@@ -1003,7 +1019,9 @@ def mapping_document_to_mapped_channels(
   doc: MappingDocument,
   lineup: CableLineup,
 ) -> list[MappedChannel]:
-  """Phase (5) bridge: convert MappingDocument slots into MappedChannel entries for M3U8 output."""
+  """Phase (5) bridge: convert MappingDocument slots into MappedChannel entries
+  for M3U8 output.
+  """
   out: list[MappedChannel] = []
   for ch in lineup.channels:
     slot = doc.slots.get(ch.chno)

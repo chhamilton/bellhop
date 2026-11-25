@@ -1,4 +1,6 @@
-"""Two-tier YAML configuration loader (`config.yaml` + `credentials.yaml` + `.env`)."""
+"""Two-tier YAML configuration loader (`config.yaml` + `credentials.yaml` +
+`.env`).
+"""
 
 from __future__ import annotations
 
@@ -105,7 +107,8 @@ def load_config(
   env_path: Path | str | None = None,
   credentials_path: Path | str | None = None,
 ) -> AppConfig:
-  """Load declarative two-tier settings from `config.yaml` (+ `credentials.yaml` & `.env`).
+  """Load declarative two-tier settings from `config.yaml` (+ `credentials.yaml`
+  & `.env`).
 
   Args:
     config_path: Explicit `config.yaml` path (defaults to `$BELLHOP_CONFIG` or

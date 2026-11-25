@@ -1,4 +1,6 @@
-"""Shared normalization, SD/HD pairing, category/language inference, and alias builder for dynamic lineups."""
+"""Shared normalization, SD/HD pairing, category/language inference, and alias
+builder for dynamic lineups.
+"""
 
 from __future__ import annotations
 
@@ -396,7 +398,9 @@ def _clean_station_title(
   callsign: str | None,
   network_name: str | None,
 ) -> tuple[str, list[str], bool]:
-  """Return (clean_display_name, candidate_aliases, is_hd) from raw provider strings."""
+  """Return (clean_display_name, candidate_aliases, is_hd) from raw provider
+  strings.
+  """
   text = raw_name.strip()
   aliases: list[str] = []
 
@@ -424,7 +428,8 @@ def _clean_station_title(
       )
       return display, _dedupe_strs(aliases), is_hd
 
-  # Extract parenthetical hints (e.g. "(Canada)" -> drop; "(Tele-Mag)" -> keep as alias)
+  # Extract parenthetical hints (e.g. "(Canada)" -> drop; "(Tele-Mag)" -> keep
+  # as alias)
   parens = PAREN_GROUP_RE.findall(text)
   useful_parens = [
     p.strip() for p in parens if p.strip().lower() not in COUNTRY_PARENS
@@ -432,7 +437,8 @@ def _clean_station_title(
   stripped = PAREN_GROUP_RE.sub("", text).strip()
   stripped = TRAILING_NOISE_RE.sub("", stripped).strip(" -–—/")
   stripped_no_hd = HD_SUFFIX_RE.sub("", stripped).strip(" -–—/")
-  # Normalize mid-title HD markers ("Cartoon Network HD Canada" -> "Cartoon Network Canada", "Super Écran HD2" -> "Super Écran 2")
+  # Normalize mid-title HD markers ("Cartoon Network HD Canada" -> "Cartoon
+  # Network Canada", "Super Écran HD2" -> "Super Écran 2")
   stripped_no_hd = re.sub(
     r"\bHD\s*([1-9])\b", r"\1", stripped_no_hd, flags=re.IGNORECASE
   )
@@ -515,7 +521,9 @@ def _clean_station_title(
 
 
 def _extract_initialisms(title: str) -> list[str]:
-  """Derive 3–5 letter multi-word initialisms (`APTN`, `YTV`) and `<Word><Digit>` (`H2`) aliases."""
+  """Derive 3–5 letter multi-word initialisms (`APTN`, `YTV`) and
+  `<Word><Digit>` (`H2`) aliases.
+  """
   folded = _strip_accents(title)
   words = [
     w
@@ -532,7 +540,8 @@ def _extract_initialisms(title: str) -> list[str]:
     acronym = "".join(w[0] for w in words).upper()
     if 3 <= len(acronym) <= 5:
       out.append(acronym)
-    # If trailing word is "Television", also emit `<Init>TV` (e.g. "New Tang Dynasty" -> "NTD", "Youth Television" -> "YTV")
+    # If trailing word is "Television", also emit `<Init>TV` (e.g. "New Tang
+    # Dynasty" -> "NTD", "Youth Television" -> "YTV")
     if words[-1].lower() == "television" and 3 <= len(words) - 1 <= 4:
       stem_acr = "".join(w[0] for w in words[:-1]).upper()
       if len(stem_acr) >= 3:
@@ -678,7 +687,8 @@ def _infer_regions(
   elif re.search(r"\b(?:east|eastern)\b", hay):
     explicit_metro = True
 
-  # 2. Headend postal-code & market inference (when channel isn't an out-of-market feed)
+  # 2. Headend postal-code & market inference (when channel isn't an
+  #    out-of-market feed)
   if not explicit_metro:
     if is_canada:
       fsa_first = (
@@ -752,7 +762,8 @@ def _infer_regions(
       ):
         _append_unique(regions, "west")
 
-  # French-Canadian networks carry Quebec affinity even when market metadata is minimal
+  # French-Canadian networks carry Quebec affinity even when market metadata is
+  # minimal
   if is_canada and (language == "fr" or "quebec" in hay):
     _append_unique(regions, "qc")
 
@@ -776,7 +787,9 @@ def normalize_provider_slots(
   pair_sd_hd: bool = True,
   iptv_org_index: IptvOrgIndex | None = None,
 ) -> list[LineupChannel]:
-  """Convert raw provider slots into deduplicated/paired `LineupChannel` objects."""
+  """Convert raw provider slots into deduplicated/paired `LineupChannel`
+  objects.
+  """
   excluded = excluded_channels or set()
   official_logos_by_chno = (
     _load_official_logo_index()
@@ -824,7 +837,8 @@ def normalize_provider_slots(
 
   parsed_list.sort(key=lambda p: p.slot.chno)
 
-  # Pair SD (<1000) and HD (>=1000 or explicit HD) slots representing the same station
+  # Pair SD (<1000) and HD (>=1000 or explicit HD) slots representing the same
+  # station
   by_chno: dict[int, _ParsedSlot] = {p.slot.chno: p for p in parsed_list}
   consumed_sd_chnos: set[int] = set()
   sd_for_hd: dict[int, int] = {}
@@ -878,7 +892,8 @@ def normalize_provider_slots(
           consumed_sd_chnos.add(cand_sd)
           sd_for_hd[p.slot.chno] = cand_sd
 
-    # Pass 2: Same base_callsign / station_id pairing for non-1000 cable systems (e.g. Ch 28 SD <-> Ch 528 HD)
+    # Pass 2: Same base_callsign / station_id pairing for non-1000 cable systems
+    # (e.g. Ch 28 SD <-> Ch 528 HD)
     unpaired_sd_by_key: dict[str, _ParsedSlot] = {}
     for p in parsed_list:
       if (
@@ -940,7 +955,8 @@ def normalize_provider_slots(
     country=primary_country,
   )
 
-  # Infer automatic sibling exclusions (e.g., "RDS" excludes "2" and "info" if "RDS2" / "RDS Info" exist)
+  # Infer automatic sibling exclusions (e.g., "RDS" excludes "2" and "info" if
+  # "RDS2" / "RDS Info" exist)
   populate_sibling_exclusions(channels)
   channels.sort(key=lambda c: c.chno)
   return channels

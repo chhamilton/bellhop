@@ -1,4 +1,6 @@
-"""Tests for the config-driven `PipelineRunner` and single-command `bellhop run` CLI."""
+"""Tests for the config-driven `PipelineRunner` and single-command `bellhop run`
+CLI.
+"""
 
 from __future__ import annotations
 
@@ -115,7 +117,8 @@ pipeline:
   assert active == ["lineup", "catalog", "match", "m3u8", "xtream"]
   assert skipped == ["validate"]
 
-  # 1. Dry-run computes match & validation queue without creating state/ or output/ files
+  # 1. Dry-run computes match & validation queue without creating state/ or
+  #    output/ files
   runner = PipelineRunner(cfg)
   dry_res = asyncio.run(runner.run(PipelineRunOptions(dry_run=True)))
   assert dry_res.dry_run is True
@@ -126,7 +129,8 @@ pipeline:
   assert not out_m3u8.exists()
   assert not (out_xtream / "get_live_streams.json").exists()
 
-  # 2. CLI `--phase lineup,catalog,match` persists mapping state only (no outputs yet)
+  # 2. CLI `--phase lineup,catalog,match` persists mapping state only (no
+  #    outputs yet)
   rc1 = cli_main(
     ["run", "-c", str(cfg_path), "--phase", "lineup,catalog,match", "--quiet"]
   )
@@ -135,7 +139,8 @@ pipeline:
   assert not out_m3u8.exists()
   assert not (out_xtream / "get_live_streams.json").exists()
 
-  # 3. CLI `--phase export` hydrates existing state and emits both M3U8 and Xtream JSON
+  # 3. CLI `--phase export` hydrates existing state and emits both M3U8 and
+  #    Xtream JSON
   rc2 = cli_main(["run", "-c", str(cfg_path), "--phase", "export", "--quiet"])
   assert rc2 == 0
   assert out_m3u8.is_file()
@@ -165,7 +170,8 @@ pipeline:
   assert rc_epg == 0
   assert (tmp_path / "cache" / "epg.sqlite3").is_file()
 
-  # 4. Bare `bellhop -c ... --dry-run` defaults to `run`; invalid phase / missing config return exit code 2
+  # 4. Bare `bellhop -c ... --dry-run` defaults to `run`; invalid phase /
+  #    missing config return exit code 2
   assert cli_main(["-c", str(cfg_path), "--dry-run", "--quiet"]) == 0
   assert (
     cli_main(["run", "-c", str(cfg_path), "--phase", "bogus_phase", "--quiet"])
@@ -177,7 +183,9 @@ pipeline:
 async def test_expired_account_auto_skips_validate_and_completes_matching_and_exports(
   tmp_path: Path,
 ) -> None:
-  """Verify expired Xtream accounts implicitly skip `validate` and finish matching + exports."""
+  """Verify expired Xtream accounts implicitly skip `validate` and finish
+  matching + exports.
+  """
   from aiohttp import web
 
   status_box = {"status": "Active"}
@@ -291,7 +299,8 @@ pipeline:
     assert out_m3u8.is_file() and "YTV" in out_m3u8.read_text(encoding="utf-8")
     assert out_xtream.is_file()
 
-    # Even with `--force-refresh catalog` while Expired, matching + exports succeed
+    # Even with `--force-refresh catalog` while Expired, matching + exports
+    # succeed
     res_fresh = await PipelineRunner(cfg).run(
       PipelineRunOptions(force_refresh={"catalog"})
     )
@@ -312,7 +321,9 @@ pipeline:
 def test_cli_non_quiet_panels_dry_run_export_and_empty_phases(
   tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """Verify non-quiet Rich panels render for `--dry-run`, `--phase export`, and empty phase sets."""
+  """Verify non-quiet Rich panels render for `--dry-run`, `--phase export`, and
+  empty phase sets.
+  """
   import io
 
   from rich.console import Console
@@ -412,7 +423,8 @@ pipeline:
   assert "Dry-Run Mode" in dry_out
   assert "Bell Fibe TV (Montréal, QC)" in dry_out
 
-  # 2. Non-quiet `--skip validate --force-refresh epg` emits full SD+HD M3U8 + Xtream + EPG sync panels
+  # 2. Non-quiet `--skip validate --force-refresh epg` emits full SD+HD M3U8 +
+  #    Xtream + EPG sync panels
   buf.truncate(0)
   buf.seek(0)
   assert (
@@ -452,7 +464,9 @@ pipeline:
 async def test_cli_serve_shared_and_split_banners_and_clean_cancellation(
   tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """Verify `_execute_cli_serve` renders shared & split/Xtream-only banners and stops cleanly."""
+  """Verify `_execute_cli_serve` renders shared & split/Xtream-only banners and
+  stops cleanly.
+  """
   import asyncio
   import io
 
@@ -511,7 +525,8 @@ pipeline:
   assert "web_admin" in shared_banner
   assert "xt_user" in shared_banner
 
-  # Case B: Split / Web-disabled Xtream-only listener (`web_server.enabled: false`)
+  # Case B: Split / Web-disabled Xtream-only listener (`web_server.enabled:
+  # false`)
   buf.truncate(0)
   buf.seek(0)
   cfg_split = tmp_path / "config_split.yaml"
