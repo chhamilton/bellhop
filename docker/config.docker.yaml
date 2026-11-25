@@ -3,8 +3,8 @@
 #
 # Mount points inside the container:
 #   /config       -> config.yaml and optional credentials.yaml
-#   /data/state   -> lineup & catalog snapshots, channel_mapping.json, sd_token.json
-#   /data/cache   -> Web Guide EPG cache & persistent session signing key
+#   /data/state   -> lineup & catalog snapshots and channel_mapping.json
+#   /data/cache   -> SQLite EPG store (epg.sqlite3), sd_token.json, & session_secret.key
 #   /data/output  -> bellhop.m3u8, lineup_report.json, and xtream/*.json
 #
 # Credentials can be provided via environment variables (.env / docker-compose.yml)

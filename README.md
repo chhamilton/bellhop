@@ -148,7 +148,7 @@ docker compose exec bellhop bellhop run --skip validate
 | Mount Point | Purpose |
 |---|---|
 | `/config` | `config.yaml` (auto-seeded from [docker/config.docker.yaml](docker/config.docker.yaml) on first boot) and optional `credentials.yaml` |
-| `/data/state` | Monthly lineup snapshots, daily catalog snapshots, `channel_mapping.json`, and `sd_token.json` |
+| `/data/state` | Monthly lineup snapshots, daily catalog snapshots, and `channel_mapping.json` |
 | `/data/cache` | Embedded WAL SQLite EPG store (`epg.sqlite3`), SD token (`sd_token.json`), `iptv_org/` metadata cache, and persistent session signing key (`session_secret.key`) |
 | `/data/output` | Exported `bellhop.m3u8`, `lineup_report.json`, and `xtream/*.json` bundle |
 

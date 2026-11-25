@@ -344,7 +344,7 @@ async def test_schedules_direct_provider_auth_reauth_auto_add_and_retrieval(
       )
     return web.Response(status=404)
 
-  token_file = tmp_path / "state" / "sd_token.json"
+  token_file = tmp_path / "cache" / "sd_token.json"
   # Pre-seed an expired token to verify automatic re-authentication on 4003/403!
   token_file.parent.mkdir(parents=True, exist_ok=True)
   token_file.write_text(
