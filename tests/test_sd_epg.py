@@ -443,7 +443,6 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
       postal_code="H2Y",
       days=2,
       token_cache_file=cache_dir / "sd_token.json",
-      db_file=epg_db_file,
     )
     refresher = EpgRefreshService(
       store,
@@ -639,7 +638,13 @@ async def test_epg_db_permissions_corrupt_recovery_schema_bump_and_cli_banner(
   from rich.console import Console
 
   from bellhop import cli
+  from bellhop_web.epg_db import (
+    SD_PROGRAM_RETENTION_DAYS,
+    SD_PROGRAM_RETENTION_SEC,
+  )
   from bellhop_web.store import ProgramItem
+
+  assert SD_PROGRAM_RETENTION_DAYS == 14
 
   cache_dir = tmp_path / "cache" / "bellhop_web"
   db_path = cache_dir / "epg.sqlite3"
@@ -669,9 +674,33 @@ async def test_epg_db_permissions_corrupt_recovery_schema_bump_and_cli_banner(
       ).fetchall()
     }
     ver = int(raw_conn.execute("PRAGMA user_version").fetchone()[0])
+    auto_vac = int(raw_conn.execute("PRAGMA auto_vacuum").fetchone()[0])
   assert "obsolete_future_table" not in tables
   assert "guide_airings" in tables
   assert ver == 1
+  assert auto_vac == 2  # INCREMENTAL auto-vacuum
+
+  # 2b. `touch_and_prune_sd_programs` retains active & <14d programs and prunes >14d orphans
+  db_reopened.upsert_sd_programs(
+    {
+      "MV_ACTIVE": {"md5": "m1", "title": "Active Movie"},
+      "MV_RECENT": {"md5": "m2", "title": "Recent Rerun"},
+      "MV_STALE": {"md5": "m3", "title": "Expired Three Weeks Ago"},
+    },
+    updated_at=float(now_ts) - (SD_PROGRAM_RETENTION_SEC + 3600.0),
+  )
+  db_reopened.upsert_sd_programs(
+    {"MV_RECENT": {"md5": "m2", "title": "Recent Rerun"}},
+    updated_at=float(now_ts) - (5 * 86400.0),
+  )
+  pruned_cnt = db_reopened.touch_and_prune_sd_programs(
+    ["MV_ACTIVE"], now_ts=float(now_ts)
+  )
+  assert pruned_cnt == 1
+  surviving = db_reopened.load_sd_programs(
+    ["MV_ACTIVE", "MV_RECENT", "MV_STALE"]
+  )
+  assert set(surviving.keys()) == {"MV_ACTIVE", "MV_RECENT"}
 
   # 3. `bellhop serve` CLI startup banner reads active/cached counts from SQLite
   xt_dir = tmp_path / "output" / "xtream"
@@ -757,3 +786,15 @@ xtream_server:
   banner_text = buf.getvalue()
   assert "1 active / 1 cached" in banner_text
   assert "epg.sqlite3" in banner_text
+
+  # 4. Keyset-paginated `iter_xmltv_chunks` yields multi-page chunks without leaking synthetic IDs
+  snap_for_xml = LineupGuideStore(xt_dir).get_snapshot()
+  chunks = list(
+    db_reopened.iter_xmltv_chunks(
+      snap_for_xml, chunk_target_bytes=64, page_rows=1
+    )
+  )
+  assert len(chunks) >= 3
+  xml_out = b"".join(chunks).decode("utf-8")
+  assert "Dune: Part Two" in xml_out
+  assert 'channel="ch.' not in xml_out

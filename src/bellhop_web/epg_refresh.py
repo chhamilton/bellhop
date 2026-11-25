@@ -25,7 +25,6 @@ import aiohttp
 from bellhop_web.api_contracts import EpgStatusDict as EpgStatusDict
 from bellhop_web.epg_db import (
   DEFAULT_EPG_DB_FILE,
-  EpgCoverageSummary,
   EpgDatabase,
 )
 from bellhop_web.file_utils import ensure_private_dir
@@ -257,16 +256,7 @@ class EpgRefreshService:
     self._session_factory: ClientSessionFactory = (
       session_factory or default_session_factory
     )
-    db_path = (
-      config.sd_epg.db_file
-      if (
-        config.sd_epg is not None
-        and config.cache_file == DEFAULT_EPG_DB_FILE
-        and config.sd_epg.db_file != DEFAULT_EPG_DB_FILE
-      )
-      else config.cache_file
-    )
-    self.db = EpgDatabase(db_path)
+    self.db = EpgDatabase(config.cache_file)
     self._sd_client: SchedulesDirectEpgClient | None = (
       SchedulesDirectEpgClient(
         config.sd_epg,
@@ -291,7 +281,7 @@ class EpgRefreshService:
     self._last_error: str | None = None
     self._covered_channel_ids: frozenset[str] = frozenset()
     self._covered_bundle_sig: tuple[float, ...] = ()
-    self._cov_cache: tuple[int, EpgCoverageSummary] | None = None
+    self._seen_db_mtime_ns: int = -1
 
   def _resolve_effective_xmltv_url(self) -> str:
     # Prefer the passthrough URL embedded in the generated playlist, falling back to config
@@ -320,19 +310,67 @@ class EpgRefreshService:
       return True
     return bool(self._resolve_effective_xmltv_url())
 
-  def _cached_coverage(self, *, now_ts: int) -> EpgCoverageSummary:
-    bucket = now_ts // 30
-    if self._cov_cache is not None and self._cov_cache[0] == bucket:
-      return self._cov_cache[1]
+  def _current_db_mtime_ns(self) -> int:
+    best = -1
+    for suffix in ("", "-wal"):
+      cand = Path(f"{self.db.db_path}{suffix}")
+      with contextlib.suppress(OSError):
+        best = max(best, cand.stat().st_mtime_ns)
+    return best
+
+  def _apply_meta_dict(
+    self, meta: Mapping[str, str], *, fallback_mtime: float = 0.0
+  ) -> None:
+    fetched_at_raw = meta.get("fetched_at", "")
+    try:
+      fetched_at = float(fetched_at_raw) if fetched_at_raw else 0.0
+    except ValueError:
+      fetched_at = 0.0
+    if fetched_at <= 0.0:
+      fetched_at = fallback_mtime
+
+    covered_ids: set[str] = set()
+    raw_cov_json = meta.get("covered_channel_ids", "")
+    if raw_cov_json:
+      with contextlib.suppress(ValueError, TypeError):
+        parsed_cov = json.loads(raw_cov_json)
+        if isinstance(parsed_cov, list):
+          covered_ids = {
+            str(cid).strip().lower() for cid in parsed_cov if str(cid).strip()
+          }
+
+    restored_sig: tuple[float, ...] = ()
+    raw_sig_json = meta.get("covered_bundle_sig", "")
+    if raw_sig_json:
+      with contextlib.suppress(ValueError, TypeError):
+        parsed_sig = json.loads(raw_sig_json)
+        if isinstance(parsed_sig, list) and parsed_sig:
+          restored_sig = tuple(float(v) for v in parsed_sig)
+
+    self._covered_channel_ids = frozenset(covered_ids)
+    self._covered_bundle_sig = restored_sig or self.store.bundle_signature
+    if fetched_at > 0.0:
+      self._last_updated = fetched_at
+
+  def _sync_disk_state(self, now_ts: int) -> None:
+    """Worker-thread helper: refresh cached coverage and detect external DB writes."""
+    if not self.db.db_path.is_file():
+      return
+    cur_mtime = self._current_db_mtime_ns()
     cov = self.db.coverage_stats(now_ts=now_ts)
-    self._cov_cache = (bucket, cov)
-    return cov
+    if cur_mtime != self._seen_db_mtime_ns and not self._refreshing:
+      self._seen_db_mtime_ns = cur_mtime
+      if cov.total_programs > 0:
+        meta = self.db.get_meta()
+        self._apply_meta_dict(meta)
+        if self._state == "idle":
+          self._state = "ok"
 
   def hydrate_from_cache(self, *, now_ts: int | None = None) -> int:
     """Validate and prune the persistent SQLite EPG database on startup."""
-    self._cov_cache = None
     cache_path = self.db.db_path
     if not cache_path.is_file():
+      self.db.coverage_stats(now_ts=now_ts)
       return 0
     try:
       with cache_path.open("rb") as fh:
@@ -352,9 +390,9 @@ class EpgRefreshService:
         stale_cutoff_ts=stale_cutoff
       )
       if remaining == 0:
-        self._cov_cache = None
         if not self.db.has_sd_cache():
           self.db.delete_database()
+        self._seen_db_mtime_ns = self._current_db_mtime_ns()
         if evicted_count > 0:
           logger.info(
             "Evicted %d stale EPG listings from %s (guide airings empty; will refresh).",
@@ -364,41 +402,13 @@ class EpgRefreshService:
         return 0
 
       meta = self.db.get_meta()
-      fetched_at_raw = meta.get("fetched_at", "")
-      try:
-        fetched_at = float(fetched_at_raw) if fetched_at_raw else 0.0
-      except ValueError:
-        fetched_at = 0.0
-      if fetched_at <= 0.0:
-        fetched_at = cache_path.stat().st_mtime
-
-      covered_ids: set[str] = set()
-      raw_cov_json = meta.get("covered_channel_ids", "")
-      if raw_cov_json:
-        with contextlib.suppress(ValueError, TypeError):
-          parsed_cov = json.loads(raw_cov_json)
-          if isinstance(parsed_cov, list):
-            covered_ids = {
-              str(cid).strip().lower() for cid in parsed_cov if str(cid).strip()
-            }
-
+      self._apply_meta_dict(meta, fallback_mtime=cache_path.stat().st_mtime)
       self.store.touch_epg_revision()
-
-      restored_sig: tuple[float, ...] = ()
-      raw_sig_json = meta.get("covered_bundle_sig", "")
-      if raw_sig_json:
-        with contextlib.suppress(ValueError, TypeError):
-          parsed_sig = json.loads(raw_sig_json)
-          if isinstance(parsed_sig, list) and parsed_sig:
-            restored_sig = tuple(float(v) for v in parsed_sig)
-      self._covered_channel_ids = frozenset(covered_ids)
-      self._covered_bundle_sig = restored_sig or self.store.bundle_signature
-      self._last_updated = fetched_at
       if self._state == "idle":
         self._state = "ok"
 
       cov = self.db.coverage_stats(now_ts=ref_now)
-      self._cov_cache = (ref_now // 30, cov)
+      self._seen_db_mtime_ns = self._current_db_mtime_ns()
       logger.info(
         "Hydrated %d SQLite EPG listings across %d channels from %s%s.",
         remaining,
@@ -413,7 +423,7 @@ class EpgRefreshService:
 
   def status_dict(self, *, now_ts: int | None = None) -> EpgStatusDict:
     effective_now = int(self._clock()) if now_ts is None else now_ts
-    cov = self._cached_coverage(now_ts=effective_now)
+    cov = self.db.cached_coverage_stats(now_ts=effective_now)
     return EpgRefreshStatus(
       enabled=self.config.enabled,
       configured=self.is_configured,
@@ -442,7 +452,7 @@ class EpgRefreshService:
     except Exception:
       return False, "no_snapshot"
 
-    cov = self._cached_coverage(now_ts=now)
+    cov = self.db.cached_coverage_stats(now_ts=now)
     active_progs = cov.active_programs
     max_stop_ts = cov.max_stop_timestamp
     current_epg_ids = frozenset(
@@ -545,7 +555,7 @@ class EpgRefreshService:
     if self._client is None:
       self._client = self._new_session()
     if self._last_updated is None:
-      self.hydrate_from_cache()
+      await asyncio.to_thread(self.hydrate_from_cache)
     if not self.config.enabled:
       self._state = "disabled"
       return
@@ -605,6 +615,7 @@ class EpgRefreshService:
   async def _run_loop(self) -> None:
     while not self._stop_event.is_set():
       try:
+        await asyncio.to_thread(self._sync_disk_state, int(self._clock()))
         should_refresh, reason = self.needs_refresh()
         if should_refresh:
           now = self._clock()
@@ -803,7 +814,9 @@ class EpgRefreshService:
             self.db.db_path,
           )
 
-        self._cov_cache = None
+        self._seen_db_mtime_ns = await asyncio.to_thread(
+          self._current_db_mtime_ns
+        )
         self._covered_channel_ids = covered_ids
         self._covered_bundle_sig = bundle_sig
         self._last_updated = now_epoch

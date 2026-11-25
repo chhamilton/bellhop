@@ -471,9 +471,10 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
   server = UnifiedServeServer.from_config(cfg)
 
   # Validate pipeline outputs & hydrate persistent disk EPG cache before banner
-  if server.web_enabled and server.web_app.epg_refresher is not None:
-    server.web_app.epg_refresher.hydrate_from_cache()
-  web_snap = server.web_app.store.get_snapshot() if server.web_enabled else None
+  if (
+    server.web_enabled or server.xtream_enabled
+  ) and server.web_app.epg_refresher is not None:
+    await asyncio.to_thread(server.web_app.epg_refresher.hydrate_from_cache)
   xt_snap = server.xtream_app.store.get_snapshot()
 
   if not args.quiet:
@@ -541,7 +542,7 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
       )
 
     epg_lines = ""
-    if web_snap is not None:
+    if server.web_enabled or server.xtream_enabled:
       epg_ref = server.web_app.epg_refresher
       if epg_ref is not None and epg_ref.is_configured:
         epg_st = epg_ref.status_dict()

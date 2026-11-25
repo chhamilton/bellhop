@@ -323,7 +323,7 @@ class XtreamPassthroughServer:
     login_limiter: LoginRateLimiter | None = None,
     trust_proxy_headers: bool = False,
     trusted_proxy_ips: Sequence[str] = DEFAULT_TRUSTED_PROXY_IPS,
-    epg_xmltv_chunks_provider: Callable[[], Iterator[bytes] | None]
+    epg_xmltv_chunks_provider: Callable[[], Awaitable[Iterator[bytes] | None]]
     | None = None,
     epg_short_provider: Callable[
       [int, str, str, int], Awaitable[list[dict[str, Any]]]
@@ -686,7 +686,7 @@ class XtreamPassthroughServer:
       return denied
 
     if self.epg_xmltv_chunks_provider is not None:
-      chunk_iter = await asyncio.to_thread(self.epg_xmltv_chunks_provider)
+      chunk_iter = await self.epg_xmltv_chunks_provider()
       if chunk_iter is not None:
         close_iter = getattr(chunk_iter, "close", None)
         try:

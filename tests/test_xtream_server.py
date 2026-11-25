@@ -372,14 +372,33 @@ pipeline:
           await client.get("/movie/client_alice/client_secret_42/123.mp4")
         ).status_code == 404
 
-        # XMLTV endpoint (+ /epg.xml alias) -> 302 passthrough redirect straight to upstream xmltv.php
+        # XMLTV endpoint (+ /epg.xml alias) -> served locally (200) from SQLite with zero upstream secret leak!
         for epg_path in ("/xmltv.php", "/epg.xml"):
-          xmltv_redir = await client.get(
+          xmltv_local = await client.get(
             epg_path,
             params={"username": "client_alice", "password": "client_secret_42"},
           )
-          assert xmltv_redir.status_code == 302
-          assert xmltv_redir.headers["location"] == upstream.xmltv_url
+          assert xmltv_local.status_code == 200
+          assert "Le Téléjournal" in xmltv_local.text
+          assert "upstream_secret_pw" not in xmltv_local.text
+        head_xmltv = await client.head(
+          "/xmltv.php",
+          params={"username": "client_alice", "password": "client_secret_42"},
+        )
+        assert head_xmltv.status_code == 200
+
+        # When SQLite EPG database is empty, /xmltv.php gracefully falls back to 302 upstream redirect!
+        assert unified_srv.web_app.epg_refresher is not None
+        unified_srv.web_app.epg_refresher.db.delete_database()
+        xmltv_redir = await client.get(
+          "/xmltv.php",
+          params={"username": "client_alice", "password": "client_secret_42"},
+        )
+        assert xmltv_redir.status_code == 302
+        assert xmltv_redir.headers["location"] == upstream.xmltv_url
+        await unified_srv.web_app.epg_refresher.refresh_now(
+          force=True, reason="restore"
+        )
 
         # Stream endpoints -> 302 passthrough redirects (TS, HLS, and shorthand without /live)
         ts_redir = await client.get(

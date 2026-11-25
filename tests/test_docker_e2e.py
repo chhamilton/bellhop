@@ -450,8 +450,9 @@ channels:
         "/xmltv.php",
         params={"username": "e2e_xt_user", "password": "e2e_xt_password"},
       )
-      assert epg_r.status_code == 302
-      assert fake_xtream.base_url in epg_r.headers["location"]
+      assert epg_r.status_code == 200
+      assert "Le Téléjournal Montréal" in epg_r.text
+      assert "up_secret" not in epg_r.text
 
     # 3. Send SIGTERM (just like `docker stop`) and verify clean exit 0.
     serve_proc.send_signal(signal.SIGTERM)
@@ -781,8 +782,9 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
         "/xmltv.php",
         params={"username": "container_xt", "password": "container_xt_pw"},
       )
-      assert xt_epg.status_code == 302
-      assert fake_xtream.base_url in xt_epg.headers["location"]
+      assert xt_epg.status_code == 200
+      assert "Le Téléjournal Montréal" in xt_epg.text
+      assert "up_secret" not in xt_epg.text
 
       xt_live = await client.get("/live/container_xt/container_xt_pw/710101.ts")
       assert xt_live.status_code == 302

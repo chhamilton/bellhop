@@ -70,7 +70,6 @@ def build_epg_refresher_from_config(
     postal_code=config.lineup.postal_code,
     timeout_sec=config.xtream.request_timeout_sec,
     token_cache_file=cache_dir / "sd_token.json",
-    db_file=epg_db_file,
   )
   return EpgRefreshService(
     store,
@@ -141,8 +140,6 @@ class UnifiedServeServer:
     fallback_xmltv_url = build_passthrough_xmltv_url(
       config, redact_secret=False
     )
-    sd_raw = config.lineup.schedules_direct
-    has_sd_epg = bool(sd_raw.username.strip() and sd_raw.password.strip())
 
     web_store = LineupGuideStore(
       xtream_dir,
@@ -152,9 +149,7 @@ class UnifiedServeServer:
       config,
       web_store,
       session_factory=epg_session_factory or session_factory,
-      enabled=(
-        config.serve.web.enabled or (config.serve.xtream.enabled and has_sd_epg)
-      ),
+      enabled=(config.serve.web.enabled or config.serve.xtream.enabled),
     )
 
     web_username = config.serve.web.username.strip()
@@ -219,10 +214,16 @@ class UnifiedServeServer:
       config_writer=_write_public_config,
     )
 
-    def _provide_xmltv_chunks() -> Iterator[bytes] | None:
+    async def _provide_xmltv_chunks() -> Iterator[bytes] | None:
       epg_refresher.trigger_background_if_needed(reason_prefix="xmltv")
       snap = web_store.get_snapshot()
-      if epg_refresher.db.coverage_stats().total_programs > 0:
+      now_epoch = epg_refresher.current_epoch()
+      cov = epg_refresher.db.cached_coverage_stats(now_ts=now_epoch)
+      if cov.total_programs == 0 and epg_refresher.db.db_path.is_file():
+        cov = await asyncio.to_thread(
+          epg_refresher.db.coverage_stats, now_ts=now_epoch
+        )
+      if cov.total_programs > 0:
         return epg_refresher.db.iter_xmltv_chunks(snap)
       return None
 
@@ -239,6 +240,7 @@ class UnifiedServeServer:
         limit=limit,
       )
 
+    epg_active = epg_refresher.config.enabled and epg_refresher.is_configured
     xtream_store = XtreamExportStore(
       xtream_dir, fallback_xmltv_url=fallback_xmltv_url
     )
@@ -253,12 +255,8 @@ class UnifiedServeServer:
       server_protocol=config.serve.xtream.server_protocol,
       trust_proxy_headers=config.serve.web.trust_proxy_headers,
       trusted_proxy_ips=config.serve.web.trusted_proxy_ips,
-      epg_xmltv_chunks_provider=_provide_xmltv_chunks if has_sd_epg else None,
-      epg_short_provider=(
-        _provide_short_epg
-        if (epg_refresher.config.enabled and epg_refresher.is_configured)
-        else None
-      ),
+      epg_xmltv_chunks_provider=_provide_xmltv_chunks if epg_active else None,
+      epg_short_provider=_provide_short_epg if epg_active else None,
     )
 
     return cls(

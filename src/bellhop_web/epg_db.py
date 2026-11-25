@@ -42,7 +42,11 @@ logger = logging.getLogger("bellhop_web.epg_db")
 
 EPG_DB_SCHEMA_VERSION = 1
 DEFAULT_EPG_DB_FILE = Path("cache/bellhop_web/epg.sqlite3")
+SD_PROGRAM_RETENTION_DAYS = 14
+SD_PROGRAM_RETENTION_SEC = SD_PROGRAM_RETENTION_DAYS * 86400.0
 _SQL_CHUNK = 450
+_XMLTV_PAGE_ROWS = 2000
+_INCREMENTAL_VACUUM_PAGES = 256
 
 _DDL_STATEMENTS: tuple[str, ...] = (
   """
@@ -125,6 +129,10 @@ _DDL_STATEMENTS: tuple[str, ...] = (
   CREATE INDEX IF NOT EXISTS idx_guide_stop
     ON guide_airings (stop_ts)
   """,
+  """
+  CREATE INDEX IF NOT EXISTS idx_sd_programs_updated
+    ON sd_programs (updated_at)
+  """,
 )
 
 
@@ -184,6 +192,58 @@ class EpgDatabase:
     self.db_path = db_path
     self._initialized = False
     self._init_lock = threading.Lock()
+    self._summary_lock = threading.Lock()
+    self._cached_summary: EpgCoverageSummary | None = None
+
+  def _set_cached_summary(self, summary: EpgCoverageSummary | None) -> None:
+    with self._summary_lock:
+      self._cached_summary = summary
+
+  def cached_coverage_stats(
+    self, *, now_ts: int | None = None
+  ) -> EpgCoverageSummary:
+    """Return the latest in-memory `EpgCoverageSummary` without touching SQLite."""
+    with self._summary_lock:
+      summary = self._cached_summary
+    if summary is None:
+      return EpgCoverageSummary()
+    if (
+      now_ts is not None
+      and summary.max_stop_timestamp > 0
+      and (now_ts - 3600) >= summary.max_stop_timestamp
+    ):
+      return EpgCoverageSummary(
+        total_programs=summary.total_programs,
+        active_programs=0,
+        max_stop_timestamp=summary.max_stop_timestamp,
+        channels_with_epg=summary.channels_with_epg,
+      )
+    return summary
+
+  @staticmethod
+  def _query_coverage_on_conn(
+    conn: sqlite3.Connection, *, now_ts: int
+  ) -> EpgCoverageSummary:
+    recent_floor = now_ts - 3600
+    row = conn.execute(
+      """
+      SELECT
+        COUNT(*),
+        COALESCE(SUM(CASE WHEN stop_ts = 0 OR stop_ts > ? THEN 1 ELSE 0 END), 0),
+        COALESCE(MAX(stop_ts), 0),
+        COUNT(DISTINCT CASE WHEN chno > 0 THEN 'c:' || chno ELSE 'e:' || epg_channel_id END)
+      FROM guide_airings
+      """,
+      (recent_floor,),
+    ).fetchone()
+    if row is None:
+      return EpgCoverageSummary()
+    return EpgCoverageSummary(
+      total_programs=int(row[0] or 0),
+      active_programs=int(row[1] or 0),
+      max_stop_timestamp=int(row[2] or 0),
+      channels_with_epg=int(row[3] or 0),
+    )
 
   def _enforce_private_permissions(self) -> None:
     for suffix in ("", "-wal", "-shm"):
@@ -207,12 +267,10 @@ class EpgDatabase:
       check_same_thread=False,
     )
     try:
-      conn.execute("PRAGMA journal_mode=WAL")
       conn.execute("PRAGMA synchronous=NORMAL")
       conn.execute("PRAGMA foreign_keys=ON")
       conn.execute("PRAGMA busy_timeout=5000")
       conn.execute("PRAGMA temp_store=MEMORY")
-      self._enforce_private_permissions()
       yield conn
     finally:
       conn.close()
@@ -220,6 +278,7 @@ class EpgDatabase:
   def delete_database(self) -> None:
     """Remove the SQLite database file and any `-wal` / `-shm` sidecars."""
     self._initialized = False
+    self._set_cached_summary(EpgCoverageSummary())
     for suffix in ("", "-wal", "-shm"):
       cand = Path(f"{self.db_path}{suffix}")
       with contextlib.suppress(OSError):
@@ -260,7 +319,13 @@ class EpgDatabase:
 
   def _init_schema(self) -> None:
     with self._connect() as conn:
+      auto_vac = int(conn.execute("PRAGMA auto_vacuum").fetchone()[0])
       cur_ver = int(conn.execute("PRAGMA user_version").fetchone()[0])
+      if auto_vac != 2:
+        conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
+        if cur_ver != 0:
+          conn.execute("VACUUM")
+      conn.execute("PRAGMA journal_mode=WAL")
       conn.execute("BEGIN IMMEDIATE")
       try:
         if cur_ver != EPG_DB_SCHEMA_VERSION:
@@ -313,6 +378,7 @@ class EpgDatabase:
   def prune_stale_airings(self, *, stale_cutoff_ts: int) -> tuple[int, int]:
     """Delete `guide_airings` ending before `stale_cutoff_ts`; return `(evicted, remaining)`."""
     if not self.db_path.is_file():
+      self._set_cached_summary(EpgCoverageSummary())
       return 0, 0
     self.ensure_initialized()
     with self._connect() as conn:
@@ -323,16 +389,21 @@ class EpgDatabase:
           (stale_cutoff_ts,),
         )
         evicted = max(0, cur.rowcount)
-        remaining = int(
-          conn.execute("SELECT COUNT(*) FROM guide_airings").fetchone()[0]
+        summary = self._query_coverage_on_conn(
+          conn, now_ts=stale_cutoff_ts + 3600
         )
+        remaining = summary.total_programs
         if remaining == 0:
           conn.execute("DELETE FROM epg_meta WHERE key = 'fetched_at'")
         conn.execute("COMMIT")
-        return evicted, remaining
       except Exception:
         conn.execute("ROLLBACK")
         raise
+      if evicted > 0:
+        conn.execute(f"PRAGMA incremental_vacuum({_INCREMENTAL_VACUUM_PAGES})")
+    self._enforce_private_permissions()
+    self._set_cached_summary(summary)
+    return evicted, remaining
 
   def replace_guide_schedules(
     self,
@@ -431,11 +502,15 @@ class EpgDatabase:
           "INSERT OR REPLACE INTO epg_meta (key, value) VALUES (?, ?)",
           meta_pairs,
         )
+        summary = self._query_coverage_on_conn(conn, now_ts=int(fetched_at))
         conn.execute("COMMIT")
       except Exception:
         conn.execute("ROLLBACK")
         raise
+      conn.execute(f"PRAGMA incremental_vacuum({_INCREMENTAL_VACUUM_PAGES})")
 
+    self._enforce_private_permissions()
+    self._set_cached_summary(summary)
     return len(rows)
 
   # ---------------------------------------------------------------------------
@@ -444,30 +519,15 @@ class EpgDatabase:
   def coverage_stats(self, *, now_ts: int | None = None) -> EpgCoverageSummary:
     """Compute `(total_programs, active_programs, max_stop_ts, channels_with_epg)` in SQL."""
     if not self.db_path.is_file():
-      return EpgCoverageSummary()
+      empty = EpgCoverageSummary()
+      self._set_cached_summary(empty)
+      return empty
     self.ensure_initialized()
     now = int(time.time()) if now_ts is None else now_ts
-    recent_floor = now - 3600
     with self._connect() as conn:
-      row = conn.execute(
-        """
-        SELECT
-          COUNT(*),
-          COALESCE(SUM(CASE WHEN stop_ts = 0 OR stop_ts > ? THEN 1 ELSE 0 END), 0),
-          COALESCE(MAX(stop_ts), 0),
-          COUNT(DISTINCT CASE WHEN chno > 0 THEN 'c:' || chno ELSE 'e:' || epg_channel_id END)
-        FROM guide_airings
-        """,
-        (recent_floor,),
-      ).fetchone()
-    if row is None:
-      return EpgCoverageSummary()
-    return EpgCoverageSummary(
-      total_programs=int(row[0] or 0),
-      active_programs=int(row[1] or 0),
-      max_stop_timestamp=int(row[2] or 0),
-      channels_with_epg=int(row[3] or 0),
-    )
+      summary = self._query_coverage_on_conn(conn, now_ts=now)
+    self._set_cached_summary(summary)
+    return summary
 
   def query_channel_schedule(
     self,
@@ -610,9 +670,13 @@ class EpgDatabase:
     return listings
 
   def iter_xmltv_chunks(
-    self, snap: LineupSnapshot, *, chunk_target_bytes: int = 65536
+    self,
+    snap: LineupSnapshot,
+    *,
+    chunk_target_bytes: int = 65536,
+    page_rows: int = _XMLTV_PAGE_ROWS,
   ) -> Iterator[bytes]:
-    """Stream UTF-8 XMLTV chunks directly from a SQLite cursor in constant memory."""
+    """Stream UTF-8 XMLTV chunks via short-lived keyset-paginated SQLite reads."""
     self.ensure_initialized()
     buf: list[str] = [
       '<?xml version="1.0" encoding="UTF-8"?>\n',
@@ -644,25 +708,48 @@ class EpgDatabase:
         buf.clear()
         buf_bytes = 0
 
-    with self._connect() as conn:
-      cur = conn.execute(
-        """
-        SELECT chno, epg_channel_id, start_ts, stop_ts,
-               title, sub_title, description, category
-        FROM guide_airings
-        ORDER BY chno ASC, start_ts ASC
-        """
-      )
-      for r in cur:
+    eff_page_rows = max(1, page_rows)
+    last_chno = -1
+    last_epg_id = ""
+    last_start_ts = -1
+
+    while True:
+      with self._connect() as conn:
+        rows = conn.execute(
+          """
+          SELECT chno, epg_channel_id, start_ts, stop_ts,
+                 title, sub_title, description, category
+          FROM guide_airings
+          WHERE (chno > ?)
+             OR (chno = ? AND epg_channel_id > ?)
+             OR (chno = ? AND epg_channel_id = ? AND start_ts > ?)
+          ORDER BY chno ASC, epg_channel_id ASC, start_ts ASC
+          LIMIT ?
+          """,
+          (
+            last_chno,
+            last_chno,
+            last_epg_id,
+            last_chno,
+            last_epg_id,
+            last_start_ts,
+            eff_page_rows,
+          ),
+        ).fetchall()
+      if not rows:
+        break
+
+      tail = rows[-1]
+      last_chno = int(tail[0])
+      last_epg_id = str(tail[1])
+      last_start_ts = int(tail[2])
+
+      for r in rows:
         chno = int(r[0])
-        cid = (
-          chno_to_cid.get(chno, str(r[1]).strip())
-          if chno > 0
-          else str(r[1]).strip()
-        )
+        cid = chno_to_cid.get(chno, "") if chno > 0 else str(r[1]).strip()
         if not cid:
           continue
-        if chno > 0 and primary_chno_for_cid.get(cid) not in (None, chno):
+        if chno > 0 and primary_chno_for_cid.get(cid) != chno:
           continue
         start_ts = int(r[2])
         stop_ts = int(r[3])
@@ -932,6 +1019,43 @@ class EpgDatabase:
       except Exception:
         conn.execute("ROLLBACK")
         raise
+    self._enforce_private_permissions()
+
+  def touch_and_prune_sd_programs(
+    self,
+    active_program_ids: Sequence[str],
+    *,
+    now_ts: float,
+    retention_sec: float = SD_PROGRAM_RETENTION_SEC,
+  ) -> int:
+    """Refresh `updated_at` for active `program_id`s and prune unreferenced rows older than `retention_sec`."""
+    if not self.db_path.is_file():
+      return 0
+    self.ensure_initialized()
+    cutoff = now_ts - max(0.0, retention_sec)
+    with self._connect() as conn:
+      conn.execute("BEGIN IMMEDIATE")
+      try:
+        for idx in range(0, len(active_program_ids), _SQL_CHUNK):
+          chunk = active_program_ids[idx : idx + _SQL_CHUNK]
+          placeholders = ",".join("?" for _ in chunk)
+          conn.execute(
+            f"UPDATE sd_programs SET updated_at = ? WHERE program_id IN ({placeholders})",
+            [now_ts, *chunk],
+          )
+        cur = conn.execute(
+          "DELETE FROM sd_programs WHERE updated_at < ?",
+          (cutoff,),
+        )
+        pruned = max(0, cur.rowcount)
+        conn.execute("COMMIT")
+      except Exception:
+        conn.execute("ROLLBACK")
+        raise
+      if pruned > 0:
+        conn.execute(f"PRAGMA incremental_vacuum({_INCREMENTAL_VACUUM_PAGES})")
+    self._enforce_private_permissions()
+    return pruned
 
   def load_sd_programs(
     self, program_ids: Sequence[str]

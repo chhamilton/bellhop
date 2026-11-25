@@ -150,7 +150,6 @@ class SchedulesDirectEpgConfig:
   days: int = 3
   timeout_sec: float = 45.0
   token_cache_file: Path = Path("cache/sd_token.json")
-  db_file: Path = DEFAULT_EPG_DB_FILE
 
   @property
   def enabled(self) -> bool:
@@ -180,7 +179,7 @@ class SchedulesDirectEpgClient:
     clock: Any = time.time,
   ) -> None:
     self.config = config
-    self.db = db or EpgDatabase(config.db_file)
+    self.db = db if db is not None else EpgDatabase(DEFAULT_EPG_DB_FILE)
     self._session_factory: ClientSessionFactory = (
       session_factory or default_session_factory
     )
@@ -880,7 +879,12 @@ class SchedulesDirectEpgClient:
             updated_at=float(self._clock()),
           )
 
-      # 4. Query only the active `programID` metadata needed for this window
+      # 4. Touch active `programID`s, prune >14d unreferenced rows, & load active metadata
+      await asyncio.to_thread(
+        self.db.touch_and_prune_sd_programs,
+        list(wanted_pids),
+        now_ts=float(ref_now),
+      )
       active_prog_meta = await asyncio.to_thread(
         self.db.load_sd_programs, list(wanted_pids)
       )
