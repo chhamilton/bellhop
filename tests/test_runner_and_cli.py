@@ -142,7 +142,7 @@ pipeline:
   assert out_report.is_file()
   assert (out_xtream / "get_live_streams.json").is_file()
 
-  # 3b. CLI `--phase epg` populates `cache/bellhop_web/epg_cache.json` directly
+  # 3b. CLI `--phase epg` populates `cache/epg.sqlite3` directly
   xml_local = tmp_path / "local.xml"
   xml_local.write_text(
     '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -163,7 +163,7 @@ pipeline:
   cfg_path.write_text(cfg_with_xml, encoding="utf-8")
   rc_epg = cli_main(["run", "-c", str(cfg_path), "--phase", "epg", "--quiet"])
   assert rc_epg == 0
-  assert (tmp_path / "cache" / "bellhop_web" / "epg.sqlite3").is_file()
+  assert (tmp_path / "cache" / "epg.sqlite3").is_file()
 
   # 4. Bare `bellhop -c ... --dry-run` defaults to `run`; invalid phase / missing config return exit code 2
   assert cli_main(["-c", str(cfg_path), "--dry-run", "--quiet"]) == 0

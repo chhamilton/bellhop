@@ -8,7 +8,8 @@ FROM node:22-alpine AS frontend-builder
 WORKDIR /build
 COPY package.json package-lock.json tsconfig.json ./
 COPY src/bellhop/web/frontend ./src/bellhop/web/frontend
-RUN npm ci --no-audit --no-fund \
+RUN umask 022 \
+  && npm ci --no-audit --no-fund \
   && npx tsc --noEmit \
   && npx tsc
 
@@ -39,12 +40,14 @@ COPY data ./data
 COPY docker ./docker
 COPY --from=frontend-builder /build/src/bellhop/web/static/*.js ./src/bellhop/web/static/
 
-RUN pip install --no-cache-dir -r requirements.lock \
+RUN umask 022 \
+  && pip install --no-cache-dir -r requirements.lock \
   && pip install --no-cache-dir --no-deps . \
   && mkdir -p /usr/local/libexec /config /data/state /data/cache /data/output/xtream \
   && mv /usr/local/bin/bellhop /usr/local/libexec/bellhop \
   && cp /app/docker/bellhop-shim.sh /usr/local/bin/bellhop \
-  && chmod +x /app/docker/entrypoint.sh /app/docker/bellhop-shim.sh /usr/local/bin/bellhop
+  && chmod -R go-w /app \
+  && chmod 0755 /app/docker/entrypoint.sh /app/docker/bellhop-shim.sh /usr/local/bin/bellhop
 
 ENV TZ=UTC \
     PUID=1000 \

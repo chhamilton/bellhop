@@ -3,6 +3,7 @@
 # Ensures `docker exec <container> bellhop ...` (which bypasses entrypoint.sh
 # and starts as root) automatically drops to PUID:PGID before writing files.
 set -eu
+umask 077
 
 REAL_BELLHOP="/usr/local/libexec/bellhop"
 

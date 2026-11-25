@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -744,6 +745,7 @@ async def _execute_cli_run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
   """Execute the `bellhop` CLI entry point and return an OS exit status code."""
+  os.umask(0o077)
   raw_argv = list(sys.argv[1:] if argv is None else argv)
   # Default to `run` subcommand when invoked as bare `bellhop` or `bellhop --skip validate`
   if not raw_argv or raw_argv[0] not in {"run", "serve", "-h", "--help"}:

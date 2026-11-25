@@ -1,6 +1,6 @@
 """Relational SQLite 3 (WAL mode) backing store for EPG schedules and SD-JSON MD5 caches.
 
-Manages the embedded SQLite database (`cache/bellhop_web/epg.sqlite3`):
+Manages the embedded SQLite database (`cache/epg.sqlite3`):
 - Safe concurrent access (`PRAGMA journal_mode=WAL`, `busy_timeout=5000`) across
   `bellhop serve` HTTP readers and `bellhop run --phase epg` batch writers.
 - Sub-millisecond indexed range queries for `/api/lineup`, `/api/epg/<chno>`,
@@ -41,7 +41,7 @@ from bellhop.epg.models import (
 logger = logging.getLogger("bellhop.epg.db")
 
 EPG_DB_SCHEMA_VERSION = 1
-DEFAULT_EPG_DB_FILE = Path("cache/bellhop_web/epg.sqlite3")
+DEFAULT_EPG_DB_FILE = Path("cache/epg.sqlite3")
 SD_PROGRAM_RETENTION_DAYS = 14
 SD_PROGRAM_RETENTION_SEC = SD_PROGRAM_RETENTION_DAYS * 86400.0
 _SQL_CHUNK = 450
@@ -271,9 +271,11 @@ class EpgDatabase:
       conn.execute("PRAGMA foreign_keys=ON")
       conn.execute("PRAGMA busy_timeout=5000")
       conn.execute("PRAGMA temp_store=MEMORY")
+      self._enforce_private_permissions()
       yield conn
     finally:
       conn.close()
+      self._enforce_private_permissions()
 
   def delete_database(self) -> None:
     """Remove the SQLite database file and any `-wal` / `-shm` sidecars."""

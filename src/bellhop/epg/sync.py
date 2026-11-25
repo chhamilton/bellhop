@@ -136,7 +136,7 @@ def build_epg_refresher_from_config(
     else None
   )
   cache_dir = config.resolve_path(config.xtream.cache_dir)
-  epg_db_file = cache_dir / "bellhop_web" / "epg.sqlite3"
+  epg_db_file = cache_dir / "epg.sqlite3"
   fallback_xmltv_url = build_passthrough_xmltv_url(config, redact_secret=False)
   if store is None:
     m3u_cand = config.resolve_path(config.output.playlist_path)

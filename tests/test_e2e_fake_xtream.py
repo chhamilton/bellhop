@@ -215,7 +215,7 @@ pipeline:
 
     # 2. Boot real Bellhop Web Guide server against the exported files & FakeXtreamServer
     store = LineupGuideStore(xt_dir)
-    epg_cache = tmp_path / "cache" / "bellhop_web" / "epg.sqlite3"
+    epg_cache = tmp_path / "cache" / "epg.sqlite3"
     refresher = EpgRefreshService(
       store,
       EpgRefreshConfig(enabled=True, refresh_hours=6.0, cache_file=epg_cache),

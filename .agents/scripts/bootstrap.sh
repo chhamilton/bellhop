@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
@@ -33,6 +34,7 @@ fi
 if [[ ! -f "config.yaml" && -f "config.example.yaml" ]]; then
   echo "==> Initializing config.yaml from config.example.yaml..."
   cp config.example.yaml config.yaml
+  chmod 600 config.yaml
 fi
 
 if [[ ! -f "credentials.yaml" ]]; then

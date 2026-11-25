@@ -434,7 +434,7 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
     )
 
     store = LineupGuideStore(xt_dir)
-    epg_db_file = cache_dir / "bellhop_web" / "epg.sqlite3"
+    epg_db_file = cache_dir / "epg.sqlite3"
     sd_cfg = SchedulesDirectEpgConfig(
       username="chhamilton",
       password="sd_secret_pw",
@@ -646,7 +646,7 @@ async def test_epg_db_permissions_corrupt_recovery_schema_bump_and_cli_banner(
 
   assert SD_PROGRAM_RETENTION_DAYS == 14
 
-  cache_dir = tmp_path / "cache" / "bellhop_web"
+  cache_dir = tmp_path / "cache"
   db_path = cache_dir / "epg.sqlite3"
   now_ts = int(datetime.now(tz=timezone.utc).timestamp())
 

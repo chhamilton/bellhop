@@ -27,11 +27,11 @@ Last updated: `2026-11-25`
 - **Generated Outputs & Runtime Caches:**
   - `output/bellhop.m3u8` & `output/lineup_report.json` (Phase 5 `m3u8`).
   - `output/xtream/` (Phase 6 `xtream`): `bellhop_xtream_playlist.json`, `get_live_streams.json`, `get_live_categories.json` with embedded upstream passthrough `xmltv_url`.
-  - `cache/bellhop_web/epg.sqlite3`: Embedded WAL-mode SQLite 3 backing store (`sd_lineups`, `sd_stations`, `sd_channel_map`, `sd_programs`, `sd_schedule_days`, `sd_airings`, `guide_airings`) prioritizing Schedules Direct SD-JSON with upstream XMLTV backfill (`~47 MiB` total server RSS, incremental auto-vacuum + 14-day SD program retention).
+  - `cache/epg.sqlite3`: Embedded WAL-mode SQLite 3 backing store (`sd_lineups`, `sd_stations`, `sd_channel_map`, `sd_programs`, `sd_schedule_days`, `sd_airings`, `guide_airings`) prioritizing Schedules Direct SD-JSON with upstream XMLTV backfill (`~47 MiB` total server RSS, incremental auto-vacuum + 14-day SD program retention).
   - Owner-only permissions (`0o600` files / `0o700` dirs via `src/bellhop/common/file_utils.py`) across `config.yaml`, `credentials.yaml`, `session_secret.key`, `sd_token.json`, `epg.sqlite3`, `cache/`, `state/`, and `output/`.
 - **Unified Bellhop Server (`bellhop serve` / `UnifiedServeServer`):**
   - Co-hosts `WebGuideApp` (`/`, `/login`, `/static/*`, `/api/*`) and `XtreamPassthroughServer` (`/player_api.php`, `/player.php`, `/panel_api.php`, `/get.php`, `/playlist.m3u*`, `/xmltv.php`, `/epg.xml`, `/live/<u/>/<p>/<id>[.<ext>]`) on `0.0.0.0:8080` (or separate ports when `xtream_server.port` is overridden).
-  - Mandatory Web Guide login (`web_server.username` & `password` required when `web_server.enabled: true`), separate credentials + `LoginRateLimiter` (`429`) for Xtream API clients (`xtream_server`), HMAC-SHA256 sliding session cookies (`bellhop_session`, key in `cache/bellhop_web/session_secret.key`), internal-only `/login?next=...` redirect validation, CSRF protection (`Sec-Fetch-Site` / `Origin`), and opaque server-side HLS asset tokens.
+  - Mandatory Web Guide login (`web_server.username` & `password` required when `web_server.enabled: true`), separate credentials + `LoginRateLimiter` (`429`) for Xtream API clients (`xtream_server`), HMAC-SHA256 sliding session cookies (`bellhop_session`, key in `cache/session_secret.key`), internal-only `/login?next=...` redirect validation, CSRF protection (`Sec-Fetch-Site` / `Origin`), and opaque server-side HLS asset tokens.
   - Two-tier `config.yaml` & `/api/config` Settings drawer: Tier-1 server/path properties (`credentials_file`, `paths`, `web_server`, `xtream_server`) are `config.yaml`-only; `/api/config` exposes only authenticated user/pipeline settings (`upstream_xtream`, `pipeline`).
 
 ---

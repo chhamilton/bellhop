@@ -45,7 +45,7 @@ web_server:
   password: "${BELLHOP_WEB_PASSWORD}"
   # Sliding session cookie lifetime (hours; default 168h = 7 days)
   session_ttl_hours: 168.0
-  # Optional static HMAC signing secret (if empty, a 32-byte key is auto-generated & persisted in cache/bellhop_web/)
+  # Optional static HMAC signing secret (if empty, a 32-byte key is auto-generated & persisted in cache/session_secret.key)
   session_secret: "${BELLHOP_WEB_SESSION_SECRET}"
   # Reverse-proxy client IP handling (config-file only, NEVER exposed to Web UI):
   # Set `trust_proxy_headers: true` behind Nginx/Caddy/Traefik so login rate limiting

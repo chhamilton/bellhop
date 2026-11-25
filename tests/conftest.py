@@ -7,6 +7,10 @@ from dataclasses import dataclass
 
 import pytest
 
+# Normalize permissive container/CI umasks (e.g. `0000`) so pytest, mypy, ruff,
+# and bytecode generation never leave group- or world-writable directories/files.
+os.umask(0o022)
+
 
 @dataclass(slots=True)
 class FakeClock:

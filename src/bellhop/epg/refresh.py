@@ -2,7 +2,7 @@
 
 Fetches multi-day Schedules Direct (`20141201`) and passthrough XMLTV guide data
 in the background, reconciles non-overlapping per-slot schedules, and commits
-them to `cache/bellhop_web/epg.sqlite3` without retaining schedule objects in
+them to `cache/epg.sqlite3` without retaining schedule objects in
 Python heap memory.
 """
 

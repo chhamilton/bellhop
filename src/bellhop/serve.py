@@ -137,7 +137,7 @@ class UnifiedServeServer:
         password=web_password,
         session_ttl_hours=config.serve.web.session_ttl_hours,
         session_secret=config.serve.web.session_secret,
-        secret_file=cache_dir / "bellhop_web" / "session_secret.key",
+        secret_file=cache_dir / "session_secret.key",
         secure_cookie=(config.serve.xtream.server_protocol == "https"),
       )
     )

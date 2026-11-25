@@ -94,7 +94,7 @@ def test_web_auth_token_signing_persistence_and_rotation_with_fake_clock(
   with pytest.raises(ValueError, match="cannot be disabled"):
     WebGuideApp(LineupGuideStore(xt_empty), auth=unconfigured)
 
-  secret_file = tmp_path / "cache" / "bellhop_web" / "session_secret.key"
+  secret_file = tmp_path / "cache" / "session_secret.key"
   auth1 = WebAuthManager(
     WebAuthConfig(
       username="admín",

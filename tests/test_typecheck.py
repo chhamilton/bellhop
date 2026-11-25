@@ -11,7 +11,9 @@ Covers:
 
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +21,8 @@ from pathlib import Path
 import pytest
 
 from bellhop.common.api_contracts import render_typescript_api_contracts
+from bellhop.common.file_utils import ensure_private_dir, write_private_text
+from bellhop.epg.db import EpgDatabase
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -168,3 +172,84 @@ def test_frontend_unit_tests_pass() -> None:
   assert res.returncode == 0, (
     f"Frontend unit tests failed:\n{res.stdout}\n{res.stderr}"
   )
+
+
+def test_repository_and_private_permissions_hygiene(tmp_path: Path) -> None:
+  """Ensure repo trees are never group/world-writable and private files stay 0600/0700."""
+  executable_scripts = {
+    Path(".agents/scripts/bootstrap.sh"),
+    Path("docker/entrypoint.sh"),
+    Path("docker/bellhop-shim.sh"),
+  }
+  checked_trees = (
+    REPO_ROOT / "src",
+    REPO_ROOT / "tests",
+    REPO_ROOT / "data",
+    REPO_ROOT / "docker",
+    REPO_ROOT / ".agents",
+  )
+
+  writable_violations: list[str] = []
+  exec_violations: list[str] = []
+
+  root_mode = stat.S_IMODE(REPO_ROOT.stat().st_mode)
+  if root_mode & 0o022:
+    writable_violations.append(f". ({oct(root_mode)})")
+
+  for item in REPO_ROOT.iterdir():
+    if item.is_file() and not item.name.startswith(".git"):
+      mode = stat.S_IMODE(item.stat().st_mode)
+      if mode & 0o022:
+        writable_violations.append(
+          f"{item.relative_to(REPO_ROOT)} ({oct(mode)})"
+        )
+
+  for tree in checked_trees:
+    for entry in (tree, *tree.rglob("*")):
+      if entry.is_symlink():
+        continue
+      rel = entry.relative_to(REPO_ROOT)
+      mode = stat.S_IMODE(entry.stat().st_mode)
+      if mode & 0o022:
+        writable_violations.append(f"{rel} ({oct(mode)})")
+      if entry.is_file():
+        if rel in executable_scripts:
+          if (mode & 0o111) == 0:
+            exec_violations.append(f"{rel} missing +x ({oct(mode)})")
+        elif mode & 0o111:
+          exec_violations.append(f"{rel} unexpected +x ({oct(mode)})")
+
+  assert writable_violations == [], (
+    f"Group/world-writable paths found in repository: {writable_violations}"
+  )
+  assert exec_violations == [], (
+    f"Unexpected executable permission bits in repository: {exec_violations}"
+  )
+
+  # Even under a permissive `umask(0)`, `ensure_private_dir`, `write_private_text`,
+  # and `EpgDatabase` must enforce strict `0o700` / `0o600` on all created paths.
+  prev_umask = os.umask(0)
+  try:
+    nested_dir = tmp_path / "perm_check" / "cache" / "nested"
+    ensure_private_dir(nested_dir)
+    for ancestor in (
+      tmp_path / "perm_check",
+      tmp_path / "perm_check" / "cache",
+      nested_dir,
+    ):
+      assert stat.S_IMODE(ancestor.stat().st_mode) == 0o700
+
+    secret_file = nested_dir / "secret.yaml"
+    write_private_text(secret_file, "token: secret\n")
+    assert stat.S_IMODE(secret_file.stat().st_mode) == 0o600
+
+    db_path = nested_dir / "epg.sqlite3"
+    db = EpgDatabase(db_path)
+    db.ensure_initialized()
+    assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+    for suffix in ("-wal", "-shm"):
+      sidecar = Path(f"{db_path}{suffix}")
+      if sidecar.is_file():
+        assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600
+  finally:
+    os.umask(prev_umask)

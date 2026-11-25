@@ -720,7 +720,7 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
         == "Le Téléjournal Montréal"
       )
       assert channels_by_chno[1401]["now_playing"]["title"] == "SportsCentre"
-      assert (cache_dir / "bellhop_web" / "epg.sqlite3").is_file()
+      assert (cache_dir / "epg.sqlite3").is_file()
 
       # Verify /api/config exposes operational config with zero secrets/paths.
       cfg_r = await client.get("/api/config")

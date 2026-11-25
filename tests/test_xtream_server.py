@@ -193,7 +193,7 @@ pipeline:
           ):
             break
           await asyncio.sleep(0.05)
-        assert (tmp_path / "cache" / "bellhop_web" / "epg.sqlite3").is_file()
+        assert (tmp_path / "cache" / "epg.sqlite3").is_file()
 
         lu = (await client.get("/api/lineup")).json()
         assert "upstream_secret_pw" not in json.dumps(lu)

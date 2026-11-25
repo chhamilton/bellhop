@@ -418,7 +418,7 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
     return web.Response(status=200, content_type="application/xml", text=xml)
 
   store = LineupGuideStore(xt_dir)
-  cache_file = tmp_path / "cache" / "bellhop_web" / "epg.sqlite3"
+  cache_file = tmp_path / "cache" / "epg.sqlite3"
   assert (
     EpgDatabase(cache_file).coverage_stats(now_ts=now_ts).active_programs == 0
   )
@@ -889,7 +889,7 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
     return web.Response(status=200, content_type="application/xml", text=xml)
 
   store = LineupGuideStore(xt_dir)
-  cache_file = tmp_path / "cache" / "bellhop_web" / "epg.sqlite3"
+  cache_file = tmp_path / "cache" / "epg.sqlite3"
   async with MockHttpServer(mock_epg_upstream) as mock:
     refresher = EpgRefreshService(
       store,

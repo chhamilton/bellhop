@@ -1,4 +1,4 @@
-"""Focused unit tests for `ExportBundleReader` and `bellhop_web` boundary."""
+"""Focused unit tests for `ExportBundleReader` and `bellhop` domain layers."""
 
 from __future__ import annotations
 

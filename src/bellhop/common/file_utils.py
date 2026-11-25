@@ -12,7 +12,10 @@ PRIVATE_DIR_MODE = 0o700
 
 
 def ensure_private_dir(path: Path) -> Path:
-  """Create `path` (and missing parents) and restrict `path` to owner `0o700`.
+  """Create `path` (and missing parents) and restrict created dirs to `0o700`.
+
+  Walks missing ancestor directories from shallowest to deepest so intermediate
+  parents are never left group/world-writable when the process `umask` is `0`.
 
   Args:
     path: Target directory path.
@@ -20,9 +23,18 @@ def ensure_private_dir(path: Path) -> Path:
   Returns:
     The created/verified directory `Path`.
   """
-  path.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIR_MODE)
-  with contextlib.suppress(OSError):
-    os.chmod(path, PRIVATE_DIR_MODE)
+  missing: list[Path] = []
+  cur = path
+  while not cur.exists() and cur != cur.parent:
+    missing.append(cur)
+    cur = cur.parent
+  for directory in reversed(missing):
+    directory.mkdir(exist_ok=True, mode=PRIVATE_DIR_MODE)
+    with contextlib.suppress(OSError):
+      os.chmod(directory, PRIVATE_DIR_MODE)
+  if path.is_dir():
+    with contextlib.suppress(OSError):
+      os.chmod(path, PRIVATE_DIR_MODE)
   return path
 
 
