@@ -1,28 +1,9 @@
-"""Dynamic passthrough XMLTV EPG fetcher & persistent local cache for Bellhop Web Guide.
+"""Dynamic Schedules Direct & XMLTV EPG fetcher backed by WAL-mode SQLite (`epg.sqlite3`).
 
-Persistent EPG Cache Layout (`cache/bellhop_web/epg_cache.json`, `version = 1`)
-----------------------------------------------------------------------------
-```json
-{
-  "version": 1,
-  "fetched_at": 1763510400.0,
-  "channel_count": 235,
-  "program_count": 14820,
-  "channels": {
-    "RDS.ca": [
-      {
-        "id": "1",
-        "title": "Hockey Canadien",
-        "sub_title": "",
-        "description": "...",
-        "category": "Sports",
-        "start_timestamp": 1763510400,
-        "stop_timestamp": 1763519400
-      }
-    ]
-  }
-}
-```
+Fetches multi-day Schedules Direct (`20141201`) and passthrough XMLTV guide data
+in the background, reconciles non-overlapping per-slot schedules, and commits
+them to `cache/bellhop_web/epg.sqlite3` without retaining schedule objects in
+Python heap memory.
 """
 
 from __future__ import annotations
@@ -38,11 +19,15 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TypedDict
 
 import aiohttp
 
 from bellhop_web.api_contracts import EpgStatusDict as EpgStatusDict
+from bellhop_web.epg_db import (
+  DEFAULT_EPG_DB_FILE,
+  EpgCoverageSummary,
+  EpgDatabase,
+)
 from bellhop_web.http_utils import (
   ClientSessionFactory,
   default_session_factory,
@@ -62,33 +47,6 @@ from bellhop_web.store import (
 )
 
 logger = logging.getLogger("bellhop_web.epg")
-
-
-class CachedProgramDict(TypedDict):
-  """Compact program entry stored inside `cache/bellhop_web/epg_cache.json`."""
-
-  id: str
-  title: str
-  sub_title: str
-  description: str
-  category: str
-  start_timestamp: int
-  stop_timestamp: int
-
-
-class _EpgCacheRequiredDict(TypedDict):
-  version: int
-  fetched_at: float
-  channel_count: int
-  program_count: int
-  channels: dict[str, list[CachedProgramDict]]
-
-
-class EpgCacheDocumentDict(_EpgCacheRequiredDict, total=False):
-  """Top-level schema for `cache/bellhop_web/epg_cache.json`."""
-
-  covered_channel_ids: list[str]
-  channels_by_chno: dict[str, list[CachedProgramDict]]
 
 
 @dataclass(slots=True)
@@ -147,7 +105,6 @@ class EpgRefreshStatus:
 
 
 DEFAULT_EPG_USER_AGENT = "Bellhop/0.1 (VLC/3.0.20 LibVLC/3.0.20)"
-CACHE_SCHEMA_VERSION = 3
 STALE_ENTRY_GRACE_SEC = 7200  # keep shows ending within the last 2 hours
 _PASSWORD_QS_RE = re.compile(r"(password=)([^&\s'\"\\]+)", re.IGNORECASE)
 
@@ -289,14 +246,14 @@ def parse_xmltv_for_channels(
 
 @dataclass(slots=True)
 class EpgRefreshConfig:
-  """Configuration for background and on-demand XMLTV EPG caching."""
+  """Configuration for background and on-demand SQLite EPG caching."""
 
   enabled: bool = True
   refresh_hours: float = 6.0
   request_timeout_sec: float = 90.0
   xmltv_url: str = ""
   xmltv_file: Path | None = None
-  cache_file: Path = Path("cache/bellhop_web/epg_cache.json")
+  cache_file: Path = DEFAULT_EPG_DB_FILE
   check_interval_sec: float = 900.0
   min_future_coverage_sec: float = 7200.0
   min_retry_sec: float = 300.0
@@ -305,7 +262,7 @@ class EpgRefreshConfig:
 
 
 class EpgRefreshService:
-  """Dynamically fetches Schedules Direct & XMLTV EPG and persists a compact JSON cache."""
+  """Dynamically fetches Schedules Direct & XMLTV EPG into SQLite (`epg.sqlite3`)."""
 
   def __init__(
     self,
@@ -321,9 +278,20 @@ class EpgRefreshService:
     self._session_factory: ClientSessionFactory = (
       session_factory or default_session_factory
     )
+    db_path = (
+      config.sd_epg.db_file
+      if (
+        config.sd_epg is not None
+        and config.cache_file == DEFAULT_EPG_DB_FILE
+        and config.sd_epg.db_file != DEFAULT_EPG_DB_FILE
+      )
+      else config.cache_file
+    )
+    self.db = EpgDatabase(db_path)
     self._sd_client: SchedulesDirectEpgClient | None = (
       SchedulesDirectEpgClient(
         config.sd_epg,
+        db=self.db,
         session_factory=self._session_factory,
         clock=self._clock,
       )
@@ -360,6 +328,10 @@ class EpgRefreshService:
     """Return `True` when Schedules Direct JSON EPG is configured and active."""
     return self._sd_client is not None and self._sd_client.enabled
 
+  def current_epoch(self) -> int:
+    """Return current integer UNIX timestamp from the configured clock."""
+    return int(self._clock())
+
   @property
   def is_configured(self) -> bool:
     if self.sd_enabled:
@@ -368,223 +340,114 @@ class EpgRefreshService:
       return True
     return bool(self._resolve_effective_xmltv_url())
 
-  def hydrate_from_cache(self, *, now_ts: int | None = None) -> int:
-    """Load the Web Guide's persistent JSON EPG cache on startup, evicting stale entries."""
-    cache_path = self.config.cache_file
-    if not cache_path.is_file():
-      return 0
-    try:
-      raw = json.loads(cache_path.read_text(encoding="utf-8"))
-      if (
-        not isinstance(raw, dict) or raw.get("version") != CACHE_SCHEMA_VERSION
-      ):
-        return 0
-      channels_map = raw.get("channels")
-      if not isinstance(channels_map, dict):
-        return 0
+  def _coverage_for_snapshot(
+    self, snap: LineupSnapshot, *, now_ts: int
+  ) -> EpgCoverageSummary:
+    cov = self.db.coverage_stats(now_ts=now_ts)
+    if cov.total_programs == 0:
+      s_total, s_active, s_max = snap.epg_coverage_stats(now_ts=now_ts)
+      if s_total > 0:
+        return EpgCoverageSummary(
+          total_programs=s_total,
+          active_programs=s_active,
+          max_stop_timestamp=s_max,
+          channels_with_epg=snap.channels_with_epg_count(),
+        )
+    return cov
 
+  def hydrate_from_cache(self, *, now_ts: int | None = None) -> int:
+    """Validate and prune the persistent SQLite EPG database on startup."""
+    cache_path = self.db.db_path
+    legacy_epg = cache_path.parent / "epg_cache.json"
+    legacy_sd = cache_path.parent / "sd_epg_cache.json"
+    if cache_path.is_file():
+      try:
+        with cache_path.open("rb") as fh:
+          header = fh.read(16)
+        if header != b"SQLite format 3\x00":
+          logger.warning(
+            "Ignoring non-SQLite EPG cache file at %s.", cache_path
+          )
+          return 0
+      except OSError as exc:
+        logger.warning("Ignoring unreadable EPG cache %s: %s", cache_path, exc)
+        return 0
+    elif not legacy_epg.is_file() and not legacy_sd.is_file():
+      return 0
+
+    try:
+      self.db.ensure_initialized()
       ref_now = int(self._clock()) if now_ts is None else now_ts
       stale_cutoff = ref_now - STALE_ENTRY_GRACE_SEC
-      programs_by_id: dict[str, list[ProgramItem]] = {}
-      evicted_count = 0
-
-      for cid, items in channels_map.items():
-        if not isinstance(items, list):
-          continue
-        parsed_items: list[ProgramItem] = []
-        for p in items:
-          if not isinstance(p, dict) or not p.get("title"):
-            continue
-          stop_ts = int(p.get("stop_timestamp") or 0)
-          if stop_ts > 0 and stop_ts < stale_cutoff:
-            evicted_count += 1
-            continue
-          parsed_items.append(
-            ProgramItem(
-              id=str(p.get("id") or ""),
-              channel_id=str(cid),
-              title=str(p.get("title") or ""),
-              sub_title=str(p.get("sub_title") or ""),
-              description=str(p.get("description") or ""),
-              category=str(p.get("category") or ""),
-              start_timestamp=int(p.get("start_timestamp") or 0),
-              stop_timestamp=stop_ts,
-            )
-          )
-        if parsed_items:
-          programs_by_id[str(cid)] = parsed_items
-
-      programs_by_chno: dict[int, list[ProgramItem]] = {}
-      raw_by_chno = raw.get("channels_by_chno")
-      if isinstance(raw_by_chno, dict):
-        for ch_key, items in raw_by_chno.items():
-          try:
-            chno_int = int(ch_key)
-          except ValueError:
-            continue
-          if not isinstance(items, list):
-            continue
-          slot_items: list[ProgramItem] = []
-          for p in items:
-            if not isinstance(p, dict) or not p.get("title"):
-              continue
-            stop_ts = int(p.get("stop_timestamp") or 0)
-            if stop_ts > 0 and stop_ts < stale_cutoff:
-              evicted_count += 1
-              continue
-            slot_items.append(
-              ProgramItem(
-                id=str(p.get("id") or ""),
-                channel_id=str(ch_key),
-                title=str(p.get("title") or ""),
-                sub_title=str(p.get("sub_title") or ""),
-                description=str(p.get("description") or ""),
-                category=str(p.get("category") or ""),
-                start_timestamp=int(p.get("start_timestamp") or 0),
-                stop_timestamp=stop_ts,
-              )
-            )
-          if slot_items:
-            programs_by_chno[chno_int] = slot_items
-
-      if not programs_by_id and not programs_by_chno:
+      evicted_count, remaining = self.db.prune_stale_airings(
+        stale_cutoff_ts=stale_cutoff
+      )
+      if remaining == 0:
+        if not self.db.has_sd_cache():
+          self.db.delete_database()
         if evicted_count > 0:
-          with contextlib.suppress(OSError):
-            cache_path.unlink(missing_ok=True)
           logger.info(
-            "Evicted %d stale EPG listings from %s (cache empty; will download fresh guide).",
+            "Evicted %d stale EPG listings from %s (guide airings empty; will refresh).",
             evicted_count,
             cache_path,
           )
         return 0
 
-      fetched_at_raw = raw.get("fetched_at")
-      fetched_at = (
-        float(fetched_at_raw)
-        if isinstance(fetched_at_raw, (int, float)) and fetched_at_raw > 0
-        else cache_path.stat().st_mtime
-      )
+      meta = self.db.get_meta()
+      fetched_at_raw = meta.get("fetched_at", "")
+      try:
+        fetched_at = float(fetched_at_raw) if fetched_at_raw else 0.0
+      except ValueError:
+        fetched_at = 0.0
+      if fetched_at <= 0.0:
+        fetched_at = cache_path.stat().st_mtime
 
-      loaded = self.store.apply_epg_programs(
-        programs_by_id,
-        programs_by_chno=programs_by_chno or None,
-      )
-      raw_covered = raw.get("covered_channel_ids")
-      if isinstance(raw_covered, list) and raw_covered:
-        self._covered_channel_ids = frozenset(
-          str(cid).strip().lower() for cid in raw_covered if str(cid).strip()
-        )
-      else:
-        self._covered_channel_ids = frozenset(
-          cid.strip().lower() for cid in programs_by_id if cid.strip()
-        )
-      self._covered_bundle_sig = self.store.bundle_signature
+      covered_ids: set[str] = set()
+      raw_cov_json = meta.get("covered_channel_ids", "")
+      if raw_cov_json:
+        with contextlib.suppress(ValueError, TypeError):
+          parsed_cov = json.loads(raw_cov_json)
+          if isinstance(parsed_cov, list):
+            covered_ids = {
+              str(cid).strip().lower() for cid in parsed_cov if str(cid).strip()
+            }
+
+      self.store.touch_epg_revision()
+
+      restored_sig: tuple[float, ...] = ()
+      raw_sig_json = meta.get("covered_bundle_sig", "")
+      if raw_sig_json:
+        with contextlib.suppress(ValueError, TypeError):
+          parsed_sig = json.loads(raw_sig_json)
+          if isinstance(parsed_sig, list) and parsed_sig:
+            restored_sig = tuple(float(v) for v in parsed_sig)
+      self._covered_channel_ids = frozenset(covered_ids)
+      self._covered_bundle_sig = restored_sig or self.store.bundle_signature
       self._last_updated = fetched_at
       if self._state == "idle":
         self._state = "ok"
 
-      if evicted_count > 0:
-        try:
-          self._save_cache(
-            programs_by_id,
-            fetched_at,
-            self._covered_channel_ids,
-            programs_by_chno=programs_by_chno or None,
-          )
-        except OSError as exc:
-          logger.warning(
-            "Could not prune stale entries in %s: %s", cache_path, exc
-          )
-
-      ch_count = (
-        len(programs_by_chno) if programs_by_chno else len(programs_by_id)
-      )
+      cov = self.db.coverage_stats(now_ts=ref_now)
       logger.info(
-        "Loaded %d cached EPG listings across %d channels from %s%s.",
-        loaded,
-        ch_count,
+        "Hydrated %d SQLite EPG listings across %d channels from %s%s.",
+        remaining,
+        cov.channels_with_epg,
         cache_path,
         f" (evicted {evicted_count} stale)" if evicted_count > 0 else "",
       )
-      return loaded
+      return remaining
     except Exception as exc:
-      logger.warning("Ignoring unreadable EPG cache %s: %s", cache_path, exc)
+      logger.warning("Ignoring unreadable EPG database %s: %s", cache_path, exc)
       return 0
-
-  def _save_cache(
-    self,
-    programs_by_id: dict[str, list[ProgramItem]],
-    fetched_at: float,
-    covered_channel_ids: frozenset[str] = frozenset(),
-    *,
-    programs_by_chno: dict[int, list[ProgramItem]] | None = None,
-  ) -> None:
-    cache_path = self.config.cache_file
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-
-    def _serialize_list(items: list[ProgramItem]) -> list[CachedProgramDict]:
-      return [
-        {
-          "id": p.id,
-          "title": p.title,
-          "sub_title": p.sub_title,
-          "description": p.description,
-          "category": p.category,
-          "start_timestamp": p.start_timestamp,
-          "stop_timestamp": p.stop_timestamp,
-        }
-        for p in items
-      ]
-
-    channels_payload: dict[str, list[CachedProgramDict]] = {}
-    total_programs = 0
-    for cid, items in programs_by_id.items():
-      channels_payload[cid] = _serialize_list(items)
-      total_programs += len(items)
-
-    chno_payload: dict[str, list[CachedProgramDict]] = {}
-    if programs_by_chno:
-      total_programs = 0
-      for chno, items in sorted(programs_by_chno.items()):
-        chno_payload[str(chno)] = _serialize_list(items)
-        total_programs += len(items)
-
-    effective_covered = sorted(
-      covered_channel_ids
-      or {cid.strip().lower() for cid in channels_payload if cid.strip()}
-    )
-    payload: EpgCacheDocumentDict = {
-      "version": CACHE_SCHEMA_VERSION,
-      "fetched_at": fetched_at,
-      "channel_count": len(chno_payload)
-      if chno_payload
-      else len(channels_payload),
-      "program_count": total_programs,
-      "covered_channel_ids": effective_covered,
-      "channels": channels_payload,
-    }
-    if chno_payload:
-      payload["channels_by_chno"] = chno_payload
-    tmp_path = cache_path.with_suffix(".json.tmp")
-    tmp_path.write_text(
-      json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-    )
-    tmp_path.replace(cache_path)
 
   def status_dict(self, *, now_ts: int | None = None) -> EpgStatusDict:
     effective_now = int(self._clock()) if now_ts is None else now_ts
-    total_progs = 0
-    active_progs = 0
-    max_stop_ts = 0
-    channels_with_epg = 0
+    cov = EpgCoverageSummary()
     try:
       snap = self.store.get_snapshot()
-      total_progs, active_progs, max_stop_ts = snap.epg_coverage_stats(
-        now_ts=effective_now
-      )
-      channels_with_epg = snap.channels_with_epg_count()
+      cov = self._coverage_for_snapshot(snap, now_ts=effective_now)
     except Exception:
-      pass
+      cov = self.db.coverage_stats(now_ts=effective_now)
 
     return EpgRefreshStatus(
       enabled=self.config.enabled,
@@ -595,10 +458,10 @@ class EpgRefreshService:
       last_attempt=self._last_attempt,
       last_reason=self._last_reason,
       last_error=self._last_error,
-      program_count=total_progs,
-      active_program_count=active_progs,
-      channels_with_epg=channels_with_epg,
-      max_stop_timestamp=max_stop_ts,
+      program_count=cov.total_programs,
+      active_program_count=cov.active_programs,
+      channels_with_epg=cov.channels_with_epg,
+      max_stop_timestamp=cov.max_stop_timestamp,
       refresh_hours=self.config.refresh_hours,
     ).to_dict()
 
@@ -614,7 +477,9 @@ class EpgRefreshService:
     except Exception:
       return False, "no_snapshot"
 
-    _total, active_progs, max_stop_ts = snap.epg_coverage_stats(now_ts=now)
+    cov = self._coverage_for_snapshot(snap, now_ts=now)
+    active_progs = cov.active_programs
+    max_stop_ts = cov.max_stop_timestamp
     current_epg_ids = frozenset(
       cid.strip().lower()
       for cid in snap.build_epg_channel_lookup().values()
@@ -866,11 +731,11 @@ class EpgRefreshService:
                 now_timestamp=int(self._clock()),
               )
             elif effective_url:
-              self.config.cache_file.parent.mkdir(parents=True, exist_ok=True)
+              self.db.db_path.parent.mkdir(parents=True, exist_ok=True)
               fd, tmp_name = tempfile.mkstemp(
                 prefix="xmltv_fetch_",
                 suffix=".xml",
-                dir=str(self.config.cache_file.parent),
+                dir=str(self.db.db_path.parent),
               )
               tmp_xml_path = Path(tmp_name)
               logger.info(
@@ -914,8 +779,11 @@ class EpgRefreshService:
         elif not sd_by_chno and not has_xmltv_source:
           raise RuntimeError("No upstream XMLTV passthrough URL available.")
 
-        # 3. Merge schedules (Schedules Direct primary, XMLTV backfill)
+        # 3. Merge schedules (Schedules Direct primary, XMLTV backfill) & commit to SQLite
         now_epoch = self._clock()
+        redacted_url = (
+          _PASSWORD_QS_RE.sub(r"\1***", effective_url) if effective_url else ""
+        )
         if sd_by_chno:
           merged_by_chno: dict[int, list[ProgramItem]] = {}
           merged_by_id: dict[str, list[ProgramItem]] = dict(xmltv_programs)
@@ -931,40 +799,43 @@ class EpgRefreshService:
               merged_by_chno[ch.chno] = xmltv_programs[ch.epg_channel_id]
               xmltv_backfilled += 1
 
-          total_loaded = self.store.apply_epg_programs(
-            merged_by_id,
+          total_loaded = await asyncio.to_thread(
+            self.db.replace_guide_schedules,
+            snap=snap,
+            programs_by_id=merged_by_id,
             programs_by_chno=merged_by_chno,
-            xmltv_url=effective_url,
+            fetched_at=now_epoch,
+            covered_channel_ids=covered_ids,
+            bundle_sig=bundle_sig,
+            xmltv_url_redacted=redacted_url,
           )
-          await asyncio.to_thread(
-            self._save_cache,
-            merged_by_id,
-            now_epoch,
-            covered_ids,
-            programs_by_chno=merged_by_chno,
-          )
+          self.store.touch_epg_revision(xmltv_url=effective_url)
           covered_total = len(merged_by_chno)
           logger.info(
-            "EPG guide refreshed (%d listings across %d/%d channels: %d Schedules Direct + %d XMLTV backfill; cached to %s).",
+            "EPG guide refreshed (%d listings across %d/%d channels: %d Schedules Direct + %d XMLTV backfill; saved to %s).",
             total_loaded,
             covered_total,
             len(snap.channels),
             len(sd_by_chno),
             xmltv_backfilled,
-            self.config.cache_file,
+            self.db.db_path,
           )
         else:
-          total_loaded = self.store.apply_epg_programs(
-            xmltv_programs, xmltv_url=effective_url
+          total_loaded = await asyncio.to_thread(
+            self.db.replace_guide_schedules,
+            snap=snap,
+            programs_by_id=xmltv_programs,
+            fetched_at=now_epoch,
+            covered_channel_ids=covered_ids,
+            bundle_sig=bundle_sig,
+            xmltv_url_redacted=redacted_url,
           )
-          await asyncio.to_thread(
-            self._save_cache, xmltv_programs, now_epoch, covered_ids
-          )
+          self.store.touch_epg_revision(xmltv_url=effective_url)
           logger.info(
-            "EPG guide refreshed (%d listings across %d channels; cached to %s).",
+            "EPG guide refreshed (%d listings across %d channels; saved to %s).",
             total_loaded,
             len(xmltv_programs),
-            self.config.cache_file,
+            self.db.db_path,
           )
 
         self._covered_channel_ids = covered_ids

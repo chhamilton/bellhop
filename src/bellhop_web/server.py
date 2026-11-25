@@ -65,6 +65,7 @@ from bellhop_web.http_utils import (
 from bellhop_web.store import (
   LineupGuideStore,
   LineupSnapshot,
+  ProgramItem,
   PublicChannelDict,
   WebChannel,
 )
@@ -623,9 +624,7 @@ class WebGuideApp:
     if self.epg_refresher is not None:
       self.epg_refresher.trigger_background_if_needed(reason_prefix="health")
     now_ts = int(self._clock())
-    total_progs, active_progs, _max_stop = snap.epg_coverage_stats(
-      now_ts=now_ts
-    )
+    epg_status = self._epg_status_dict(snap, now_ts=now_ts)
     payload: HealthApiResponseDict = {
       "status": "ok",
       "lineup_id": snap.lineup_id,
@@ -634,9 +633,9 @@ class WebGuideApp:
       "lineup_updated_at": snap.loaded_at,
       "channel_count": len(snap.channels),
       "category_count": len(snap.categories),
-      "epg_program_count": total_progs,
-      "epg_active_program_count": active_progs,
-      "epg_status": self._epg_status_dict(snap, now_ts=now_ts),
+      "epg_program_count": epg_status["program_count"],
+      "epg_active_program_count": epg_status["active_program_count"],
+      "epg_status": epg_status,
       "active_tuner": self.tuner.active_info,
       "auth_required": self._auth_enabled,
     }
@@ -690,6 +689,16 @@ class WebGuideApp:
     require_epg = epg_filter in {"1", "true", "yes", "only"}
     search_q = query.get("q", "").strip().lower()
 
+    by_chno: dict[int, list[ProgramItem]] = {}
+    by_epg_id: dict[str, list[ProgramItem]] = {}
+    if self.epg_refresher is not None:
+      by_chno, by_epg_id = await asyncio.to_thread(
+        self.epg_refresher.db.query_lineup_window,
+        min_stop_ts=now_ts - 3600,
+        max_start_ts=now_ts + 172800,
+        per_channel_limit=48,
+      )
+
     channels_out: list[PublicChannelDict] = []
     category_channel_count = 0
     for ch in snap.channels:
@@ -708,7 +717,11 @@ class WebGuideApp:
       ):
         continue
 
-      progs = snap.programs_for_channel(ch)
+      progs = (
+        by_chno.get(ch.chno)
+        or by_epg_id.get(ch.epg_channel_id)
+        or snap.programs_for_channel(ch)
+      )
       pub = ch.to_public_dict(progs, now_ts=now_ts, upcoming_limit=48)
       if require_epg and not (
         pub["now_playing"] or pub["up_next"] or pub["schedule"]
@@ -764,7 +777,17 @@ class WebGuideApp:
       )
 
     now_ts = int(self._clock())
-    progs = snap.programs_for_channel(ch)
+    progs: list[ProgramItem] = []
+    if self.epg_refresher is not None:
+      progs = await asyncio.to_thread(
+        self.epg_refresher.db.query_channel_schedule,
+        ch.chno,
+        ch.epg_channel_id,
+        min_stop_ts=now_ts - 1800,
+        limit=120,
+      )
+    if not progs:
+      progs = snap.programs_for_channel(ch)
     upcoming = [
       p.to_dict(now_ts=now_ts)
       for p in progs

@@ -583,6 +583,18 @@ class LineupGuideStore:
     snap.loaded_at = self._next_updated_at()
     return total_programs
 
+  def touch_epg_revision(self, *, xmltv_url: str = "") -> None:
+    """Bump snapshot timestamp and release any in-memory EPG overlays after SQLite commit."""
+    snap = self.get_snapshot()
+    self._epg_overlay = None
+    self._epg_chno_overlay = None
+    if xmltv_url:
+      self._epg_overlay_url = xmltv_url
+      snap.xmltv_url = xmltv_url
+    snap.programs_by_epg_id = {}
+    snap.programs_by_chno = {}
+    snap.loaded_at = self._next_updated_at()
+
   def _load_from_disk(self) -> LineupSnapshot:
     bundle_data = self._bundle_reader.read()
     epg_json_path = self.xtream_dir / "get_epg.json"

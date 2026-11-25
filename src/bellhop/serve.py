@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from typing import Any
 
 from aiohttp import web
@@ -57,7 +57,7 @@ def build_epg_refresher_from_config(
     else None
   )
   cache_dir = config.resolve_path(config.xtream.cache_dir)
-  epg_cache_file = cache_dir / "bellhop_web" / "epg_cache.json"
+  epg_db_file = cache_dir / "bellhop_web" / "epg.sqlite3"
   fallback_xmltv_url = build_passthrough_xmltv_url(config, redact_secret=False)
   sd_raw = config.lineup.schedules_direct
   sd_epg_cfg = SchedulesDirectEpgConfig(
@@ -69,7 +69,7 @@ def build_epg_refresher_from_config(
     postal_code=config.lineup.postal_code,
     timeout_sec=config.xtream.request_timeout_sec,
     token_cache_file=cache_dir / "sd_token.json",
-    data_cache_file=cache_dir / "bellhop_web" / "sd_epg_cache.json",
+    db_file=epg_db_file,
   )
   return EpgRefreshService(
     store,
@@ -79,7 +79,7 @@ def build_epg_refresher_from_config(
       request_timeout_sec=config.xtream.request_timeout_sec,
       xmltv_url=fallback_xmltv_url,
       xmltv_file=xmltv_override,
-      cache_file=epg_cache_file,
+      cache_file=epg_db_file,
       sd_epg=sd_epg_cfg,
     ),
     session_factory=session_factory,
@@ -181,12 +181,27 @@ class UnifiedServeServer:
       trusted_proxy_ips=config.serve.web.trusted_proxy_ips,
     )
 
-    def _provide_merged_xmltv() -> bytes | None:
+    def _provide_xmltv_chunks() -> Iterator[bytes] | None:
       epg_refresher.trigger_background_if_needed(reason_prefix="xmltv")
       snap = web_store.get_snapshot()
-      if snap.channels_with_epg_count() == 0:
-        return None
-      return render_snapshot_xmltv(snap)
+      if epg_refresher.db.coverage_stats().total_programs > 0:
+        return epg_refresher.db.iter_xmltv_chunks(snap)
+      if snap.channels_with_epg_count() > 0:
+        return iter((render_snapshot_xmltv(snap),))
+      return None
+
+    async def _provide_short_epg(
+      chno: int, epg_channel_id: str, language: str, limit: int
+    ) -> list[dict[str, Any]]:
+      epg_refresher.trigger_background_if_needed(reason_prefix="short_epg")
+      return await asyncio.to_thread(
+        epg_refresher.db.query_xtream_epg_listings,
+        chno=chno,
+        epg_channel_id=epg_channel_id,
+        language=language,
+        now_ts=epg_refresher.current_epoch(),
+        limit=limit,
+      )
 
     xtream_store = XtreamExportStore(
       xtream_dir, fallback_xmltv_url=fallback_xmltv_url
@@ -200,7 +215,10 @@ class UnifiedServeServer:
       public_host=config.serve.xtream.public_host,
       public_port=config.serve.xtream.public_port,
       server_protocol=config.serve.xtream.server_protocol,
-      epg_xmltv_provider=_provide_merged_xmltv if has_sd_epg else None,
+      epg_xmltv_chunks_provider=_provide_xmltv_chunks if has_sd_epg else None,
+      epg_short_provider=(
+        _provide_short_epg if epg_refresher.is_configured else None
+      ),
     )
 
     config_target = config.config_file or (config.project_root / "config.yaml")
@@ -328,6 +346,11 @@ class UnifiedServeServer:
 
     if self.web_enabled:
       await self.web_app.startup()
+    elif (
+      self.web_app.epg_refresher is not None
+      and self.web_app.epg_refresher.config.enabled
+    ):
+      await self.web_app.epg_refresher.start()
 
     self._runners = []
     if self.shared_listener:
@@ -370,6 +393,8 @@ class UnifiedServeServer:
       await runner.cleanup()
     if self.web_enabled:
       await self.web_app.shutdown()
+    elif self.web_app.epg_refresher is not None:
+      await self.web_app.epg_refresher.stop()
 
   async def serve_forever(self) -> None:
     await self.start()
@@ -384,7 +409,9 @@ class UnifiedServeServer:
     async def _handle_health(_request: web.Request) -> web.StreamResponse:
       if self.web_enabled:
         snap = self.web_app.store.get_snapshot()
-        total_progs, active_progs, _ = snap.epg_coverage_stats()
+        epg_st = self.web_app._epg_status_dict(snap)
+        total_progs = epg_st["program_count"]
+        active_progs = epg_st["active_program_count"]
         lineup_id = snap.lineup_id
         provider = snap.provider
         market = snap.market
@@ -393,7 +420,12 @@ class UnifiedServeServer:
         active_tuner = self.web_app.tuner.active_info
       else:
         xt_snap = self.xtream_app.store.get_snapshot()
-        total_progs, active_progs = 0, 0
+        if self.web_app.epg_refresher is not None:
+          epg_st = self.web_app.epg_refresher.status_dict()
+          total_progs = epg_st["program_count"]
+          active_progs = epg_st["active_program_count"]
+        else:
+          total_progs, active_progs = 0, 0
         lineup_id = xt_snap.lineup_id
         provider = xt_snap.provider
         market = xt_snap.market

@@ -15,11 +15,12 @@ Xtream Codes HTTP Contract & Wire Layouts
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hmac
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -316,6 +317,12 @@ class XtreamPassthroughServer:
     public_port: int | None = None,
     server_protocol: str = "http",
     epg_xmltv_provider: Callable[[], bytes | None] | None = None,
+    epg_xmltv_chunks_provider: Callable[[], Iterator[bytes] | None]
+    | None = None,
+    epg_short_provider: Callable[
+      [int, str, str, int], Awaitable[list[dict[str, Any]]]
+    ]
+    | None = None,
   ) -> None:
     self.store = store
     self.username = username
@@ -326,6 +333,8 @@ class XtreamPassthroughServer:
     self.public_port = public_port
     self.server_protocol = server_protocol
     self.epg_xmltv_provider = epg_xmltv_provider
+    self.epg_xmltv_chunks_provider = epg_xmltv_chunks_provider
+    self.epg_short_provider = epg_short_provider
     self._runner: web.AppRunner | None = None
     self._created_at = int(time.time())
 
@@ -560,6 +569,25 @@ class XtreamPassthroughServer:
     if action == "get_series_info":
       return json_response({"seasons": [], "info": {}, "episodes": {}})
     if action in {"get_short_epg", "get_simple_data_table"}:
+      raw_sid = params.get("stream_id", "").strip()
+      if raw_sid.isdigit() and self.epg_short_provider is not None:
+        sid = int(raw_sid)
+        item = snap.stream_by_id.get(sid) or snap.stream_by_num.get(sid)
+        if item is not None:
+          default_limit = 4 if action == "get_short_epg" else 50
+          raw_limit = params.get("limit", "").strip()
+          limit = (
+            max(1, min(200, int(raw_limit)))
+            if raw_limit.isdigit()
+            else default_limit
+          )
+          listings = await self.epg_short_provider(
+            item.num,
+            item.epg_channel_id,
+            item.language,
+            limit,
+          )
+          return json_response({"epg_listings": listings})
       return json_response({"epg_listings": []})
 
     user_info, server_info = self._build_user_and_server_info(
@@ -597,6 +625,31 @@ class XtreamPassthroughServer:
       params.get("username", ""), params.get("password", "")
     ):
       return self._unauthorized()
+
+    if self.epg_xmltv_chunks_provider is not None:
+      chunk_iter = self.epg_xmltv_chunks_provider()
+      if chunk_iter is not None:
+        close_iter = getattr(chunk_iter, "close", None)
+        try:
+          if request.method == "HEAD":
+            return web.Response(
+              status=HTTPStatus.OK,
+              headers={"Content-Type": "application/xml; charset=utf-8"},
+            )
+          resp = web.StreamResponse(
+            status=HTTPStatus.OK,
+            headers={"Content-Type": "application/xml; charset=utf-8"},
+          )
+          await resp.prepare(request)
+          for chunk in chunk_iter:
+            if chunk:
+              await resp.write(chunk)
+          await resp.write_eof()
+          return resp
+        finally:
+          if callable(close_iter):
+            with contextlib.suppress(Exception):
+              close_iter()
 
     if self.epg_xmltv_provider is not None:
       merged_xml = self.epg_xmltv_provider()

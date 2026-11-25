@@ -395,7 +395,7 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
   )
   assert active_before == 0
 
-  cache_file = tmp_path / "cache" / "bellhop_web" / "epg_cache.json"
+  cache_file = tmp_path / "cache" / "bellhop_web" / "epg.sqlite3"
   async with MockHttpServer(mock_epg_upstream) as mock:
     refresher = EpgRefreshService(
       store,
@@ -432,12 +432,11 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
 
         assert fetch_count == 1
         assert cache_file.is_file()
-        # bellhop-web keeps output/xtream/ read-only and stores its own compact JSON cache
+        # bellhop-web keeps output/xtream/ read-only and stores its own SQLite EPG database
         assert not (xt_dir / "get_epg.json").exists()
-        assert "super_secret_epg_pw" not in cache_file.read_text(
-          encoding="utf-8"
-        )
+        assert b"super_secret_epg_pw" not in cache_file.read_bytes()
         assert "super_secret_epg_pw" not in json.dumps(health)
+        assert store.get_snapshot().programs_by_epg_id == {}
 
         # Temp raw XML file was cleaned up immediately after parsing
         assert list(cache_file.parent.glob("xmltv_fetch_*.xml")) == []
@@ -486,21 +485,21 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
     assert reason == "fresh"
     assert fetch_count == 2  # no redundant fetch after restart!
 
-    # Simulate restart after time advances: mix of stale + fresh entries evicts stale from disk
-    mixed_cache = json.loads(cache_file.read_text(encoding="utf-8"))
-    mixed_cache["channels"]["ICITeleMontreal.ca"].insert(
-      0,
-      {
-        "id": "old-1",
-        "title": "Yesterday's News",
-        "sub_title": "",
-        "description": "",
-        "category": "",
-        "start_timestamp": now_ts - 20000,
-        "stop_timestamp": now_ts - 15000,
-      },
+    # Simulate restart after time advances: mix of stale + fresh entries evicts stale from SQLite
+    refresher_restarted.db.insert_airing_for_test(
+      chno=1101,
+      epg_channel_id="ICITeleMontreal.ca",
+      item=ProgramItem(
+        id="old-1",
+        channel_id="ICITeleMontreal.ca",
+        title="Yesterday's News",
+        sub_title="",
+        description="",
+        category="",
+        start_timestamp=now_ts - 20000,
+        stop_timestamp=now_ts - 15000,
+      ),
     )
-    cache_file.write_text(json.dumps(mixed_cache), encoding="utf-8")
 
     store_pruned = LineupGuideStore(xt_dir)
     refresher_pruned = EpgRefreshService(
@@ -509,11 +508,12 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
       session_factory=mock.session_factory,
     )
     assert refresher_pruned.hydrate_from_cache(now_ts=now_ts) == 2
-    pruned_disk = json.loads(cache_file.read_text(encoding="utf-8"))
-    assert pruned_disk["program_count"] == 2
+    assert refresher_pruned.db.coverage_stats(now_ts=now_ts).total_programs == 2
     assert all(
-      p["title"] != "Yesterday's News"
-      for p in pruned_disk["channels"]["ICITeleMontreal.ca"]
+      p.title != "Yesterday's News"
+      for p in refresher_pruned.db.query_channel_schedule(
+        1101, "ICITeleMontreal.ca"
+      )
     )
 
     # Simulate restart when ALL cached entries are stale: evicts cache file & schedules fresh fetch
@@ -842,7 +842,7 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
     return web.Response(status=200, content_type="application/xml", text=xml)
 
   store = LineupGuideStore(xt_dir)
-  cache_file = tmp_path / "cache" / "bellhop_web" / "epg_cache.json"
+  cache_file = tmp_path / "cache" / "bellhop_web" / "epg.sqlite3"
   async with MockHttpServer(mock_epg_upstream) as mock:
     refresher = EpgRefreshService(
       store,

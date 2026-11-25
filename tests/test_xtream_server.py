@@ -182,12 +182,32 @@ pipeline:
           ):
             break
           await asyncio.sleep(0.05)
-        assert (tmp_path / "cache" / "bellhop_web" / "epg_cache.json").is_file()
+        assert (tmp_path / "cache" / "bellhop_web" / "epg.sqlite3").is_file()
 
         lu = (await client.get("/api/lineup")).json()
         assert "upstream_secret_pw" not in json.dumps(lu)
         ch_ici = next(c for c in lu["channels"] if c["chno"] == 1101)
         assert ch_ici["now_playing"]["title"] == "Le Téléjournal"
+
+        # Xtream `get_short_epg` serves SQLite listings (base64 UTF-8 title/description)
+        short_epg = (
+          await client.get(
+            "/player_api.php",
+            params={
+              "username": "client_alice",
+              "password": "client_secret_42",
+              "action": "get_short_epg",
+              "stream_id": "410101",
+            },
+          )
+        ).json()
+        assert len(short_epg["epg_listings"]) >= 1
+        import base64 as _b64
+
+        assert (
+          _b64.b64decode(short_epg["epg_listings"][0]["title"]).decode("utf-8")
+          == "Le Téléjournal"
+        )
 
         # Critical routing check: `/api/stream/1101.ts` MUST hit WebGuideApp (200 TS stream),
         # NOT Xtream's `/<user>/<pass>/<id>.ts` (401/302)!

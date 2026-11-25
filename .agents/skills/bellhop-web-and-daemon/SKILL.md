@@ -11,9 +11,10 @@ description: >-
 
 ## Runtime Architecture (`src/bellhop/serve.py`, `src/bellhop/xtream_server.py`, `src/bellhop_web/`)
 - **`http_utils.py` (`src/bellhop_web/http_utils.py`):** Shared `aiohttp.web` application factory (`create_web_app` with CORS, `OPTIONS` preflight, JSON error middleware, and `256 KiB` body limit), response helpers (`json_response`, `bytes_response`, `redirect_response`, `start_site`), `ClientSessionFactory` / `upstream_url`, and bind/LAN URL helpers (`detect_device_ip`, `resolve_bind_host`, `build_access_urls`).
-- **`store.py` & `epg_refresh.py` (`src/bellhop_web/`):**
-  - `LineupGuideStore` hot-reloads `output/xtream/` on file `mtime` changes (with M3U8 & `.xml`/`.xml.gz` fallbacks) and redacts `direct_source` from public API payloads.
-  - `EpgRefreshService` dynamically fetches the passthrough `xmltv_url` in the background, parses mapped channels via `asyncio.to_thread`, evicts stale listings, and persists `cache/bellhop_web/epg_cache.json`.
+- **`store.py`, `epg_db.py`, `sd_epg.py`, & `epg_refresh.py` (`src/bellhop_web/`):**
+  - `LineupGuideStore` hot-reloads `output/xtream/` on file `mtime` changes (with M3U8 & `.xml`/`.xml.gz` fallbacks) and redacts `direct_source` from public API payloads without retaining bulk EPG listings in Python RAM.
+  - `EpgDatabase` (`epg_db.py`) manages the embedded WAL-mode SQLite 3 database (`cache/bellhop_web/epg.sqlite3`), serving indexed range queries for `/api/lineup`, `/api/epg/<chno>`, and Xtream `get_short_epg` / `get_simple_data_table`, plus `64 KB` cursor streaming for `/xmltv.php`.
+  - `EpgRefreshService` & `SchedulesDirectEpgClient` dynamically sync Schedules Direct (`20141201` MD5 differential) + passthrough XMLTV backfill in the background and commit reconciled schedules into `epg.sqlite3`.
 - **`auth.py` (`src/bellhop_web/auth.py`):** HMAC-SHA256 signed sliding session cookies (`bellhop_session`, key persisted in `cache/bellhop_web/session_secret.key`) and `/login?next=...` redirect handling.
 - **`server.py` (`WebGuideApp` & `TunerSessionManager`):**
   - `GET /api/lineup` & `GET /api/epg/<chno>` — Categories, channels, live `progress_pct`, and upcoming schedules.

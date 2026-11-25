@@ -214,7 +214,7 @@ pipeline:
 
     # 2. Boot real Bellhop Web Guide server against the exported files & FakeXtreamServer
     store = LineupGuideStore(xt_dir)
-    epg_cache = tmp_path / "cache" / "bellhop_web" / "epg_cache.json"
+    epg_cache = tmp_path / "cache" / "bellhop_web" / "epg.sqlite3"
     refresher = EpgRefreshService(
       store,
       EpgRefreshConfig(enabled=True, refresh_hours=6.0, cache_file=epg_cache),
@@ -243,9 +243,7 @@ pipeline:
           await asyncio.sleep(0.05)
 
         assert epg_cache.is_file()
-        assert "e2e_secret_password" not in epg_cache.read_text(
-          encoding="utf-8"
-        )
+        assert b"e2e_secret_password" not in epg_cache.read_bytes()
         assert "e2e_secret_password" not in json.dumps(health)
 
         async with client.get("/api/lineup") as r_lu:

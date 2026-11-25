@@ -3,7 +3,7 @@
 ## Project Overview
 This repository implements **Bellhop**, installed via a single `bellhop` CLI (`bellhop run` & `bellhop serve`) from `pyproject.toml` and organized into two clean Python packages:
 1. **`bellhop` (`src/bellhop/`)** — A declarative, stateful 6-phase pipeline (`PipelineRunner`) that maps a raw Xtream Codes IPTV catalog (~16,600+ live streams) onto an official cable/fiber TV lineup (currently **Bell Fibe TV — Montréal, QC**, scalable to any US/Canadian provider via TV Guide or Schedules Direct), validates **only** matched candidate streams, exports Extended **M3U8** + **Xtream JSON** playlists with passthrough EPG metadata, and serves the unified Web Guide + Passthrough Xtream Codes API server via `bellhop serve` (`UnifiedServeServer`).
-2. **`bellhop_web` (`src/bellhop_web/`)** — The decoupled `aiohttp.web` guide UI, TypeScript frontend (`frontend/` → `static/`), cookie auth (`bellhop_session`), dynamic passthrough EPG cache (`cache/bellhop_web/epg_cache.json`), and **single-tuner relay** (`TunerSessionManager`), hosted by `bellhop serve` without importing `bellhop.*`.
+2. **`bellhop_web` (`src/bellhop_web/`)** — The decoupled `aiohttp.web` guide UI, TypeScript frontend (`frontend/` → `static/`), cookie auth (`bellhop_session`), WAL-mode SQLite EPG & Schedules Direct backing store (`cache/bellhop_web/epg.sqlite3`), and **single-tuner relay** (`TunerSessionManager`), hosted by `bellhop serve` without importing `bellhop.*`.
 
 Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persistent service with internal scheduling**, explicit sync controls, **multi-lineup / multi-playlist support**, and optional proxied stream relay.
 
@@ -71,7 +71,9 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
 │       ├── export_bundle.py     # Shared `ExportBundleReader` for `output/xtream/` + M3U8 fallbacks
 │       ├── http_utils.py        # Shared `aiohttp` server/client factories, CSP/CORS/413 & XFF helpers
 │       ├── auth.py              # HMAC-SHA256 `bellhop_session` cookie auth, rate limiter & `/login`
-│       ├── epg_refresh.py       # Dynamic passthrough XMLTV fetcher & `cache/bellhop_web/epg_cache.json`
+│       ├── epg_db.py            # WAL-mode SQLite 3 backing store (`cache/bellhop_web/epg.sqlite3`)
+│       ├── sd_epg.py            # Schedules Direct SD-JSON (`20141201`) MD5 differential EPG client
+│       ├── epg_refresh.py       # Dynamic SD-JSON + XMLTV EPG refresher & SQLite hydrator
 │       ├── store.py             # Hot-reloading guide store backed by `ExportBundleReader`
 │       ├── server.py            # `WebGuideApp` + `TunerSessionManager` chunked MPEG-TS & HLS proxy
 │       ├── frontend/            # Strict ES2022 TypeScript modules (`guide_logic`, `render`, `player`, `settings`, `app`)

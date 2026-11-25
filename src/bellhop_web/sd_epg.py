@@ -1,13 +1,15 @@
-"""Schedules Direct SD-JSON (`20141201`) EPG client with MD5 differential caching.
+"""Schedules Direct SD-JSON (`20141201`) EPG client backed by relational SQLite.
 
 Implements multi-day schedule & program retrieval from Schedules Direct without
 importing `bellhop.*` (preserving the strict `bellhop_web` package boundary):
 1. Authenticates via `POST /token` (SHA-1 password digest + 23-hour token cache).
 2. Resolves `WebChannel` slots to Gracenote `stationID`s via native IDs or the
    account's subscribed Schedules Direct lineups (`GET /status`, `GET /lineups/{id}`,
-   and optional `GET /headends` + `PUT /lineups/{id}` auto-subscription).
-3. Checks `POST /schedules/md5` and fetches `POST /schedules` + `POST /programs`
-   only for changed `(stationID, date)` schedules and unseen `programID`s.
+   and optional `GET /headends` + `PUT /lineups/{id}` auto-subscription) cached
+   in `sd_lineups`, `sd_stations`, and `sd_channel_map`.
+3. Checks `POST /schedules/md5` against `sd_schedule_days` and fetches
+   `POST /schedules` + `POST /programs` only for changed `(stationID, date)`
+   schedules and unseen/updated `programID`s in `sd_programs`.
 """
 
 from __future__ import annotations
@@ -19,13 +21,19 @@ import logging
 import re
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 
+from bellhop_web.epg_db import (
+  DEFAULT_EPG_DB_FILE,
+  EpgDatabase,
+  SdLineupRecord,
+  SdStationRow,
+)
 from bellhop_web.http_utils import (
   ClientSessionFactory,
   default_session_factory,
@@ -42,7 +50,6 @@ logger = logging.getLogger("bellhop_web.sd_epg")
 
 DEFAULT_SD_BASE_URL = "https://json.schedulesdirect.org/20141201"
 SD_USER_AGENT = "Bellhop/0.1"
-SD_CACHE_VERSION = 1
 TOKEN_TTL_SEC = 23 * 3600
 LINEUP_MAP_TTL_SEC = 24 * 3600
 MAX_SCHEDULE_BATCH = 500
@@ -59,7 +66,6 @@ _CALLSIGN_SUFFIX_RE = re.compile(r"(?:[-_ ]?(?:DT|HD|TV|FM|CA|CAN|\d+))+$")
 _REAUTH_CODES = frozenset({4001, 4003, 4004, 4007})
 _SKIP_STATION_CODES = frozenset({7010, 7020, 7030, 7100, 2201})
 
-# Representative postal suffixes for 3-character Canadian FSAs during headend discovery
 _FSA_DEFAULT_SUFFIX: dict[str, str] = {
   "H2Y": "1C6",
   "M5V": "2T6",
@@ -142,35 +148,12 @@ class SchedulesDirectEpgConfig:
   days: int = 3
   timeout_sec: float = 45.0
   token_cache_file: Path = Path("cache/sd_token.json")
-  data_cache_file: Path = Path("cache/bellhop_web/sd_epg_cache.json")
+  db_file: Path = DEFAULT_EPG_DB_FILE
 
   @property
   def enabled(self) -> bool:
     """Return `True` when both Schedules Direct username and password are set."""
     return bool(self.username.strip() and self.password.strip())
-
-
-@dataclass(slots=True)
-class SdStationMeta:
-  """Cached station entry from a Schedules Direct lineup."""
-
-  station_id: str
-  name: str
-  callsign: str = ""
-  language: str = ""
-
-
-@dataclass(slots=True)
-class SdLineupCacheEntry:
-  """Cached channel-to-station mapping for one subscribed SD lineup."""
-
-  lineup_id: str
-  name: str
-  location: str
-  modified: str
-  fetched_at: float
-  stations: dict[str, SdStationMeta] = field(default_factory=dict)
-  chno_to_station: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -184,25 +167,23 @@ class SdFetchSummary:
 
 
 class SchedulesDirectEpgClient:
-  """Stateful SD-JSON (`20141201`) EPG fetcher with local MD5 schedule/program cache."""
+  """SQLite-backed SD-JSON (`20141201`) EPG fetcher with MD5 differential sync."""
 
   def __init__(
     self,
     config: SchedulesDirectEpgConfig,
     *,
+    db: EpgDatabase | None = None,
     session_factory: ClientSessionFactory | None = None,
     clock: Any = time.time,
   ) -> None:
     self.config = config
+    self.db = db or EpgDatabase(config.db_file)
     self._session_factory: ClientSessionFactory = (
       session_factory or default_session_factory
     )
     self._clock = clock
     self._token: str | None = None
-    self._cache_loaded = False
-    self._lineups: dict[str, SdLineupCacheEntry] = {}
-    self._schedules: dict[str, dict[str, dict[str, Any]]] = {}
-    self._programs: dict[str, dict[str, Any]] = {}
 
   @property
   def enabled(self) -> bool:
@@ -210,7 +191,7 @@ class SchedulesDirectEpgClient:
     return self.config.enabled
 
   # ---------------------------------------------------------------------------
-  # Token & Data Cache Persistence
+  # Token Persistence & HTTP Transport
   # ---------------------------------------------------------------------------
   def _load_token(self) -> str | None:
     if self._token:
@@ -252,139 +233,6 @@ class SchedulesDirectEpgClient:
     except OSError:
       pass
 
-  def _ensure_data_cache_loaded(self) -> None:
-    if self._cache_loaded:
-      return
-    self._cache_loaded = True
-    path = self.config.data_cache_file
-    if not path.is_file():
-      return
-    try:
-      raw = json.loads(path.read_text(encoding="utf-8"))
-      if not isinstance(raw, dict) or raw.get("version") != SD_CACHE_VERSION:
-        return
-      raw_lus = raw.get("lineups")
-      if isinstance(raw_lus, dict):
-        for lid, lu_obj in raw_lus.items():
-          if not isinstance(lu_obj, dict):
-            continue
-          stations: dict[str, SdStationMeta] = {}
-          raw_sts = lu_obj.get("stations")
-          if isinstance(raw_sts, dict):
-            for sid, st_obj in raw_sts.items():
-              if isinstance(st_obj, dict):
-                stations[str(sid)] = SdStationMeta(
-                  station_id=str(sid),
-                  name=str(st_obj.get("name") or ""),
-                  callsign=str(st_obj.get("callsign") or ""),
-                  language=str(st_obj.get("language") or ""),
-                )
-          chno_map: dict[int, str] = {}
-          raw_map = lu_obj.get("chno_to_station")
-          if isinstance(raw_map, dict):
-            for ch_k, sid_v in raw_map.items():
-              try:
-                chno_map[int(ch_k)] = str(sid_v)
-              except ValueError:
-                continue
-          self._lineups[str(lid)] = SdLineupCacheEntry(
-            lineup_id=str(lid),
-            name=str(lu_obj.get("name") or lid),
-            location=str(lu_obj.get("location") or ""),
-            modified=str(lu_obj.get("modified") or ""),
-            fetched_at=float(lu_obj.get("fetched_at") or 0.0),
-            stations=stations,
-            chno_to_station=chno_map,
-          )
-      raw_sched = raw.get("schedules")
-      if isinstance(raw_sched, dict):
-        for sid, by_date in raw_sched.items():
-          if isinstance(by_date, dict):
-            self._schedules[str(sid)] = {
-              str(dt): dict(val)
-              for dt, val in by_date.items()
-              if isinstance(val, dict)
-            }
-      raw_progs = raw.get("programs")
-      if isinstance(raw_progs, dict):
-        self._programs = {
-          str(pid): dict(val)
-          for pid, val in raw_progs.items()
-          if isinstance(val, dict)
-        }
-    except (OSError, ValueError, TypeError) as exc:
-      logger.debug("Ignoring unreadable SD EPG cache (%s): %s", path, exc)
-
-  def _persist_data_cache(
-    self, *, min_keep_date: str, active_pids: set[str]
-  ) -> None:
-    path = self.config.data_cache_file
-    try:
-      # Prune expired schedule dates and unreferenced old programs so disk stays compact
-      for sid in list(self._schedules):
-        by_dt = self._schedules[sid]
-        for dt_key in list(by_dt):
-          if dt_key < min_keep_date:
-            del by_dt[dt_key]
-        if not by_dt:
-          del self._schedules[sid]
-
-      referenced_pids: set[str] = set(active_pids)
-      for by_dt in self._schedules.values():
-        for dt_entry in by_dt.values():
-          airings = dt_entry.get("airings")
-          if isinstance(airings, list):
-            for air in airings:
-              if isinstance(air, dict) and air.get("pid"):
-                referenced_pids.add(str(air["pid"]))
-
-      if len(self._programs) > 25000:
-        self._programs = {
-          pid: val
-          for pid, val in self._programs.items()
-          if pid in referenced_pids
-        }
-
-      serialized_lus: dict[str, Any] = {}
-      for lid, lu in self._lineups.items():
-        serialized_lus[lid] = {
-          "name": lu.name,
-          "location": lu.location,
-          "modified": lu.modified,
-          "fetched_at": lu.fetched_at,
-          "stations": {
-            sid: {
-              "name": st.name,
-              "callsign": st.callsign,
-              "language": st.language,
-            }
-            for sid, st in lu.stations.items()
-          },
-          "chno_to_station": {
-            str(ch): sid for ch, sid in lu.chno_to_station.items()
-          },
-        }
-
-      doc = {
-        "version": SD_CACHE_VERSION,
-        "updated_at": round(float(self._clock()), 3),
-        "lineups": serialized_lus,
-        "schedules": self._schedules,
-        "programs": self._programs,
-      }
-      path.parent.mkdir(parents=True, exist_ok=True)
-      tmp_path = path.with_suffix(".json.tmp")
-      tmp_path.write_text(
-        json.dumps(doc, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
-      )
-      tmp_path.replace(path)
-    except OSError as exc:
-      logger.warning("Failed to persist SD EPG cache %s: %s", path, exc)
-
-  # ---------------------------------------------------------------------------
-  # HTTP Transport
-  # ---------------------------------------------------------------------------
   async def _authenticate(self, session: aiohttp.ClientSession) -> str:
     url = f"{self.config.base_url.rstrip('/')}/token"
     payload = {
@@ -458,7 +306,7 @@ class SchedulesDirectEpgClient:
     )
 
   # ---------------------------------------------------------------------------
-  # Lineup & Station Mapping
+  # Lineup & Station Mapping (SQLite-backed)
   # ---------------------------------------------------------------------------
   def _normalize_discovery_postal(self, raw_postal: str) -> tuple[str, str]:
     clean = re.sub(r"\s+", "", raw_postal.strip().upper())
@@ -499,6 +347,8 @@ class SchedulesDirectEpgClient:
     prov_tokens = _tokens(snap.provider)
     best_lid = ""
     best_score = -1
+    best_name = ""
+    best_loc = ""
     for he in headends:
       if not isinstance(he, dict):
         continue
@@ -515,6 +365,8 @@ class SchedulesDirectEpgClient:
         if score > best_score:
           best_score = score
           best_lid = lid
+          best_name = lname
+          best_loc = loc
 
     if not best_lid:
       return []
@@ -525,17 +377,24 @@ class SchedulesDirectEpgClient:
       snap.provider,
     )
     await self._request_json(session, "PUT", f"lineups/{best_lid}")
-    return [{"lineup": best_lid, "modified": ""}]
+    return [
+      {
+        "lineup": best_lid,
+        "name": best_name,
+        "location": best_loc,
+        "modified": "",
+      }
+    ]
 
   async def _refresh_lineup_maps(
     self, session: aiohttp.ClientSession, snap: LineupSnapshot
-  ) -> list[SdLineupCacheEntry]:
+  ) -> list[SdLineupRecord]:
     now = float(self._clock())
-    if self._lineups and all(
-      (now - lu.fetched_at) < LINEUP_MAP_TTL_SEC
-      for lu in self._lineups.values()
+    cached_map = await asyncio.to_thread(self.db.load_sd_lineups)
+    if cached_map and all(
+      (now - lu.fetched_at) < LINEUP_MAP_TTL_SEC for lu in cached_map.values()
     ):
-      return list(self._lineups.values())
+      return list(cached_map.values())
 
     status_data = await self._request_json(session, "GET", "status")
     acct_lineups: list[dict[str, str]] = []
@@ -554,7 +413,6 @@ class SchedulesDirectEpgClient:
     if not acct_lineups and self.config.auto_add_lineup:
       acct_lineups = await self._discover_and_add_lineup(session, snap)
 
-    # Also ensure an explicitly configured SD lineup ID is subscribed if auto_add_lineup=True
     explicit_sd = clean_sd_lineup_id(
       self.config.preferred_lineup_id or snap.lineup_id
     )
@@ -570,11 +428,11 @@ class SchedulesDirectEpgClient:
       except SchedulesDirectEpgError as exc:
         logger.warning("Could not auto-add SD lineup %s: %s", explicit_sd, exc)
 
-    entries: list[SdLineupCacheEntry] = []
+    entries: list[SdLineupRecord] = []
     for lu_meta in acct_lineups:
       lid = lu_meta["lineup"]
       remote_mod = lu_meta["modified"]
-      cached = self._lineups.get(lid)
+      cached = cached_map.get(lid)
       if (
         cached is not None
         and cached.stations
@@ -582,13 +440,14 @@ class SchedulesDirectEpgClient:
         and cached.modified == remote_mod
       ):
         cached.fetched_at = now
+        await asyncio.to_thread(self.db.touch_sd_lineup_fetched_at, lid, now)
         entries.append(cached)
         continue
 
       payload = await self._request_json(session, "GET", f"lineups/{lid}")
       if not isinstance(payload, dict):
         continue
-      stations: dict[str, SdStationMeta] = {}
+      stations: dict[str, SdStationRow] = {}
       for st_raw in payload.get("stations") or []:
         if not isinstance(st_raw, dict) or not st_raw.get("stationID"):
           continue
@@ -597,7 +456,7 @@ class SchedulesDirectEpgClient:
         lang = (
           str(langs[0]).lower()[:2] if isinstance(langs, list) and langs else ""
         )
-        stations[sid] = SdStationMeta(
+        stations[sid] = SdStationRow(
           station_id=sid,
           name=str(st_raw.get("name") or st_raw.get("callsign") or sid).strip(),
           callsign=str(st_raw.get("callsign") or "").strip(),
@@ -629,7 +488,7 @@ class SchedulesDirectEpgClient:
         and lu_meta.get("name")
         else (raw_meta_name or lid)
       )
-      entry = SdLineupCacheEntry(
+      entry = SdLineupRecord(
         lineup_id=lid,
         name=str(resolved_name or lid),
         location=str(
@@ -640,7 +499,7 @@ class SchedulesDirectEpgClient:
         stations=stations,
         chno_to_station=chno_map,
       )
-      self._lineups[lid] = entry
+      await asyncio.to_thread(self.db.save_sd_lineup, entry)
       entries.append(entry)
 
     return entries
@@ -648,14 +507,14 @@ class SchedulesDirectEpgClient:
   @staticmethod
   def _match_channels_to_stations(
     snap: LineupSnapshot,
-    lineups: Sequence[SdLineupCacheEntry],
+    lineups: Sequence[SdLineupRecord],
   ) -> dict[int, str]:
     """Map `snap.channels` (`chno`) -> Gracenote `stationID`."""
-    all_stations: dict[str, SdStationMeta] = {}
+    all_stations: dict[str, SdStationRow] = {}
     chno_to_sid: dict[int, str] = {}
-    by_callsign: dict[str, list[SdStationMeta]] = {}
-    by_stem: dict[str, list[SdStationMeta]] = {}
-    by_name: dict[str, list[SdStationMeta]] = {}
+    by_callsign: dict[str, list[SdStationRow]] = {}
+    by_stem: dict[str, list[SdStationRow]] = {}
+    by_name: dict[str, list[SdStationRow]] = {}
 
     prov_tokens = _tokens(snap.provider)
     ordered_lus = sorted(
@@ -690,7 +549,7 @@ class SchedulesDirectEpgClient:
         if nk:
           by_name.setdefault(nk, []).append(st)
 
-    def _compatible(ch: WebChannel, st: SdStationMeta) -> bool:
+    def _compatible(ch: WebChannel, st: SdStationRow) -> bool:
       if (
         ch.callsign
         and st.callsign
@@ -707,7 +566,6 @@ class SchedulesDirectEpgClient:
 
     resolved: dict[int, str] = {}
     for ch in snap.channels:
-      # 1. Explicit Gracenote station ID already on the channel
       gid = ch.gracenote_station_id.strip()
       if gid and (
         gid in all_stations
@@ -716,7 +574,6 @@ class SchedulesDirectEpgClient:
         resolved[ch.chno] = gid
         continue
 
-      # 2. Exact dial number (`chno` or `sd_chno`) verified by station identity
       dial_sid = chno_to_sid.get(ch.chno) or (
         chno_to_sid.get(ch.sd_chno) if ch.sd_chno else None
       )
@@ -728,7 +585,6 @@ class SchedulesDirectEpgClient:
         resolved[ch.chno] = dial_sid
         continue
 
-      # 3. Exact callsign or unambiguous callsign stem
       if ch.callsign:
         cs_up = ch.callsign.strip().upper()
         exact_cs = by_callsign.get(cs_up)
@@ -740,7 +596,6 @@ class SchedulesDirectEpgClient:
           resolved[ch.chno] = stem_cs[0].station_id
           continue
 
-      # 4. Exact normalized station name (preferring matching language)
       name_hits = by_name.get(_norm_key(ch.name))
       if name_hits:
         lang_low = ch.language.lower()[:2]
@@ -751,7 +606,6 @@ class SchedulesDirectEpgClient:
         resolved[ch.chno] = chosen_st.station_id
         continue
 
-      # 5. Same-provider cable headend dial-slot fallback
       if same_provider_headend and dial_sid and dial_sid in all_stations:
         resolved[ch.chno] = dial_sid
 
@@ -810,10 +664,11 @@ class SchedulesDirectEpgClient:
       if isinstance(mv, Mapping) and mv.get("year"):
         ep_title = str(mv["year"]).strip()
 
-    if season_ep and ep_title:
-      sub_title = f"{season_ep} · {ep_title}"
-    else:
-      sub_title = season_ep or ep_title
+    sub_title = (
+      f"{season_ep} · {ep_title}"
+      if (season_ep and ep_title)
+      else (season_ep or ep_title)
+    )
 
     desc = ""
     descs = raw_prog.get("descriptions")
@@ -844,7 +699,7 @@ class SchedulesDirectEpgClient:
     }
 
   # ---------------------------------------------------------------------------
-  # Main EPG Fetch Entrypoint
+  # Main EPG Fetch Entrypoint (SQLite MD5 Differential Sync)
   # ---------------------------------------------------------------------------
   async def fetch_for_snapshot(
     self,
@@ -853,11 +708,11 @@ class SchedulesDirectEpgClient:
     now_ts: int | None = None,
     max_per_channel: int = 120,
   ) -> SdFetchSummary:
-    """Fetch Schedules Direct listings for `snap` using MD5 differential caching."""
+    """Fetch Schedules Direct listings for `snap` using SQLite MD5 differential caching."""
     if not self.enabled or not snap.channels:
       return SdFetchSummary(programs_by_chno={})
 
-    self._ensure_data_cache_loaded()
+    await asyncio.to_thread(self.db.ensure_initialized)
     ref_now = int(self._clock()) if now_ts is None else now_ts
     recent_cutoff = ref_now - 7200
     base_date = datetime.fromtimestamp(recent_cutoff, tz=timezone.utc).date()
@@ -885,6 +740,9 @@ class SchedulesDirectEpgClient:
         return SdFetchSummary(programs_by_chno={})
 
       unique_sids = sorted(set(chno_to_sid.values()))
+      cached_sched_md5s = await asyncio.to_thread(
+        self.db.get_sd_schedule_md5s, unique_sids, dates
+      )
 
       # 1. Differential MD5 check (`POST /schedules/md5`)
       stale_requests: list[dict[str, Any]] = []
@@ -902,7 +760,6 @@ class SchedulesDirectEpgClient:
           )
           if int(remote_by_dt.get("code", 0) or 0) != 0:
             continue
-          cached_by_dt = self._schedules.get(sid, {})
           needed_dts: list[str] = []
           for dt_str in dates:
             r_info = remote_by_dt.get(dt_str)
@@ -911,19 +768,15 @@ class SchedulesDirectEpgClient:
               if r_code in _SKIP_STATION_CODES:
                 continue
               r_md5 = str(r_info.get("md5") or r_info.get("hash") or "")
-              c_entry = cached_by_dt.get(dt_str)
-              if (
-                r_md5
-                and isinstance(c_entry, Mapping)
-                and c_entry.get("md5") == r_md5
-              ):
+              if r_md5 and cached_sched_md5s.get((sid, dt_str)) == r_md5:
                 continue
             needed_dts.append(dt_str)
           if needed_dts:
             stale_requests.append({"stationID": sid, "date": needed_dts})
 
-      # 2. Fetch changed station-day schedules (`POST /schedules`)
+      # 2. Fetch changed station-day schedules (`POST /schedules`) & commit to SQLite
       fetched_sched_days = 0
+      new_sched_rows: list[tuple[str, str, str, list[dict[str, Any]]]] = []
       for start_idx in range(0, len(stale_requests), MAX_SCHEDULE_BATCH):
         sched_batch = stale_requests[start_idx : start_idx + MAX_SCHEDULE_BATCH]
         sched_resp = await self._request_json(
@@ -934,8 +787,7 @@ class SchedulesDirectEpgClient:
         for item in sched_resp:
           if not isinstance(item, Mapping):
             continue
-          item_code = int(item.get("code", 0) or 0)
-          if item_code != 0:
+          if int(item.get("code", 0) or 0) != 0:
             continue
           sid = str(item.get("stationID") or "").strip()
           meta = item.get("metadata")
@@ -963,34 +815,37 @@ class SchedulesDirectEpgClient:
                 "live": str(air.get("liveTapeDelay") or "").lower() == "live",
               }
             )
-          self._schedules.setdefault(sid, {})[start_dt] = {
-            "md5": s_md5,
-            "airings": compact_airings,
-          }
+          new_sched_rows.append((sid, start_dt, s_md5, compact_airings))
           fetched_sched_days += 1
 
-      # 3. Collect required `programID`s across active airings and fetch missing (`POST /programs`)
+      min_keep = (base_date - timedelta(days=1)).strftime("%Y-%m-%d")
+      await asyncio.to_thread(
+        self.db.upsert_sd_schedule_days,
+        new_sched_rows,
+        min_keep_date=min_keep,
+      )
+
+      # 3. Load active airings from SQLite and diff `programID` MD5s against `sd_programs`
+      airings_by_sid = await asyncio.to_thread(
+        self.db.load_sd_airings, unique_sids, dates
+      )
       wanted_pids: dict[str, str] = {}
       for sid in unique_sids:
-        by_dt = self._schedules.get(sid, {})
-        for dt_str in dates:
-          dt_entry = by_dt.get(dt_str)
-          if not isinstance(dt_entry, Mapping):
-            continue
-          for air in dt_entry.get("airings") or []:
-            if not isinstance(air, Mapping):
-              continue
-            stop_ts = int(air.get("start") or 0) + int(air.get("dur") or 0)
-            if stop_ts >= recent_cutoff:
-              pid = str(air.get("pid") or "")
-              if pid:
-                wanted_pids[pid] = str(air.get("md5") or "")
+        for air in airings_by_sid.get(sid, ()):
+          stop_ts = int(air.get("start") or 0) + int(air.get("dur") or 0)
+          if stop_ts >= recent_cutoff:
+            pid = str(air.get("pid") or "")
+            if pid:
+              wanted_pids[pid] = str(air.get("md5") or "")
 
+      cached_prog_md5s = await asyncio.to_thread(
+        self.db.get_sd_program_md5s, list(wanted_pids)
+      )
       missing_pids = [
         pid
         for pid, p_md5 in wanted_pids.items()
-        if pid not in self._programs
-        or (p_md5 and self._programs[pid].get("md5") != p_md5)
+        if pid not in cached_prog_md5s
+        or (p_md5 and cached_prog_md5s[pid] != p_md5)
       ]
 
       fetched_progs = 0
@@ -1001,6 +856,7 @@ class SchedulesDirectEpgClient:
         )
         if not isinstance(prog_resp, list):
           continue
+        batch_extracted: dict[str, dict[str, str]] = {}
         for raw_p in prog_resp:
           if not isinstance(raw_p, Mapping):
             continue
@@ -1011,46 +867,49 @@ class SchedulesDirectEpgClient:
             continue
           extracted = self._extract_program_fields(raw_p)
           if extracted["title"]:
-            self._programs[pid] = extracted
+            batch_extracted[pid] = extracted
             fetched_progs += 1
+        if batch_extracted:
+          await asyncio.to_thread(
+            self.db.upsert_sd_programs,
+            batch_extracted,
+            updated_at=float(self._clock()),
+          )
 
-      # 4. Assemble reconciled non-overlapping schedules per `chno`
+      # 4. Query only the active `programID` metadata needed for this window
+      active_prog_meta = await asyncio.to_thread(
+        self.db.load_sd_programs, list(wanted_pids)
+      )
+
       station_programs: dict[str, list[ProgramItem]] = {}
       seq = 0
       for sid in unique_sids:
-        by_dt = self._schedules.get(sid, {})
         raw_items: list[ProgramItem] = []
-        for dt_str in dates:
-          dt_entry = by_dt.get(dt_str)
-          if not isinstance(dt_entry, Mapping):
+        for air in airings_by_sid.get(sid, ()):
+          start_ts = int(air.get("start") or 0)
+          stop_ts = start_ts + int(air.get("dur") or 0)
+          if stop_ts < recent_cutoff:
             continue
-          for air in dt_entry.get("airings") or []:
-            if not isinstance(air, Mapping):
-              continue
-            start_ts = int(air.get("start") or 0)
-            stop_ts = start_ts + int(air.get("dur") or 0)
-            if stop_ts < recent_cutoff:
-              continue
-            pid = str(air.get("pid") or "")
-            p_meta = self._programs.get(pid)
-            if not p_meta or not p_meta.get("title"):
-              continue
-            seq += 1
-            title = str(p_meta["title"])
-            if air.get("live") and "live" not in title.lower():
-              title = f"Live: {title}"
-            raw_items.append(
-              ProgramItem(
-                id=f"sd-{seq}",
-                channel_id=sid,
-                title=title,
-                sub_title=str(p_meta.get("sub_title") or ""),
-                description=str(p_meta.get("description") or ""),
-                category=str(p_meta.get("category") or ""),
-                start_timestamp=start_ts,
-                stop_timestamp=stop_ts,
-              )
+          pid = str(air.get("pid") or "")
+          p_meta = active_prog_meta.get(pid)
+          if not p_meta or not p_meta.get("title"):
+            continue
+          seq += 1
+          title = str(p_meta["title"])
+          if air.get("live") and "live" not in title.lower():
+            title = f"Live: {title}"
+          raw_items.append(
+            ProgramItem(
+              id=f"sd-{seq}",
+              channel_id=sid,
+              title=title,
+              sub_title=str(p_meta.get("sub_title") or ""),
+              description=str(p_meta.get("description") or ""),
+              category=str(p_meta.get("category") or ""),
+              start_timestamp=start_ts,
+              stop_timestamp=stop_ts,
             )
+          )
         reconciled = reconcile_non_overlapping_schedule(raw_items)
         if reconciled:
           station_programs[sid] = reconciled[:max_per_channel]
@@ -1074,11 +933,6 @@ class SchedulesDirectEpgClient:
           )
           for p in station_programs[matched_sid]
         ]
-
-      min_keep = (base_date - timedelta(days=1)).strftime("%Y-%m-%d")
-      self._persist_data_cache(
-        min_keep_date=min_keep, active_pids=set(wanted_pids)
-      )
 
       logger.info(
         "Schedules Direct EPG resolved %d/%d channels (%d schedule-days fetched, %d programs fetched)",

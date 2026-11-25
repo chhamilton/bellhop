@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from bellhop.config import (
   XtreamConfig,
 )
 from bellhop.serve import UnifiedServeServer
+from bellhop_web.epg_db import EpgDatabase
 from bellhop_web.epg_refresh import EpgRefreshConfig, EpgRefreshService
 from bellhop_web.sd_epg import SchedulesDirectEpgConfig, hash_sd_password
 from bellhop_web.store import LineupGuideStore
@@ -432,6 +434,7 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
     )
 
     store = LineupGuideStore(xt_dir)
+    epg_db_file = cache_dir / "bellhop_web" / "epg.sqlite3"
     sd_cfg = SchedulesDirectEpgConfig(
       username="chhamilton",
       password="sd_secret_pw",
@@ -440,15 +443,14 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
       postal_code="H2Y",
       days=2,
       token_cache_file=cache_dir / "sd_token.json",
-      data_cache_file=cache_dir / "bellhop_web" / "sd_epg_cache.json",
+      db_file=epg_db_file,
     )
-    epg_cache_file = cache_dir / "bellhop_web" / "epg_cache.json"
     refresher = EpgRefreshService(
       store,
       EpgRefreshConfig(
         enabled=True,
         xmltv_url=xmltv_url,
-        cache_file=epg_cache_file,
+        cache_file=epg_db_file,
         sd_epg=sd_cfg,
       ),
       session_factory=mock.session_factory,
@@ -462,27 +464,32 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
     assert counts["schedules"] == 1
     assert counts["programs"] == 1
     assert counts["xmltv"] == 1
+    assert epg_db_file.is_file()
 
     snap = store.get_snapshot()
+    # In-memory snapshot holds ZERO ProgramItem objects — all airings live in SQLite!
+    assert snap.programs_by_epg_id == {}
+    assert snap.programs_by_chno == {}
+
     # 1. `50 AMI-télé` (missing from XMLTV) is populated from Schedules Direct with S02E04 subtitle!
-    ami_progs = snap.programs_for_channel(snap.channels_by_chno[50])
+    ami_progs = refresher.db.query_channel_schedule(50, "bell.50.ca")
     assert ami_progs[0].title == "Et si c'était toi?"
     assert ami_progs[0].sub_title == "S02E04 · Rencontres d'automne"
 
     # 2. `1306 HBO` (present in both) prioritizes Schedules Direct over upstream XMLTV!
-    hbo_progs = snap.programs_for_channel(snap.channels_by_chno[1306])
+    hbo_progs = refresher.db.query_channel_schedule(1306, "HBO.us")
     assert hbo_progs[0].title == "Dune: Part Two"
     assert hbo_progs[0].sub_title == "2024"
 
     # 3. `220 NBC (Plattsburgh)` and `1285 NBC (Seattle)` get distinct per-station schedules despite sharing `NBC.us`!
-    wptz_progs = snap.programs_for_channel(snap.channels_by_chno[220])
-    king_progs = snap.programs_for_channel(snap.channels_by_chno[1285])
+    wptz_progs = refresher.db.query_channel_schedule(220, "NBC.us")
+    king_progs = refresher.db.query_channel_schedule(1285, "NBC.us")
     assert wptz_progs[0].title == "NBC 5 News at Noon"
     assert king_progs[0].title == "Live: Seahawks Pre-Game"
     assert king_progs[0].sub_title == "49ers vs. Seahawks"
 
     # 4. `2621 Intl Specialty` (absent from SD) is seamlessly backfilled from upstream XMLTV!
-    intl_progs = snap.programs_for_channel(snap.channels_by_chno[2621])
+    intl_progs = refresher.db.query_channel_schedule(2621, "IntlSpec.tv")
     assert intl_progs[0].title == "Global World Cinema"
 
     # 5. Second refresh with unchanged MD5s + simulated expired token (`4003`) re-auths once
@@ -497,8 +504,9 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
 
     await refresher.stop()
 
-    # 6. `UnifiedServeServer` hydrates `v3` cache on startup, serves distinct affiliate EPGs
-    #    on `/api/epg/<chno>`, and serves merged XMLTV directly on `/xmltv.php`!
+    # 6. `UnifiedServeServer` hydrates SQLite on startup, serves distinct affiliate EPGs
+    #    on `/api/epg/<chno>`, serves base64 `get_short_epg` / `get_simple_data_table`,
+    #    and streams merged XMLTV chunks directly from SQLite on `/xmltv.php`!
     app_cfg = AppConfig(
       project_root=tmp_path,
       xtream=XtreamConfig(
@@ -554,6 +562,42 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
           assert j1285["programs"][0]["title"] == "Live: Seahawks Pre-Game"
 
         async with client.get(
+          f"{base_url}/player_api.php",
+          params={
+            "username": "xt_user",
+            "password": "xt_pass",
+            "action": "get_short_epg",
+            "stream_id": "2306",
+          },
+        ) as r_short:
+          assert r_short.status == 200
+          short_json = await r_short.json()
+          listings = short_json["epg_listings"]
+          assert len(listings) >= 1
+          assert (
+            base64.b64decode(listings[0]["title"]).decode("utf-8")
+            == "Dune: Part Two"
+          )
+
+        async with client.get(
+          f"{base_url}/player_api.php",
+          params={
+            "username": "xt_user",
+            "password": "xt_pass",
+            "action": "get_simple_data_table",
+            "stream_id": "1050",
+          },
+        ) as r_table:
+          assert r_table.status == 200
+          tbl_json = await r_table.json()
+          assert (
+            base64.b64decode(tbl_json["epg_listings"][0]["title"]).decode(
+              "utf-8"
+            )
+            == "Et si c'était toi?"
+          )
+
+        async with client.get(
           f"{base_url}/xmltv.php",
           params={"username": "xt_user", "password": "xt_pass"},
           allow_redirects=False,
@@ -566,3 +610,100 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
           assert "Inferior XMLTV Scraper HBO Listing" not in xml_body
     finally:
       await unified.stop()
+
+
+def test_legacy_json_epg_caches_auto_migrate_to_sqlite(tmp_path: Path) -> None:
+  """Verify legacy `sd_epg_cache.json` and `epg_cache.json` import into `epg.sqlite3` once."""
+  cache_dir = tmp_path / "cache" / "bellhop_web"
+  cache_dir.mkdir(parents=True)
+  legacy_sd = cache_dir / "sd_epg_cache.json"
+  legacy_epg = cache_dir / "epg_cache.json"
+  now_ts = 1_795_530_000
+
+  legacy_sd.write_text(
+    json.dumps(
+      {
+        "version": 1,
+        "lineups": {
+          "CAN-0004980-X": {
+            "name": "Bell Fibe TV",
+            "location": "Montréal",
+            "modified": "2026-11-23T00:00:00Z",
+            "fetched_at": float(now_ts),
+            "stations": {
+              "19548": {
+                "name": "HBO Canada",
+                "callsign": "HBOCAN",
+                "language": "en",
+              }
+            },
+            "chno_to_station": {"1306": "19548"},
+          }
+        },
+        "schedules": {
+          "19548": {
+            "2026-11-24": {
+              "md5": "md5-19548",
+              "airings": [
+                {
+                  "program_id": "MV012345670000",
+                  "program_md5": "md5-mv",
+                  "start_ts": now_ts - 600,
+                  "stop_ts": now_ts + 3000,
+                  "is_live": False,
+                }
+              ],
+            }
+          }
+        },
+        "programs": {
+          "MV012345670000": {
+            "md5": "md5-mv",
+            "title": "Dune: Part Two",
+            "sub_title": "2024",
+            "description": "Migrated from SD JSON.",
+            "category": "Movie",
+          }
+        },
+      }
+    ),
+    encoding="utf-8",
+  )
+
+  legacy_epg.write_text(
+    json.dumps(
+      {
+        "version": 3,
+        "fetched_at": float(now_ts),
+        "covered_channel_ids": ["hbo.us"],
+        "channels": {},
+        "channels_by_chno": {
+          "1306": [
+            {
+              "id": "sd-MV012345670000",
+              "title": "Dune: Part Two",
+              "sub_title": "2024",
+              "description": "Migrated from EPG JSON.",
+              "category": "Movie",
+              "start_timestamp": now_ts - 600,
+              "stop_timestamp": now_ts + 3000,
+            }
+          ]
+        },
+      }
+    ),
+    encoding="utf-8",
+  )
+
+  db = EpgDatabase(cache_dir / "epg.sqlite3")
+  db.ensure_initialized()
+
+  assert not legacy_sd.exists()
+  assert not legacy_epg.exists()
+  assert db.has_sd_cache() is True
+  assert db.get_sd_program_md5s(["MV012345670000"]) == {
+    "MV012345670000": "md5-mv"
+  }
+  sched = db.query_channel_schedule(1306, "HBO.us")
+  assert len(sched) == 1
+  assert sched[0].title == "Dune: Part Two"
