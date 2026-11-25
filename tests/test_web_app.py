@@ -27,6 +27,7 @@ from bellhop.web.store import (
   ProgramItem,
   reconcile_non_overlapping_schedule,
 )
+from tests.conftest import await_until
 from tests.http_mock import MockHttpServer, new_test_session
 
 
@@ -452,19 +453,23 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
         ) as sign_in:
           assert sign_in.status == 200
         health: dict[str, object] = {}
-        for _ in range(50):
+
+        async def _initial_epg_ready() -> bool:
+          nonlocal health
           async with client.get("/api/health") as r_h:
             health = await r_h.json()
           epg_st = health.get("epg_status")
           active_cnt = health.get("epg_active_program_count")
-          if (
+          return bool(
             isinstance(epg_st, dict)
             and epg_st.get("state") == "ok"
             and isinstance(active_cnt, int)
             and active_cnt > 0
-          ):
-            break
-          await asyncio.sleep(0.05)
+          )
+
+        await await_until(
+          _initial_epg_ready, description="WebGuideApp initial EPG refresh"
+        )
 
         assert fetch_count == 1
         assert cache_file.is_file()
@@ -918,16 +923,19 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
           json={"username": "admin", "password": "secret"},
         ) as sign_in:
           assert sign_in.status == 200
+
         # 1. Wait for initial EPG fetch (only initial channels extracted; ASN.ca not yet in lineup)
-        for _ in range(50):
+        async def _first_xmltv_done() -> bool:
           async with client.get("/api/health") as r_h:
             h1 = await r_h.json()
-          if (
+          return bool(
             h1["epg_active_program_count"] > 0
             and not h1["epg_status"]["refreshing"]
-          ):
-            break
-          await asyncio.sleep(0.03)
+          )
+
+        await await_until(
+          _first_xmltv_done, description="initial hot-reload XMLTV fetch"
+        )
         assert xmltv_fetches == 1
 
         async with client.get("/api/lineup") as r_lu1:
@@ -973,10 +981,12 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
           for rec in caplog.records
         )
 
-        for _ in range(50):
-          if xmltv_fetches >= 2 and not refresher.status_dict()["refreshing"]:
-            break
-          await asyncio.sleep(0.03)
+        await await_until(
+          lambda: (
+            xmltv_fetches >= 2 and not refresher.status_dict()["refreshing"]
+          ),
+          description="post-reload XMLTV fetch",
+        )
         assert xmltv_fetches == 2
         assert "lineup_changed" in refresher.status_dict()["last_reason"]
 

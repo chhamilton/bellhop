@@ -473,6 +473,10 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
   """Build the real Alpine Docker image and test it E2E against FakeXtreamServer."""
   container_cli = _detect_container_cli()
   if container_cli is None:
+    if os.environ.get("BELLHOP_REQUIRE_DOCKER") == "1":
+      pytest.fail(
+        "BELLHOP_REQUIRE_DOCKER=1 set, but no working docker/podman daemon was found."
+      )
     pytest.skip("docker/podman daemon not available in this environment")
 
   image_tag = "bellhop:e2e-test"

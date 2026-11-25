@@ -157,13 +157,16 @@ def test_frontend_unit_tests_pass() -> None:
   if node_bin is None:
     pytest.skip("node not installed in test environment")
 
+  frontend_tests = sorted(
+    str(p.relative_to(REPO_ROOT))
+    for p in (REPO_ROOT / "tests" / "frontend").glob("*.test.mjs")
+  )
+  assert len(frontend_tests) >= 4, (
+    f"Expected >= 4 frontend test suites, found: {frontend_tests}"
+  )
+
   res = subprocess.run(
-    [
-      node_bin,
-      "--test",
-      "tests/frontend/prefs.test.mjs",
-      "tests/frontend/guide.test.mjs",
-    ],
+    [node_bin, "--test", *frontend_tests],
     cwd=REPO_ROOT,
     capture_output=True,
     text=True,
@@ -181,13 +184,15 @@ def test_repository_and_private_permissions_hygiene(tmp_path: Path) -> None:
     Path("docker/entrypoint.sh"),
     Path("docker/bellhop-shim.sh"),
   }
-  checked_trees = (
+  checked_trees = [
     REPO_ROOT / "src",
     REPO_ROOT / "tests",
     REPO_ROOT / "data",
     REPO_ROOT / "docker",
     REPO_ROOT / ".agents",
-  )
+  ]
+  if (REPO_ROOT / ".github").exists():
+    checked_trees.append(REPO_ROOT / ".github")
 
   writable_violations: list[str] = []
   exec_violations: list[str] = []

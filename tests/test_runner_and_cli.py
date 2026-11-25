@@ -307,3 +307,242 @@ pipeline:
     assert saved["slots"]["552"]["preferred_stream_id"] == 501
   finally:
     await runner_srv.cleanup()
+
+
+def test_cli_non_quiet_panels_dry_run_export_and_empty_phases(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Verify non-quiet Rich panels render for `--dry-run`, `--phase export`, and empty phase sets."""
+  import io
+
+  from rich.console import Console
+
+  from bellhop import cli
+
+  buf = io.StringIO()
+  monkeypatch.setattr(
+    cli,
+    "console",
+    Console(file=buf, width=120, force_terminal=False, color_system=None),
+  )
+
+  seed_catalog = tmp_path / "seed_streams.json"
+  seed_catalog.write_text(
+    json.dumps(
+      [
+        {
+          "stream_id": 101,
+          "name": "CA FR: RDS FHD",
+          "category_name": "CA",
+          "epg_channel_id": "RDS.ca",
+        }
+      ]
+    ),
+    encoding="utf-8",
+  )
+  mini_lineup = tmp_path / "lineup.yaml"
+  mini_lineup.write_text(
+    """\
+lineup_id: CAN-BELLFIBE-MTL-X
+provider: Bell Fibe TV
+market: Montréal, QC
+postal_prefix: H2Y
+channels:
+  - chno: 1108
+    sd_chno: 108
+    name: RDS
+    callsign: RDS
+    tvg_id: RDS.ca
+    group: Sports
+    language: fr
+    regions: [qc, ca]
+    aliases: [RDS]
+""",
+    encoding="utf-8",
+  )
+  xml_local = tmp_path / "guide.xml"
+  xml_local.write_text(
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    "<tv>\n"
+    '  <programme start="20990101000000 +0000" stop="20990101010000 +0000" channel="RDS.ca">\n'
+    "    <title>Hockey Canadiens</title>\n"
+    "  </programme>\n"
+    "</tv>\n",
+    encoding="utf-8",
+  )
+  cfg_path = tmp_path / "config.yaml"
+  cfg_path.write_text(
+    f"""\
+credentials_file: "{tmp_path / "none.yaml"}"
+paths:
+  cache_dir: "{tmp_path / "cache"}"
+  state_dir: "{tmp_path / "state"}"
+  lineup_file: "{mini_lineup}"
+  seed_json: "{seed_catalog}"
+  m3u8_playlist_path: "{tmp_path / "output" / "bellhop.m3u8"}"
+  m3u8_report_path: "{tmp_path / "output" / "report.json"}"
+  xtream_output_dir: "{tmp_path / "output" / "xtream"}"
+  xmltv_file: "{xml_local}"
+upstream_xtream:
+  server_url: "http://panel.example"
+  username: "alice"
+  password: "secret_password"
+pipeline:
+  lineup:
+    lineup_id: "CAN-BELLFIBE-MTL-X"
+    collapse_sd_dupes: false
+    numbering_mode: "both"
+  validation:
+    enabled: true
+  epg:
+    verify: false
+  output:
+    m3u8_enabled: true
+    xtream_enabled: true
+""",
+    encoding="utf-8",
+  )
+
+  # 1. Non-quiet `--dry-run` renders Phase 1–5 panels without writing files
+  assert cli_main(["run", "-c", str(cfg_path), "--dry-run"]) == 0
+  dry_out = buf.getvalue()
+  assert "Phase (1) — Lineup Retrieval" in dry_out
+  assert "Phase (2) — IPTV Catalog Fetch" in dry_out
+  assert "Phase (3) — Rough Channel Matcher" in dry_out
+  assert "Dry-Run Mode" in dry_out
+  assert "Bell Fibe TV (Montréal, QC)" in dry_out
+
+  # 2. Non-quiet `--skip validate --force-refresh epg` emits full SD+HD M3U8 + Xtream + EPG sync panels
+  buf.truncate(0)
+  buf.seek(0)
+  assert (
+    cli_main(
+      [
+        "run",
+        "-c",
+        str(cfg_path),
+        "--skip",
+        "validate",
+        "--force-refresh",
+        "epg",
+      ]
+    )
+    == 0
+  )
+  export_out = buf.getvalue()
+  assert "Phase (5) — M3U8 & Diagnostics Generation" in export_out
+  assert "full SD + HD dial" in export_out
+  assert "Phase (6) — Official Xtream JSON & EPG Export" in export_out
+  assert "EPG Cache Sync:" in export_out
+  assert "OK" in export_out
+
+  # 3. Non-quiet empty phase set prints warning and exits 0
+  buf.truncate(0)
+  buf.seek(0)
+  assert (
+    cli_main(
+      ["run", "-c", str(cfg_path), "--phase", "lineup", "--skip", "lineup"]
+    )
+    == 0
+  )
+  assert "No active phases selected" in buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_cli_serve_shared_and_split_banners_and_clean_cancellation(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Verify `_execute_cli_serve` renders shared & split/Xtream-only banners and stops cleanly."""
+  import asyncio
+  import io
+
+  from rich.console import Console
+
+  from bellhop import cli
+  from tests.conftest import await_until, write_minimal_xtream_export
+
+  buf = io.StringIO()
+  monkeypatch.setattr(
+    cli,
+    "console",
+    Console(file=buf, width=120, force_terminal=False, color_system=None),
+  )
+
+  xt_dir = write_minimal_xtream_export(tmp_path / "output" / "xtream")
+
+  # Case A: Shared Web Guide + Xtream listener on ephemeral port 0
+  cfg_shared = tmp_path / "config_shared.yaml"
+  cfg_shared.write_text(
+    f"""\
+paths:
+  cache_dir: "{tmp_path / "cache"}"
+  state_dir: "{tmp_path / "state"}"
+  xtream_output_dir: "{xt_dir}"
+web_server:
+  enabled: true
+  host: "127.0.0.1"
+  port: 0
+  username: "web_admin"
+  password: "web_secret"
+xtream_server:
+  enabled: true
+  username: "xt_user"
+  password: "xt_secret"
+pipeline:
+  epg:
+    verify: false
+    refresh_hours: 6.0
+""",
+    encoding="utf-8",
+  )
+
+  args_shared = cli.build_parser().parse_args(
+    ["serve", "-c", str(cfg_shared), "-v"]
+  )
+  serve_task = asyncio.create_task(cli._execute_cli_serve(args_shared))
+  await await_until(
+    lambda: "Unified Web Guide & Xtream API Server" in buf.getvalue(),
+    description="shared bellhop serve banner",
+  )
+  serve_task.cancel()
+  assert await serve_task == 0
+  shared_banner = buf.getvalue()
+  assert "shared Web Guide + Xtream API" in shared_banner
+  assert "web_admin" in shared_banner
+  assert "xt_user" in shared_banner
+
+  # Case B: Split / Web-disabled Xtream-only listener (`web_server.enabled: false`)
+  buf.truncate(0)
+  buf.seek(0)
+  cfg_split = tmp_path / "config_split.yaml"
+  cfg_split.write_text(
+    f"""\
+paths:
+  cache_dir: "{tmp_path / "cache"}"
+  state_dir: "{tmp_path / "state"}"
+  xtream_output_dir: "{xt_dir}"
+web_server:
+  enabled: false
+  host: "127.0.0.1"
+  port: 0
+xtream_server:
+  enabled: true
+  host: "127.0.0.1"
+  port: 0
+pipeline:
+  epg:
+    verify: false
+""",
+    encoding="utf-8",
+  )
+  args_split = cli.build_parser().parse_args(["serve", "-c", str(cfg_split)])
+  split_task = asyncio.create_task(cli._execute_cli_serve(args_split))
+  await await_until(
+    lambda: "Xtream API URL:" in buf.getvalue(),
+    description="split Xtream-only bellhop serve banner",
+  )
+  split_task.cancel()
+  assert await split_task == 0
+  split_banner = buf.getvalue()
+  assert "Disabled (`web_server.enabled: false`)" in split_banner
+  assert "Auth Disabled" in split_banner

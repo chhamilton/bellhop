@@ -12,13 +12,18 @@ import pytest
 from bellhop.config import load_config
 from bellhop.pipeline.runner import PipelineRunner, PipelineRunOptions
 from bellhop.serve import UnifiedServeServer
-from bellhop.xtream import fetch_xtream_catalog
+from bellhop.xtream import (
+  XtreamExportStore,
+  XtreamPassthroughServer,
+  fetch_xtream_catalog,
+)
+from tests.conftest import await_until, write_minimal_xtream_export
 from tests.fake_xtream_server import (
   FakeProgram,
   FakeStreamDef,
   FakeXtreamServer,
 )
-from tests.http_mock import TestHttpClient
+from tests.http_mock import TestHttpClient, new_test_session
 
 
 def _write_mini_lineup(path: Path) -> None:
@@ -185,14 +190,16 @@ pipeline:
         assert (await client.get("/static/app.js")).status_code == 200
 
         # Wait for automatic dynamic EPG fetch into the Web Guide's disk cache
-        for _ in range(50):
+        async def _epg_ready() -> bool:
           api_health = (await client.get("/api/health")).json()
-          if (
+          return bool(
             api_health["epg_status"]["state"] == "ok"
             and api_health["epg_active_program_count"] > 0
-          ):
-            break
-          await asyncio.sleep(0.05)
+          )
+
+        await await_until(
+          _epg_ready, description="initial EPG SQLite hydration"
+        )
         assert (tmp_path / "cache" / "epg.sqlite3").is_file()
 
         lu = (await client.get("/api/lineup")).json()
@@ -1313,3 +1320,220 @@ pipeline:
       assert load_config(cfg_path).xtream.stream_format == "m3u8"
   finally:
     await srv.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+  ("action", "raw_limit", "expected_limit"),
+  [
+    ("get_short_epg", "", 4),
+    ("get_short_epg", "not_a_number", 4),
+    ("get_short_epg", "0", 1),
+    ("get_short_epg", "-7", 1),
+    ("get_short_epg", "9999", 200),
+    ("get_simple_data_table", "", 50),
+    ("get_simple_data_table", "-1", 1),
+    ("get_simple_data_table", "500", 200),
+  ],
+)
+async def test_short_epg_limit_clamping_and_unknown_stream_ids(
+  tmp_path: Path,
+  action: str,
+  raw_limit: str,
+  expected_limit: int,
+) -> None:
+  """Verify `get_short_epg` / `get_simple_data_table` clamp `limit` and handle bad `stream_id`s."""
+  xt_dir = write_minimal_xtream_export(tmp_path / "output" / "xtream")
+  observed_limits: list[int] = []
+
+  async def _fake_short_provider(
+    chno: int, epg_id: str, lang: str, limit: int
+  ) -> list[dict[str, object]]:
+    observed_limits.append(limit)
+    return [{"chno": chno, "epg_id": epg_id, "lang": lang, "limit": limit}]
+
+  srv = XtreamPassthroughServer(
+    XtreamExportStore(xt_dir),
+    username="u",
+    password="p",
+    host="127.0.0.1",
+    port=0,
+    epg_short_provider=_fake_short_provider,
+  )
+  await srv.start()
+  try:
+    async with TestHttpClient(
+      base_url=f"http://127.0.0.1:{srv.bound_port}"
+    ) as client:
+      params = {
+        "username": "u",
+        "password": "p",
+        "action": action,
+        "stream_id": "410101",
+      }
+      if raw_limit != "":
+        params["limit"] = raw_limit
+      ok_resp = await client.get("/player_api.php", params=params)
+      assert ok_resp.status_code == 200
+      assert observed_limits == [expected_limit]
+      assert ok_resp.json()["epg_listings"][0]["limit"] == expected_limit
+
+      for bad_sid in ("999999", "not_numeric", ""):
+        bad_resp = await client.get(
+          "/player_api.php",
+          params={
+            "username": "u",
+            "password": "p",
+            "action": action,
+            "stream_id": bad_sid,
+          },
+        )
+        assert bad_resp.status_code == 200
+        assert bad_resp.json() == {"epg_listings": []}
+  finally:
+    await srv.stop()
+
+
+@pytest.mark.asyncio
+async def test_xmltv_head_and_small_chunk_streaming_and_xtream_only_health(
+  tmp_path: Path,
+) -> None:
+  """Verify `HEAD /xmltv.php`, multi-chunk `GET /xmltv.php`, and Xtream-only `/health`."""
+  from collections.abc import Iterator
+
+  from bellhop.config import (
+    AppConfig,
+    EpgConfig,
+    OutputConfig,
+    ServeConfig,
+    ServeWebConfig,
+    ServeXtreamConfig,
+    XtreamConfig,
+  )
+  from bellhop.epg.db import EpgDatabase
+  from bellhop.epg.models import ProgramItem
+  from bellhop.web.store import LineupGuideStore
+
+  xt_dir = write_minimal_xtream_export(tmp_path / "output" / "xtream")
+  store = LineupGuideStore(xt_dir)
+  snap = store.get_snapshot()
+
+  db = EpgDatabase(tmp_path / "cache" / "epg.sqlite3")
+  now_ts = 1_763_510_400
+  db.replace_guide_schedules(
+    snap=snap,
+    programs_by_id={
+      "ICIRDI.ca": [
+        ProgramItem(
+          id=f"rdi-{i}",
+          channel_id="ICIRDI.ca",
+          title=f"Téléjournal Segment {i}",
+          description="Bulletin complet d'information.",
+          start_timestamp=now_ts + i * 1800,
+          stop_timestamp=now_ts + (i + 1) * 1800,
+        )
+        for i in range(4)
+      ]
+    },
+    fetched_at=float(now_ts),
+  )
+
+  closed_box = {"count": 0}
+
+  class _ClosableXmltvChunks:
+    def __init__(self, inner: Iterator[bytes]) -> None:
+      self._inner = inner
+
+    def __iter__(self) -> Iterator[bytes]:
+      return self
+
+    def __next__(self) -> bytes:
+      return next(self._inner)
+
+    def close(self) -> None:
+      close_fn = getattr(self._inner, "close", None)
+      if callable(close_fn):
+        close_fn()
+      closed_box["count"] += 1
+
+  async def _tiny_chunks_provider() -> Iterator[bytes] | None:
+    return _ClosableXmltvChunks(
+      db.iter_xmltv_chunks(snap, chunk_target_bytes=64, page_rows=2)
+    )
+
+  xt_srv = XtreamPassthroughServer(
+    XtreamExportStore(xt_dir),
+    username="xt_u",
+    password="xt_p",
+    host="127.0.0.1",
+    port=0,
+    epg_xmltv_chunks_provider=_tiny_chunks_provider,
+  )
+  await xt_srv.start()
+  try:
+    base_url = f"http://127.0.0.1:{xt_srv.bound_port}"
+    async with new_test_session() as session:
+      # 1. `HEAD /xmltv.php` returns 200 XML headers, empty body, and closes generator cleanly
+      async with session.head(
+        f"{base_url}/xmltv.php",
+        params={"username": "xt_u", "password": "xt_p"},
+      ) as r_head:
+        assert r_head.status == 200
+        assert "application/xml" in r_head.headers.get("Content-Type", "")
+        assert await r_head.read() == b""
+      assert closed_box["count"] == 1
+
+      # 2. `GET /xmltv.php` flushes multiple 64-byte chunks into complete valid XMLTV
+      async with session.get(
+        f"{base_url}/xmltv.php",
+        params={"username": "xt_u", "password": "xt_p"},
+      ) as r_get:
+        assert r_get.status == 200
+        body = await r_get.text()
+        assert "Téléjournal Segment 0" in body
+        assert "Téléjournal Segment 3" in body
+      await await_until(
+        lambda: closed_box["count"] == 2,
+        description="XMLTV chunk iterator close after EOF",
+      )
+  finally:
+    await xt_srv.stop()
+
+  # 3. Xtream-only `UnifiedServeServer` (`web.enabled=False`) serves `/health` cleanly
+  cfg_xt_only = AppConfig(
+    project_root=tmp_path,
+    xtream=XtreamConfig(
+      server_url="http://panel.example",
+      username="up",
+      password="pw",
+      cache_dir=Path("cache"),
+    ),
+    epg=EpgConfig(verify=False, refresh_hours=6.0),
+    output=OutputConfig(xtream_dir=Path("output/xtream")),
+    serve=ServeConfig(
+      web=ServeWebConfig(enabled=False, host="127.0.0.1", port=0),
+      xtream=ServeXtreamConfig(
+        enabled=True,
+        host="127.0.0.1",
+        port=0,
+        username="xt_u",
+        password="xt_p",
+      ),
+    ),
+  )
+  unified = UnifiedServeServer.from_config(cfg_xt_only)
+  await unified.start()
+  try:
+    async with TestHttpClient(
+      base_url=f"http://127.0.0.1:{unified.xtream_bound_port}"
+    ) as client:
+      health = (await client.get("/health")).json()
+      assert health["status"] == "ok"
+      assert health["web_guide_enabled"] is False
+      assert health["web_auth_enabled"] is False
+      assert health["xtream_api_enabled"] is True
+      assert health["shared_listener"] is False
+      assert health["active_tuner"] is None
+      assert health["channel_count"] == 2
+  finally:
+    await unified.stop()

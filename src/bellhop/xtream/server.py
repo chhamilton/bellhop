@@ -644,11 +644,12 @@ class XtreamPassthroughServer:
         if item is not None:
           default_limit = 4 if action == "get_short_epg" else 50
           raw_limit = params.get("limit", "").strip()
-          limit = (
-            max(1, min(200, int(raw_limit)))
-            if raw_limit.isdigit()
-            else default_limit
-          )
+          try:
+            parsed_limit = int(raw_limit)
+          except ValueError:
+            limit = default_limit
+          else:
+            limit = max(1, min(200, parsed_limit))
           listings = await self.epg_short_provider(
             item.num,
             item.epg_channel_id,

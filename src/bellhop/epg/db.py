@@ -749,7 +749,7 @@ class EpgDatabase:
       for r in rows:
         chno = int(r[0])
         cid = chno_to_cid.get(chno, "") if chno > 0 else str(r[1]).strip()
-        if not cid:
+        if not cid or cid not in primary_chno_for_cid:
           continue
         if chno > 0 and primary_chno_for_cid.get(cid) != chno:
           continue

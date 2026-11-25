@@ -55,6 +55,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["bellhop"]
+branch = true
 
 [tool.coverage.report]
 exclude_also = [
