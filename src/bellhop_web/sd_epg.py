@@ -15,6 +15,7 @@ importing `bellhop.*` (preserving the strict `bellhop_web` package boundary):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -34,6 +35,7 @@ from bellhop_web.epg_db import (
   SdLineupRecord,
   SdStationRow,
 )
+from bellhop_web.file_utils import chmod_private_file, write_private_text
 from bellhop_web.http_utils import (
   ClientSessionFactory,
   default_session_factory,
@@ -200,10 +202,14 @@ class SchedulesDirectEpgClient:
     if not path.is_file():
       return None
     try:
+      chmod_private_file(path)
       raw = json.loads(path.read_text(encoding="utf-8"))
+      expected_base = self.config.base_url.strip().rstrip("/")
+      cached_base = str(raw.get("base_url") or "").strip().rstrip("/")
       if (
         isinstance(raw, dict)
         and raw.get("username") == self.config.username.strip()
+        and (not cached_base or cached_base == expected_base)
         and raw.get("token")
         and (float(self._clock()) - float(raw.get("saved_at", 0.0)))
         < TOKEN_TTL_SEC
@@ -217,21 +223,19 @@ class SchedulesDirectEpgClient:
   def _save_token(self, token: str) -> None:
     self._token = token
     path = self.config.token_cache_file
-    try:
-      path.parent.mkdir(parents=True, exist_ok=True)
-      path.write_text(
+    with contextlib.suppress(OSError):
+      write_private_text(
+        path,
         json.dumps(
           {
             "username": self.config.username.strip(),
+            "base_url": self.config.base_url.strip().rstrip("/"),
             "token": token,
             "saved_at": float(self._clock()),
           },
           indent=2,
         ),
-        encoding="utf-8",
       )
-    except OSError:
-      pass
 
   async def _authenticate(self, session: aiohttp.ClientSession) -> str:
     url = f"{self.config.base_url.rstrip('/')}/token"

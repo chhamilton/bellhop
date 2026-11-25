@@ -2,6 +2,7 @@
 # Bellhop container entrypoint: initializes mount points, seeds default config,
 # applies TZ and PUID/PGID ownership, and execs the Bellhop command cleanly.
 set -eu
+umask 077
 
 CONFIG_DIR="${BELLHOP_CONFIG_DIR:-/config}"
 STATE_DIR="${BELLHOP_STATE_DIR:-/data/state}"
@@ -24,6 +25,7 @@ mkdir -p \
 if [ ! -f "${CONFIG_FILE}" ] && [ -f "${DEFAULT_CONFIG}" ]; then
   echo "[bellhop] Seeding default configuration at ${CONFIG_FILE}"
   cp "${DEFAULT_CONFIG}" "${CONFIG_FILE}"
+  chmod 600 "${CONFIG_FILE}" 2>/dev/null || true
 fi
 
 # Default to `bellhop serve` when no command arguments are passed.
@@ -55,10 +57,10 @@ if [ "$(id -u)" -eq 0 ]; then
     adduser -D -H -u "${PUID}" -G "${GROUP_NAME}" "${USER_NAME}" >/dev/null 2>&1 || true
   fi
 
-  # Only chown paths that do not already match PUID:PGID (fast on large volumes).
+  # Only chown non-symlink paths that do not already match PUID:PGID.
   for dir in "${CONFIG_DIR}" "${STATE_DIR}" "${CACHE_DIR}" "${OUTPUT_DIR}"; do
-    find "${dir}" \( ! -user "${USER_NAME}" -o ! -group "${GROUP_NAME}" \) \
-      -exec chown "${PUID}:${PGID}" {} + 2>/dev/null || true
+    find "${dir}" ! -type l \( ! -user "${USER_NAME}" -o ! -group "${GROUP_NAME}" \) \
+      -exec chown -h "${PUID}:${PGID}" {} + 2>/dev/null || true
   done
 
   exec su-exec "${PUID}:${PGID}" "$@"

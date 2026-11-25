@@ -54,7 +54,6 @@ class ExportStreamRecord:
   epg_channel_id: str
   has_native_epg: bool
   epg_aliases: tuple[str, ...]
-  inline_epg_listings: tuple[dict[str, Any], ...]
   added: str
   is_adult: int
   category_id: str
@@ -328,13 +327,6 @@ class ExportBundleReader:
         else ()
       )
 
-      inline_raw = guide.get("epg_listings")
-      inline_epg = (
-        tuple(dict(p) for p in inline_raw if isinstance(p, Mapping))
-        if isinstance(inline_raw, list)
-        else ()
-      )
-
       raw_stream_id = entry.get("stream_id")
       stream_id = int(raw_stream_id) if raw_stream_id is not None else 0
 
@@ -360,7 +352,6 @@ class ExportBundleReader:
           epg_channel_id=epg_id,
           has_native_epg=has_native_epg,
           epg_aliases=tuple(aliases),
-          inline_epg_listings=inline_epg,
           added=str(entry.get("added") or default_added),
           is_adult=int(entry.get("is_adult") or 0),
           category_id=cat_id,

@@ -83,6 +83,7 @@ from bellhop.playlist import (
   resolve_group_display_map,
   resolve_playback_url,
 )
+from bellhop_web.file_utils import write_private_text
 
 
 class ExportedCategoryDict(TypedDict):
@@ -567,17 +568,17 @@ async def export_xtream_playlist_and_guide(
   streams_path = dest_dir / "get_live_streams.json"
   cats_path = dest_dir / "get_live_categories.json"
 
-  bundle_path.write_text(
+  write_private_text(
+    bundle_path,
     json.dumps(bundle_dict, indent=2, ensure_ascii=False) + "\n",
-    encoding="utf-8",
   )
-  streams_path.write_text(
+  write_private_text(
+    streams_path,
     json.dumps(live_streams, indent=2, ensure_ascii=False) + "\n",
-    encoding="utf-8",
   )
-  cats_path.write_text(
+  write_private_text(
+    cats_path,
     json.dumps(live_categories, indent=2, ensure_ascii=False) + "\n",
-    encoding="utf-8",
   )
 
   official_logo_count = sum(

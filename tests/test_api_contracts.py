@@ -21,6 +21,7 @@ from bellhop_web.api_contracts import (
   build_api_json_schemas,
   validate_typed_dict_payload,
 )
+from bellhop_web.store import ProgramItem
 from tests.http_mock import TestHttpClient
 
 
@@ -109,18 +110,6 @@ async def test_live_http_endpoints_conform_to_generated_ts_contracts(
               "language": "fr",
               "quality_tier": "fhd",
               "has_native_epg": True,
-              "epg_listings": [
-                {
-                  "id": "p1",
-                  "channel_id": "RDS.ca",
-                  "title": "Hockey Canadien",
-                  "sub_title": "LNH",
-                  "description": "En direct.",
-                  "category": "Sports",
-                  "start_timestamp": now_ts - 600,
-                  "stop_timestamp": now_ts + 1800,
-                }
-              ],
             },
           }
         ],
@@ -139,6 +128,8 @@ web_server:
   enabled: true
   host: "127.0.0.1"
   port: 0
+  username: "contract_admin"
+  password: "contract_pw"
 upstream_xtream:
   server_url: "http://upstream.example"
   stream_format: "ts"
@@ -152,6 +143,26 @@ xtream_server:
 
   cfg = load_config(cfg_path)
   srv = UnifiedServeServer.from_config(cfg)
+  assert srv.web_app.epg_refresher is not None
+  snap = srv.web_app.store.get_snapshot()
+  srv.web_app.epg_refresher.db.replace_guide_schedules(
+    snap=snap,
+    programs_by_id={
+      "RDS.ca": [
+        ProgramItem(
+          id="p1",
+          channel_id="RDS.ca",
+          title="Hockey Canadien",
+          sub_title="LNH",
+          description="En direct.",
+          category="Sports",
+          start_timestamp=now_ts - 600,
+          stop_timestamp=now_ts + 1800,
+        )
+      ]
+    },
+    fetched_at=float(now_ts),
+  )
   await srv.start()
   try:
     async with TestHttpClient(
@@ -160,6 +171,12 @@ xtream_server:
       auth_r = await client.get("/api/auth/status")
       assert auth_r.status_code == 200
       validate_typed_dict_payload(auth_r.json(), AuthStatusResponseDict)
+
+      login_r = await client.post(
+        "/api/auth/login",
+        json={"username": "contract_admin", "password": "contract_pw"},
+      )
+      assert login_r.status_code == 200
 
       health_r = await client.get("/api/health")
       assert health_r.status_code == 200

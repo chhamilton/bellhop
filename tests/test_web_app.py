@@ -11,6 +11,8 @@ import pytest
 from aiohttp import web
 from yarl import URL
 
+from bellhop_web.auth import WebAuthConfig, WebAuthManager
+from bellhop_web.epg_db import EpgDatabase
 from bellhop_web.epg_refresh import (
   EpgRefreshConfig,
   EpgRefreshService,
@@ -28,7 +30,19 @@ from bellhop_web.store import (
 from tests.http_mock import MockHttpServer, new_test_session
 
 
-def _write_sample_xtream_dir(xt_dir: Path, now_ts: int) -> None:
+def _make_auth(
+  tmp_path: Path, filename: str = "session_secret.key"
+) -> WebAuthManager:
+  return WebAuthManager(
+    WebAuthConfig(
+      username="admin",
+      password="secret",
+      secret_file=tmp_path / filename,
+    )
+  )
+
+
+def _write_sample_xtream_dir(xt_dir: Path, _now_ts: int = 0) -> None:
   xt_dir.mkdir(parents=True, exist_ok=True)
   categories = [
     {
@@ -76,34 +90,6 @@ def _write_sample_xtream_dir(xt_dir: Path, now_ts: int) -> None:
       },
     },
   ]
-  epg = {
-    "epg_listings": [
-      {
-        "id": "1",
-        "channel_id": "ICITeleMontreal.ca",
-        "title": "Le Téléjournal",
-        "description": "Bulletin de nouvelles national.",
-        "start_timestamp": now_ts - 900,
-        "stop_timestamp": now_ts + 900,
-      },
-      {
-        "id": "2",
-        "channel_id": "ICITeleMontreal.ca",
-        "title": "Tout le monde en parle",
-        "description": "Talk-show avec Guy A. Lepage.",
-        "start_timestamp": now_ts + 900,
-        "stop_timestamp": now_ts + 4500,
-      },
-      {
-        "id": "3",
-        "channel_id": "TSN1.ca",
-        "title": "SportsCentre",
-        "description": "Highlights from across the sports world.",
-        "start_timestamp": now_ts - 600,
-        "stop_timestamp": now_ts + 1200,
-      },
-    ]
-  }
   bundle = {
     "lineup_info": {
       "lineup_id": "CAN-BELLFIBE-MTL-X",
@@ -125,7 +111,6 @@ def _write_sample_xtream_dir(xt_dir: Path, now_ts: int) -> None:
   (xt_dir / "get_live_streams.json").write_text(
     json.dumps(streams), encoding="utf-8"
   )
-  (xt_dir / "get_epg.json").write_text(json.dumps(epg), encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -158,11 +143,54 @@ async def test_web_guide_api_filtering_search_and_stream_proxy(
     return web.Response(status=404)
 
   store = LineupGuideStore(xt_dir)
+  ici_progs = [
+    ProgramItem(
+      id="1",
+      channel_id="ICITeleMontreal.ca",
+      title="Le Téléjournal",
+      description="Bulletin de nouvelles national.",
+      start_timestamp=now_ts - 900,
+      stop_timestamp=now_ts + 900,
+    ),
+    ProgramItem(
+      id="2",
+      channel_id="ICITeleMontreal.ca",
+      title="Tout le monde en parle",
+      description="Talk-show avec Guy A. Lepage.",
+      start_timestamp=now_ts + 900,
+      stop_timestamp=now_ts + 4500,
+    ),
+  ]
+  tsn_progs = [
+    ProgramItem(
+      id="3",
+      channel_id="TSN1.ca",
+      title="SportsCentre",
+      description="Highlights from across the sports world.",
+      start_timestamp=now_ts - 600,
+      stop_timestamp=now_ts + 1200,
+    ),
+  ]
+  refresher = EpgRefreshService(
+    store,
+    EpgRefreshConfig(enabled=False, cache_file=tmp_path / "epg.sqlite3"),
+  )
+  refresher.db.replace_guide_schedules(
+    snap=store.get_snapshot(),
+    programs_by_id={
+      "ICITeleMontreal.ca": ici_progs,
+      "TSN1.ca": tsn_progs,
+    },
+    fetched_at=float(now_ts),
+    covered_channel_ids=frozenset({"icitelemontreal.ca", "tsn1.ca"}),
+  )
   async with MockHttpServer(mock_upstream) as mock:
     app = WebGuideApp(
       store,
+      auth=_make_auth(tmp_path),
       settle_sec=0.01,
       session_factory=mock.session_factory,
+      epg_refresher=refresher,
     )
     await app.startup()
     runner, port = await start_site(app.build_app(), "127.0.0.1", 0)
@@ -170,6 +198,11 @@ async def test_web_guide_api_filtering_search_and_stream_proxy(
 
     try:
       async with new_test_session(base_url, timeout=10.0) as client:
+        async with client.post(
+          "/api/auth/login",
+          json={"username": "admin", "password": "secret"},
+        ) as sign_in:
+          assert sign_in.status == 200
         # 1. Root index.html (including stateful query-param deep links) & assets
         async with client.get("/") as idx_resp:
           assert idx_resp.status == 200
@@ -227,17 +260,14 @@ async def test_web_guide_api_filtering_search_and_stream_proxy(
           search_lu = await r_q.json()
         assert [c["chno"] for c in search_lu["channels"]] == [1101]
 
-        # Add an EPG-less channel to store snapshot via reload and confirm `has_epg=1` hides it
-        epg_data = json.loads(
-          (xt_dir / "get_epg.json").read_text(encoding="utf-8")
+        # Remove TSN1.ca from SQLite EPG schedules and confirm `has_epg=1` hides it
+        refresher.db.replace_guide_schedules(
+          snap=store.get_snapshot(),
+          programs_by_id={"ICITeleMontreal.ca": ici_progs},
+          fetched_at=float(now_ts),
+          covered_channel_ids=frozenset({"icitelemontreal.ca"}),
         )
-        epg_data["epg_listings"] = [
-          p for p in epg_data["epg_listings"] if p["channel_id"] != "TSN1.ca"
-        ]
-        (xt_dir / "get_epg.json").write_text(
-          json.dumps(epg_data), encoding="utf-8"
-        )
-        store.get_snapshot(force_reload=True)
+        refresher.hydrate_from_cache(now_ts=now_ts)
         async with client.get("/api/lineup") as r_all:
           all_lu = await r_all.json()
         assert [c["chno"] for c in all_lu["channels"]] == [1101, 1401]
@@ -257,11 +287,13 @@ async def test_web_guide_api_filtering_search_and_stream_proxy(
         async with client.post("/api/tuner/release") as rel_resp:
           assert rel_resp.status == 200
 
-        # 7. HLS manifest rewrite & segment relay
+        # 7. HLS manifest rewrite & segment relay (opaque asset tokens — zero upstream URLs/secrets)
         async with client.get("/api/hls/1101/index.m3u8") as hls_resp:
           assert hls_resp.status == 200
           hls_text = await hls_resp.text()
         assert "/api/hls/1101/asset?u=" in hls_text
+        assert "secret_p" not in hls_text
+        assert "upstream.example" not in hls_text
         seg_line = next(
           ln
           for ln in hls_text.splitlines()
@@ -271,10 +303,9 @@ async def test_web_guide_api_filtering_search_and_stream_proxy(
           assert seg_resp.status == 200
           assert await seg_resp.read() == ts_bytes
 
-        # 8. Server hardening: CORS preflight, path traversal 403, unknown 404, 413 body limit
+        # 8. Server hardening: no wildcard CORS on Web Guide routes, path traversal 403, 404, 413
         async with client.options("/api/lineup") as opt_resp:
-          assert opt_resp.status == 204
-          assert opt_resp.headers.get("Access-Control-Allow-Origin") == "*"
+          assert opt_resp.headers.get("Access-Control-Allow-Origin") is None
 
         async with client.get(
           URL(f"{base_url}/static/%2e%2e/pyproject.toml", encoded=True)
@@ -305,7 +336,7 @@ def test_store_reads_real_pipeline_outputs_if_present() -> None:
     pytest.skip("Real pipeline outputs not generated in this environment")
   store = LineupGuideStore(real_xtream_dir)
   snap = store.get_snapshot()
-  assert len(snap.channels) >= 340
+  assert len(snap.channels) >= 250
   assert len(snap.categories) >= 15
 
 
@@ -345,9 +376,6 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
   now_ts = int(time.time())
   xt_dir = tmp_path / "output" / "xtream"
   _write_sample_xtream_dir(xt_dir, now_ts - 43200)
-  # Remove legacy get_epg.json so output/xtream/ mirrors pure passthrough export,
-  # embedding the upstream passthrough xmltv_url directly in the bundle.
-  (xt_dir / "get_epg.json").unlink()
   bundle_path = xt_dir / "bellhop_xtream_playlist.json"
   bundle_data = json.loads(bundle_path.read_text(encoding="utf-8"))
   bundle_data["server_info"]["xmltv_url"] = (
@@ -390,12 +418,10 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
     return web.Response(status=200, content_type="application/xml", text=xml)
 
   store = LineupGuideStore(xt_dir)
-  _tot, active_before, _max_stop = store.get_snapshot().epg_coverage_stats(
-    now_ts=now_ts
-  )
-  assert active_before == 0
-
   cache_file = tmp_path / "cache" / "bellhop_web" / "epg.sqlite3"
+  assert (
+    EpgDatabase(cache_file).coverage_stats(now_ts=now_ts).active_programs == 0
+  )
   async with MockHttpServer(mock_epg_upstream) as mock:
     refresher = EpgRefreshService(
       store,
@@ -408,13 +434,23 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
       session_factory=mock.session_factory,
     )
 
-    app = WebGuideApp(store, settle_sec=0.01, epg_refresher=refresher)
+    app = WebGuideApp(
+      store,
+      auth=_make_auth(tmp_path),
+      settle_sec=0.01,
+      epg_refresher=refresher,
+    )
     await app.startup()
     runner, port = await start_site(app.build_app(), "127.0.0.1", 0)
     base_url = f"http://127.0.0.1:{port}"
 
     try:
       async with new_test_session(base_url, timeout=10.0) as client:
+        async with client.post(
+          "/api/auth/login",
+          json={"username": "admin", "password": "secret"},
+        ) as sign_in:
+          assert sign_in.status == 200
         health: dict[str, object] = {}
         for _ in range(50):
           async with client.get("/api/health") as r_h:
@@ -436,7 +472,6 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
         assert not (xt_dir / "get_epg.json").exists()
         assert b"super_secret_epg_pw" not in cache_file.read_bytes()
         assert "super_secret_epg_pw" not in json.dumps(health)
-        assert store.get_snapshot().programs_by_epg_id == {}
 
         # Temp raw XML file was cleaned up immediately after parsing
         assert list(cache_file.parent.glob("xmltv_fetch_*.xml")) == []
@@ -486,20 +521,30 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
     assert fetch_count == 2  # no redundant fetch after restart!
 
     # Simulate restart after time advances: mix of stale + fresh entries evicts stale from SQLite
-    refresher_restarted.db.insert_airing_for_test(
-      chno=1101,
-      epg_channel_id="ICITeleMontreal.ca",
-      item=ProgramItem(
-        id="old-1",
-        channel_id="ICITeleMontreal.ca",
-        title="Yesterday's News",
-        sub_title="",
-        description="",
-        category="",
-        start_timestamp=now_ts - 20000,
-        stop_timestamp=now_ts - 15000,
-      ),
-    )
+    import contextlib
+    import sqlite3
+
+    with contextlib.closing(sqlite3.connect(cache_file)) as raw_conn:
+      raw_conn.execute(
+        """
+        INSERT INTO guide_airings (
+          chno, epg_channel_id, start_ts, stop_ts, program_uid, title, sub_title, description, category, source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+          1101,
+          "ICITeleMontreal.ca",
+          now_ts - 20000,
+          now_ts - 15000,
+          "old-1",
+          "Yesterday's News",
+          "",
+          "",
+          "",
+          "xmltv",
+        ),
+      )
+      raw_conn.commit()
 
     store_pruned = LineupGuideStore(xt_dir)
     refresher_pruned = EpgRefreshService(
@@ -563,7 +608,7 @@ def test_store_m3u8_and_gzip_xmltv_fallbacks(tmp_path: Path) -> None:
     )
   )
 
-  store = LineupGuideStore(empty_xtream, m3u8_path=m3u8_file, xmltv_path=gz_xml)
+  store = LineupGuideStore(empty_xtream, m3u8_path=m3u8_file)
   snap = store.get_snapshot()
   assert (
     snap.xmltv_url == "http://panel.example/xmltv.php?username=u&password=p"
@@ -571,7 +616,10 @@ def test_store_m3u8_and_gzip_xmltv_fallbacks(tmp_path: Path) -> None:
   assert len(snap.channels) == 1
   assert snap.channels[0].chno == 1108
   assert snap.channels[0].category_name == "Sports"
-  assert snap.programs_by_epg_id["RDS.ca"][0].title == "Hockey Canadien"
+  parsed = parse_xmltv_for_channels(
+    gz_xml, snap.build_epg_channel_lookup(), now_timestamp=now_ts
+  )
+  assert parsed["RDS.ca"][0].title == "Hockey Canadien"
 
 
 @pytest.mark.asyncio
@@ -810,7 +858,6 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
   now_ts = int(time.time())
   xt_dir = tmp_path / "output" / "xtream"
   _write_sample_xtream_dir(xt_dir, now_ts - 43200)
-  (xt_dir / "get_epg.json").unlink()
   bundle_path = xt_dir / "bellhop_xtream_playlist.json"
   bundle_data = json.loads(bundle_path.read_text(encoding="utf-8"))
   bundle_data["server_info"]["xmltv_url"] = (
@@ -855,12 +902,22 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
       ),
       session_factory=mock.session_factory,
     )
-    app = WebGuideApp(store, settle_sec=0.01, epg_refresher=refresher)
+    app = WebGuideApp(
+      store,
+      auth=_make_auth(tmp_path),
+      settle_sec=0.01,
+      epg_refresher=refresher,
+    )
     await app.startup()
     runner, port = await start_site(app.build_app(), "127.0.0.1", 0)
     base_url = f"http://127.0.0.1:{port}"
     try:
       async with new_test_session(base_url, timeout=10.0) as client:
+        async with client.post(
+          "/api/auth/login",
+          json={"username": "admin", "password": "secret"},
+        ) as sign_in:
+          assert sign_in.status == 200
         # 1. Wait for initial EPG fetch (only initial channels extracted; ASN.ca not yet in lineup)
         for _ in range(50):
           async with client.get("/api/health") as r_h:

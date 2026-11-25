@@ -8,11 +8,9 @@ with zero extra runtime dependencies and persistent signing key support across r
 from __future__ import annotations
 
 import base64
-import contextlib
 import hashlib
 import hmac
 import json
-import os
 import secrets
 import time
 from collections.abc import Callable
@@ -20,7 +18,9 @@ from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
 from math import ceil
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
+
+from bellhop_web.file_utils import chmod_private_file, write_private_text
 
 SESSION_COOKIE_NAME = "bellhop_session"
 
@@ -34,14 +34,31 @@ def _b64u_decode(token: str) -> bytes:
   return base64.urlsafe_b64decode((token + pad).encode("ascii"))
 
 
+def _safe_compare_str(left: str, right: str) -> bool:
+  return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
 def sanitize_next_url(raw_next: str | None) -> str:
-  """Allow only safe relative same-origin redirect targets (preventing open redirects)."""
+  """Allow only safe internal relative paths (preventing open redirects)."""
   if not raw_next:
     return "/"
   cleaned = raw_next.strip()
   if not cleaned.startswith("/") or cleaned.startswith("//") or "\\" in cleaned:
     return "/"
-  if cleaned.startswith("/login"):
+  if any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in cleaned):
+    return "/"
+  parsed = urlsplit(cleaned)
+  if parsed.scheme or parsed.netloc:
+    return "/"
+  decoded_path = unquote(parsed.path)
+  if (
+    not decoded_path.startswith("/")
+    or decoded_path.startswith("//")
+    or "\\" in decoded_path
+    or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in decoded_path)
+  ):
+    return "/"
+  if decoded_path == "/login" or decoded_path.startswith("/login/"):
     return "/"
   return cleaned
 
@@ -87,8 +104,14 @@ class WebAuthManager:
     self._key: bytes | None = None
 
   @property
+  def has_credentials(self) -> bool:
+    """Return `True` when both login username and password are non-empty."""
+    return bool(self.config.username.strip() and self.config.password.strip())
+
+  @property
   def enabled(self) -> bool:
-    return bool(self.config.username and self.config.password)
+    """Login is mandatory for the Web Guide and cannot be disabled."""
+    return True
 
   @property
   def ttl_seconds(self) -> int:
@@ -108,17 +131,13 @@ class WebAuthManager:
     if secret_file is not None:
       try:
         if secret_file.is_file():
+          chmod_private_file(secret_file)
           stored = secret_file.read_text(encoding="utf-8").strip()
           if len(stored) >= 32:
             self._key = hashlib.sha256(stored.encode("utf-8")).digest()
             return self._key
-        secret_file.parent.mkdir(parents=True, exist_ok=True)
         generated = secrets.token_hex(32)
-        tmp = secret_file.with_suffix(".key.tmp")
-        tmp.write_text(generated + "\n", encoding="utf-8")
-        with contextlib.suppress(OSError):
-          os.chmod(tmp, 0o600)
-        tmp.replace(secret_file)
+        write_private_text(secret_file, generated + "\n")
         self._key = hashlib.sha256(generated.encode("utf-8")).digest()
         return self._key
       except OSError:
@@ -134,11 +153,11 @@ class WebAuthManager:
     return hmac.new(key, material, hashlib.sha256).hexdigest()[:12]
 
   def verify_credentials(self, username: str, password: str) -> bool:
-    if not self.enabled:
-      return True
-    return hmac.compare_digest(
-      username, self.config.username
-    ) and hmac.compare_digest(password, self.config.password)
+    if not self.has_credentials:
+      return False
+    return _safe_compare_str(username, self.config.username) and (
+      _safe_compare_str(password, self.config.password)
+    )
 
   def create_session_token(
     self, username: str, *, now_ts: int | None = None
@@ -162,7 +181,7 @@ class WebAuthManager:
   def verify_session_token(
     self, token: str, *, now_ts: int | None = None
   ) -> SessionInfo | None:
-    if not self.enabled or not token or "." not in token:
+    if not self.has_credentials or not token or "." not in token:
       return None
     parts = token.split(".", 1)
     if len(parts) != 2:
@@ -176,7 +195,7 @@ class WebAuthManager:
         self._get_signing_key(), payload_b64.encode("ascii"), hashlib.sha256
       ).digest()
     )
-    if not hmac.compare_digest(sig_b64, expected_sig):
+    if not _safe_compare_str(sig_b64, expected_sig):
       return None
 
     try:
@@ -194,9 +213,9 @@ class WebAuthManager:
     now = int(self._clock()) if now_ts is None else now_ts
     if exp <= now:
       return None
-    if not hmac.compare_digest(user, self.config.username):
+    if not _safe_compare_str(user, self.config.username):
       return None
-    if not hmac.compare_digest(ver, self._credential_fingerprint()):
+    if not _safe_compare_str(ver, self._credential_fingerprint()):
       return None
 
     return SessionInfo(username=user, issued_at=iat, expires_at=exp)

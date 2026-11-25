@@ -148,17 +148,6 @@ class ChannelEpgResponseDict(TypedDict):
   programs: list[ProgramItemDict]
 
 
-class PublicXtreamServerDict(TypedDict):
-  """Tier-2 `xtream_server` operational settings exposed on `/api/config`."""
-
-  enabled: bool
-  host: str | None
-  port: int | None
-  public_host: str | None
-  public_port: int | None
-  server_protocol: str
-
-
 class PublicUpstreamXtreamDict(TypedDict):
   """Tier-2 `upstream_xtream` operational settings exposed on `/api/config`."""
 
@@ -247,7 +236,6 @@ class PublicConfigPayload(TypedDict):
   """Scoped Tier-2 operational settings payload exposed by `/api/config`."""
 
   upstream_xtream: PublicUpstreamXtreamDict
-  xtream_server: PublicXtreamServerDict
   pipeline: PublicPipelineDict
 
 
@@ -281,7 +269,6 @@ API_CONTRACT_TYPES: tuple[tuple[type[Any], str], ...] = (
   (HealthApiResponseDict, "HealthApiResponse"),
   (AuthStatusResponseDict, "AuthStatusResponse"),
   (ChannelEpgResponseDict, "ChannelEpgResponse"),
-  (PublicXtreamServerDict, "XtreamServerPublicConfig"),
   (PublicUpstreamXtreamDict, "UpstreamXtreamPublicConfig"),
   (PublicTvGuideDict, "TvGuidePublicConfig"),
   (PublicSchedulesDirectDict, "SchedulesDirectPublicConfig"),

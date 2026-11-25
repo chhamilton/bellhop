@@ -29,7 +29,6 @@ from bellhop.config.public import (
   PublicTvGuideDict,
   PublicUpstreamXtreamDict,
   PublicValidationDict,
-  PublicXtreamServerDict,
   apply_public_config_update,
   export_public_config,
 )
@@ -50,7 +49,6 @@ __all__ = [
   "PublicTvGuideDict",
   "PublicUpstreamXtreamDict",
   "PublicValidationDict",
-  "PublicXtreamServerDict",
   "SchedulesDirectConfig",
   "ServeConfig",
   "ServeWebConfig",

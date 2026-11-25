@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
+import hashlib
+import hmac
 import json
 import logging
 import mimetypes
 import re
+import secrets
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urljoin
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import aiohttp
 from aiohttp import web
@@ -64,7 +66,6 @@ from bellhop_web.http_utils import (
 )
 from bellhop_web.store import (
   LineupGuideStore,
-  LineupSnapshot,
   ProgramItem,
   PublicChannelDict,
   WebChannel,
@@ -88,17 +89,25 @@ _Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 UPSTREAM_USER_AGENT = "VLC/3.0.20 LibVLC/3.0.20"
 HLS_URI_ATTR_RE = re.compile(r'URI="([^"]+)"')
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+HLS_ASSET_TTL_SEC = 300.0
+HLS_MAX_ASSETS = 1024
+_URL_SECRET_RE = re.compile(
+  r"(/(?:live|movie|series|timeshift)/[^/\s]+/)([^/\s]+)(/|password=)([^&\s'\"\\]*)",
+  re.IGNORECASE,
+)
 
 
-def _encode_url_token(url: str) -> str:
-  return (
-    base64.urlsafe_b64encode(url.encode("utf-8")).decode("ascii").rstrip("=")
+def _redact_upstream_text(text: str) -> str:
+  """Mask upstream credentials in logged error strings."""
+  masked = re.sub(
+    r"(/(?:live|movie|series|timeshift)/[^/\s]+/)([^/\s]+)(/)",
+    r"\1***\3",
+    text,
+    flags=re.IGNORECASE,
   )
-
-
-def _decode_url_token(token: str) -> str:
-  pad = "=" * ((4 - len(token) % 4) % 4)
-  return base64.urlsafe_b64decode((token + pad).encode("ascii")).decode("utf-8")
+  return re.sub(
+    r"(password=)([^&\s'\"\\]+)", r"\1***", masked, flags=re.IGNORECASE
+  )
 
 
 def _to_hls_url(direct_source: str) -> str:
@@ -111,13 +120,19 @@ def _to_hls_url(direct_source: str) -> str:
   return f"{direct_source.rstrip('/')}.m3u8"
 
 
-def rewrite_hls_manifest(manifest_text: str, base_url: str, chno: int) -> str:
-  """Rewrite relative and absolute URIs in an M3U8 manifest through the local proxy."""
+def rewrite_hls_manifest(
+  manifest_text: str,
+  base_url: str,
+  chno: int,
+  *,
+  register_asset: Callable[[int, str], str],
+) -> str:
+  """Rewrite relative and absolute URIs in an M3U8 manifest to opaque local tokens."""
   out_lines: list[str] = []
 
   def _proxy_uri(raw_uri: str) -> str:
     resolved = urljoin(base_url, raw_uri.strip())
-    tok = _encode_url_token(resolved)
+    tok = register_asset(chno, resolved)
     return f"/api/hls/{chno}/asset?u={tok}"
 
   for raw_line in manifest_text.splitlines():
@@ -253,11 +268,11 @@ class WebGuideApp:
     self,
     store: LineupGuideStore,
     *,
+    auth: WebAuthManager,
     settle_sec: float = 0.18,
     session_factory: ClientSessionFactory | None = None,
     static_dir: Path = STATIC_DIR,
     epg_refresher: EpgRefreshService | None = None,
-    auth: WebAuthManager | None = None,
     login_limiter: LoginRateLimiter | None = None,
     trust_proxy_headers: bool = False,
     trusted_proxy_ips: Sequence[str] = DEFAULT_TRUSTED_PROXY_IPS,
@@ -265,12 +280,17 @@ class WebGuideApp:
     config_writer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     clock: Callable[[], float] = time.time,
   ) -> None:
+    if not auth.has_credentials:
+      raise ValueError(
+        "WebGuideApp requires non-empty `web_server.username` and "
+        "`web_server.password`; Web Guide login cannot be disabled."
+      )
     self.store = store
     self.static_dir = static_dir
     self._clock = clock
     self.tuner = TunerSessionManager(settle_sec=settle_sec, clock=clock)
     self.epg_refresher = epg_refresher
-    self.auth = auth
+    self.auth: WebAuthManager = auth
     self.login_limiter: LoginRateLimiter = login_limiter or LoginRateLimiter(
       clock=clock
     )
@@ -287,6 +307,9 @@ class WebGuideApp:
     # Active HLS edge playlist URL cache: chno -> (resolved_edge_url, last_used_epoch)
     self._hls_edge_urls: dict[int, tuple[str, float]] = {}
     self._hls_owner_client: str = ""
+    self._hls_secret: bytes = secrets.token_bytes(32)
+    # Opaque server-side HLS asset table: token -> (chno, resolved_url, expires_at)
+    self._hls_assets: dict[str, tuple[int, str, float]] = {}
 
   # ---------------------------------------------------------------------------
   # Lifecycle
@@ -346,7 +369,6 @@ class WebGuideApp:
     r.add_get("/login", self._handle_login_page)
     r.add_get("/api/auth/status", self._handle_auth_status)
     r.add_post("/api/auth/login", self._handle_auth_login)
-    r.add_get("/api/auth/logout", self._handle_auth_logout, allow_head=False)
     r.add_post("/api/auth/logout", self._handle_auth_logout)
 
     # Authenticated UI, APIs & stream relay.
@@ -357,11 +379,8 @@ class WebGuideApp:
     r.add_put("/api/config", protect(self._handle_config_put))
     r.add_post("/api/config", protect(self._handle_config_put))
     r.add_get("/api/health", protect(self._handle_health))
-    for method in ("GET", "POST"):
-      r.add_route(method, "/api/epg/refresh", protect(self._handle_epg_refresh))
-      r.add_route(
-        method, "/api/tuner/release", protect(self._handle_tuner_release)
-      )
+    r.add_post("/api/epg/refresh", protect(self._handle_epg_refresh))
+    r.add_post("/api/tuner/release", protect(self._handle_tuner_release))
     r.add_get("/api/lineup", protect(self._handle_lineup))
     r.add_get(r"/api/epg/{chno:\d+}", protect(self._handle_channel_epg))
     r.add_get(
@@ -376,17 +395,31 @@ class WebGuideApp:
     r.add_route("*", "/api/{tail:.*}", protect(self._handle_api_not_found))
 
   # ---------------------------------------------------------------------------
-  # Authentication helpers
+  # Authentication & CSRF helpers
   # ---------------------------------------------------------------------------
   @property
   def _auth_enabled(self) -> bool:
-    return self.auth is not None and self.auth.enabled
+    return True
+
+  @staticmethod
+  def _is_cross_site_mutation(request: web.Request) -> bool:
+    """Reject cross-site state-changing requests (`Sec-Fetch-Site` / `Origin`)."""
+    sec_site = (request.headers.get("Sec-Fetch-Site") or "").strip().lower()
+    if sec_site == "cross-site":
+      return True
+    origin = (request.headers.get("Origin") or "").strip()
+    if origin:
+      if origin.lower() == "null":
+        return True
+      origin_host = urlsplit(origin).netloc.strip().lower()
+      req_host = (request.headers.get("Host") or "").strip().lower()
+      if not origin_host or (req_host and origin_host != req_host):
+        return True
+    return False
 
   def _session_for(
     self, request: web.Request, *, now_ts: int | None = None
   ) -> SessionInfo | None:
-    if self.auth is None or not self.auth.enabled:
-      return None
     effective_now = int(self._clock()) if now_ts is None else now_ts
     return self.auth.extract_session_from_headers(
       {"cookie": request.headers.get("Cookie", "")},
@@ -394,12 +427,9 @@ class WebGuideApp:
     )
 
   def _protected(self, handler: _Handler) -> _Handler:
-    """Wrap `handler` with Web Guide session enforcement & sliding renewal."""
+    """Wrap `handler` with mandatory Web Guide session enforcement & sliding renewal."""
 
     async def _wrapped(request: web.Request) -> web.StreamResponse:
-      if self.auth is None or not self.auth.enabled:
-        return await handler(request)
-
       now_ts = int(self._clock())
       session = self._session_for(request, now_ts=now_ts)
       if session is None:
@@ -417,6 +447,14 @@ class WebGuideApp:
           {"error": "Authentication required", "login_url": "/login"},
           status=HTTPStatus.UNAUTHORIZED,
           headers=clear_hdr,
+        )
+
+      if request.method in ("POST", "PUT", "DELETE", "PATCH") and (
+        self._is_cross_site_mutation(request)
+      ):
+        return json_response(
+          {"error": "Cross-site state mutations are forbidden"},
+          status=HTTPStatus.FORBIDDEN,
         )
 
       response = await handler(request)
@@ -444,7 +482,7 @@ class WebGuideApp:
     self, request: web.Request
   ) -> web.StreamResponse:
     next_url = sanitize_next_url(request.query.get("next", "/"))
-    if not self._auth_enabled or self._session_for(request) is not None:
+    if self._session_for(request) is not None:
       return redirect_response(next_url)
     return bytes_response(
       render_login_page_html(next_url=next_url), "text/html; charset=utf-8"
@@ -453,11 +491,10 @@ class WebGuideApp:
   async def _handle_auth_status(
     self, request: web.Request
   ) -> web.StreamResponse:
-    auth_enabled = self._auth_enabled
     session = self._session_for(request)
     payload: AuthStatusResponseDict = {
-      "auth_required": auth_enabled,
-      "authenticated": (not auth_enabled) or (session is not None),
+      "auth_required": True,
+      "authenticated": session is not None,
       "username": session.username if session is not None else None,
       "expires_at": session.expires_at if session is not None else None,
     }
@@ -466,11 +503,11 @@ class WebGuideApp:
   async def _handle_auth_login(
     self, request: web.Request
   ) -> web.StreamResponse:
-    if self.auth is None or not self.auth.enabled:
+    if self._is_cross_site_mutation(request):
       return json_response(
-        {"auth_required": False, "authenticated": True, "username": None}
+        {"authenticated": False, "error": "Cross-site login is forbidden"},
+        status=HTTPStatus.FORBIDDEN,
       )
-
     is_json = "application/json" in request.content_type.lower()
     client_ip = resolve_request_client_ip(
       request,
@@ -551,14 +588,15 @@ class WebGuideApp:
   async def _handle_auth_logout(
     self, request: web.Request
   ) -> web.StreamResponse:
+    if self._is_cross_site_mutation(request):
+      return json_response(
+        {"error": "Cross-site logout is forbidden"},
+        status=HTTPStatus.FORBIDDEN,
+      )
     client_id = request.query.get("client", "").strip() or None
     if client_id:
       await self.tuner.release_all(client_id=client_id)
-    extra = (
-      {"Set-Cookie": self.auth.build_clear_cookie_header()}
-      if self.auth is not None
-      else None
-    )
+    extra = {"Set-Cookie": self.auth.build_clear_cookie_header()}
     return json_response({"authenticated": False}, headers=extra)
 
   # ---------------------------------------------------------------------------
@@ -601,6 +639,11 @@ class WebGuideApp:
         {"error": "Configuration editing is not enabled in this mode."},
         status=HTTPStatus.NOT_IMPLEMENTED,
       )
+    if "application/json" not in request.content_type.lower():
+      return json_response(
+        {"error": "Content-Type must be application/json."},
+        status=HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+      )
     body = await request.read()
     try:
       updates = (
@@ -612,19 +655,18 @@ class WebGuideApp:
     except (json.JSONDecodeError, ValueError) as exc:
       return json_response({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
-  def _epg_status_dict(
-    self, snap: LineupSnapshot, *, now_ts: int | None = None
-  ) -> EpgStatusDict:
+  def epg_status(self, *, now_ts: int | None = None) -> EpgStatusDict:
+    """Return current runtime EPG refresh and coverage status."""
     if self.epg_refresher is not None:
       return self.epg_refresher.status_dict(now_ts=now_ts)
-    return EpgRefreshStatus.disabled_for_snapshot(snap, now_ts=now_ts).to_dict()
+    return EpgRefreshStatus.disabled().to_dict()
 
   async def _handle_health(self, _request: web.Request) -> web.StreamResponse:
     snap = self.store.get_snapshot()
     if self.epg_refresher is not None:
       self.epg_refresher.trigger_background_if_needed(reason_prefix="health")
     now_ts = int(self._clock())
-    epg_status = self._epg_status_dict(snap, now_ts=now_ts)
+    epg_status = self.epg_status(now_ts=now_ts)
     payload: HealthApiResponseDict = {
       "status": "ok",
       "lineup_id": snap.lineup_id,
@@ -637,7 +679,7 @@ class WebGuideApp:
       "epg_active_program_count": epg_status["active_program_count"],
       "epg_status": epg_status,
       "active_tuner": self.tuner.active_info,
-      "auth_required": self._auth_enabled,
+      "auth_required": True,
     }
     return json_response(payload)
 
@@ -645,9 +687,9 @@ class WebGuideApp:
     self, _request: web.Request
   ) -> web.StreamResponse:
     if self.epg_refresher is None:
-      snap = self.store.get_snapshot(force_reload=True)
+      self.store.get_snapshot(force_reload=True)
       return json_response(
-        {"refreshed": False, "epg_status": self._epg_status_dict(snap)}
+        {"refreshed": False, "epg_status": self.epg_status()}
       )
     status = await self.epg_refresher.refresh_now(force=True, reason="manual")
     http_status = (
@@ -670,6 +712,7 @@ class WebGuideApp:
       or self._hls_owner_client == client_id
     ):
       self._hls_edge_urls.clear()
+      self._hls_assets.clear()
       self._hls_owner_client = ""
     released = await self.tuner.release_all(client_id=client_id)
     return json_response({"released": released})
@@ -717,11 +760,7 @@ class WebGuideApp:
       ):
         continue
 
-      progs = (
-        by_chno.get(ch.chno)
-        or by_epg_id.get(ch.epg_channel_id)
-        or snap.programs_for_channel(ch)
-      )
+      progs = by_chno.get(ch.chno) or by_epg_id.get(ch.epg_channel_id, [])
       pub = ch.to_public_dict(progs, now_ts=now_ts, upcoming_limit=48)
       if require_epg and not (
         pub["now_playing"] or pub["up_next"] or pub["schedule"]
@@ -755,7 +794,7 @@ class WebGuideApp:
         "category_channels": category_channel_count,
         "filtered_channels": len(channels_out),
       },
-      "epg_status": self._epg_status_dict(snap, now_ts=now_ts),
+      "epg_status": self.epg_status(now_ts=now_ts),
       "categories": [c.to_dict() for c in snap.categories],
       "channels": channels_out,
     }
@@ -786,8 +825,6 @@ class WebGuideApp:
         min_stop_ts=now_ts - 1800,
         limit=120,
       )
-    if not progs:
-      progs = snap.programs_for_channel(ch)
     upcoming = [
       p.to_dict(now_ts=now_ts)
       for p in progs
@@ -829,6 +866,42 @@ class WebGuideApp:
       and headers.get("content-length") is not None
     )
 
+  def _register_hls_asset(self, chno: int, resolved_url: str) -> str:
+    """Register an HTTP(S) HLS segment/playlist URL and return its opaque token."""
+    parsed = urlsplit(resolved_url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+      return ""
+    now = self._clock()
+    if len(self._hls_assets) >= HLS_MAX_ASSETS:
+      for k, (_ch, _u, exp) in list(self._hls_assets.items()):
+        if exp <= now:
+          self._hls_assets.pop(k, None)
+      if len(self._hls_assets) >= HLS_MAX_ASSETS:
+        oldest_k = next(iter(self._hls_assets))
+        self._hls_assets.pop(oldest_k, None)
+    tok = hmac.new(
+      self._hls_secret,
+      f"{chno}:{resolved_url}".encode(),
+      hashlib.sha256,
+    ).hexdigest()[:24]
+    self._hls_assets[tok] = (chno, resolved_url, now + HLS_ASSET_TTL_SEC)
+    return tok
+
+  def _resolve_hls_asset(self, chno: int, token: str) -> str | None:
+    """Resolve an opaque HLS asset token scoped strictly to `chno`."""
+    entry = self._hls_assets.get(token)
+    if entry is None:
+      return None
+    entry_chno, resolved_url, exp = entry
+    now = self._clock()
+    if exp <= now:
+      self._hls_assets.pop(token, None)
+      return None
+    if entry_chno != chno:
+      return None
+    self._hls_assets[token] = (chno, resolved_url, now + HLS_ASSET_TTL_SEC)
+    return resolved_url
+
   async def _handle_mpegts_stream(
     self, request: web.Request
   ) -> web.StreamResponse:
@@ -847,6 +920,7 @@ class WebGuideApp:
       return bytes_response(b"", "video/mp2t")
 
     self._hls_edge_urls.clear()
+    self._hls_assets.clear()
     self._hls_owner_client = ""
     session = await self.tuner.preempt_and_acquire(
       chno=ch.chno,
@@ -874,9 +948,7 @@ class WebGuideApp:
               self._is_offline_placeholder(str(resp.url), resp.headers)
               and idx < len(cand_urls) - 1
             ):
-              last_err = (
-                f"Stream redirected to offline placeholder ({resp.url})"
-              )
+              last_err = "Stream redirected to offline placeholder"
               continue
 
             ctype = resp.headers.get("Content-Type") or "video/mp2t"
@@ -903,8 +975,12 @@ class WebGuideApp:
             await response.write_eof()
             return response
         except UPSTREAM_ERRORS as exc:
-          # Also covers writes to a viewer that already disconnected.
-          last_err = f"Upstream connection error: {exc}"
+          logger.debug(
+            "MPEG-TS candidate failed on ch %d: %s",
+            chno,
+            _redact_upstream_text(str(exc)),
+          )
+          last_err = "Upstream connection failed"
           if response is not None:
             return response
           continue
@@ -944,18 +1020,26 @@ class WebGuideApp:
     for other_ch in list(self._hls_edge_urls):
       if other_ch != chno:
         self._hls_edge_urls.pop(other_ch, None)
+    for tok, (asset_ch, _u, _exp) in list(self._hls_assets.items()):
+      if asset_ch != chno:
+        self._hls_assets.pop(tok, None)
 
     # 1. Reuse the cached edge playlist URL so 5s hls.js polls stay on one edge session.
     cached = self._hls_edge_urls.get(chno)
     if cached is not None:
       edge_url, ts = cached
-      if time.time() - ts < 60.0:
+      if self._clock() - ts < 60.0:
         try:
           status, final_url, text = await self._fetch_text(edge_url)
           if status == 200 and "#EXTM3U" in text:
-            self._hls_edge_urls[chno] = (final_url, time.time())
+            self._hls_edge_urls[chno] = (final_url, self._clock())
             return self._manifest_response(
-              rewrite_hls_manifest(text, final_url, chno)
+              rewrite_hls_manifest(
+                text,
+                final_url,
+                chno,
+                register_asset=self._register_hls_asset,
+              )
             )
         except UPSTREAM_ERRORS:
           pass
@@ -970,7 +1054,12 @@ class WebGuideApp:
       try:
         status, final_url, manifest_text = await self._fetch_text(hls_url)
       except UPSTREAM_ERRORS as exc:
-        last_err = f"HLS upstream error: {exc}"
+        logger.debug(
+          "HLS candidate failed on ch %d: %s",
+          chno,
+          _redact_upstream_text(str(exc)),
+        )
+        last_err = "HLS upstream connection failed"
         continue
       if status != 200:
         last_err = f"Upstream HLS returned HTTP {status}"
@@ -982,9 +1071,14 @@ class WebGuideApp:
         last_err = "Stream redirected to offline black.ts placeholder"
         continue
       if final_url != hls_url:
-        self._hls_edge_urls[chno] = (final_url, time.time())
+        self._hls_edge_urls[chno] = (final_url, self._clock())
       return self._manifest_response(
-        rewrite_hls_manifest(manifest_text, final_url, chno)
+        rewrite_hls_manifest(
+          manifest_text,
+          final_url,
+          chno,
+          register_asset=self._register_hls_asset,
+        )
       )
 
     return json_response({"error": last_err}, status=HTTPStatus.BAD_GATEWAY)
@@ -997,16 +1091,16 @@ class WebGuideApp:
 
   async def _handle_hls_asset(self, request: web.Request) -> web.StreamResponse:
     chno = int(request.match_info["chno"])
-    token = request.query.get("u", "")
+    token = request.query.get("u", "").strip()
     if not token:
       return json_response(
         {"error": "Missing asset token"}, status=HTTPStatus.BAD_REQUEST
       )
-    try:
-      asset_url = _decode_url_token(token)
-    except (ValueError, UnicodeDecodeError):
+    asset_url = self._resolve_hls_asset(chno, token)
+    if asset_url is None:
       return json_response(
-        {"error": "Invalid asset token"}, status=HTTPStatus.BAD_REQUEST
+        {"error": "Invalid or expired HLS asset token"},
+        status=HTTPStatus.FORBIDDEN,
       )
 
     response: web.StreamResponse | None = None
@@ -1026,7 +1120,12 @@ class WebGuideApp:
           text = body.decode("utf-8", errors="replace")
           if "#EXTM3U" in text:
             return self._manifest_response(
-              rewrite_hls_manifest(text, str(resp.url), chno)
+              rewrite_hls_manifest(
+                text,
+                str(resp.url),
+                chno,
+                register_asset=self._register_hls_asset,
+              )
             )
           return bytes_response(body, ctype or "application/octet-stream")
 
@@ -1045,10 +1144,15 @@ class WebGuideApp:
         await response.write_eof()
         return response
     except UPSTREAM_ERRORS as exc:
+      logger.debug(
+        "HLS segment error on ch %d: %s",
+        chno,
+        _redact_upstream_text(str(exc)),
+      )
       if response is not None:
         return response
       return json_response(
-        {"error": f"HLS segment error: {exc}"}, status=HTTPStatus.BAD_GATEWAY
+        {"error": "HLS segment fetch failed"}, status=HTTPStatus.BAD_GATEWAY
       )
 
   # ---------------------------------------------------------------------------

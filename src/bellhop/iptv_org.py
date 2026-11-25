@@ -26,6 +26,8 @@ from typing import Any
 
 import aiohttp
 
+from bellhop_web.file_utils import write_private_bytes, write_private_text
+
 DEFAULT_IPTV_ORG_API_URL = "https://iptv-org.github.io/api"
 IPTV_ORG_USER_AGENT = "Bellhop/0.1 (+https://github.com/chhamilton/bellhop)"
 
@@ -854,13 +856,10 @@ class IptvOrgClient:
       return {}
 
   def _save_meta(self, meta: Mapping[str, HttpCacheEntry]) -> None:
-    self.store_dir.mkdir(parents=True, exist_ok=True)
     serialized = {k: v.to_dict() for k, v in sorted(meta.items())}
-    tmp = self.meta_path.with_suffix(".tmp")
-    tmp.write_text(
-      json.dumps(serialized, indent=2, ensure_ascii=False), encoding="utf-8"
+    write_private_text(
+      self.meta_path, json.dumps(serialized, indent=2, ensure_ascii=False)
     )
-    tmp.replace(self.meta_path)
 
   async def _fetch_resource(
     self,
@@ -938,10 +937,7 @@ class IptvOrgClient:
         digest = hashlib.sha256(raw_bytes).hexdigest()
         content_changed = not has_local or prev is None or prev.sha256 != digest
         if not dry_run:
-          self.store_dir.mkdir(parents=True, exist_ok=True)
-          tmp_file = file_path.with_suffix(".tmp")
-          tmp_file.write_bytes(raw_bytes)
-          tmp_file.replace(file_path)
+          write_private_bytes(file_path, raw_bytes)
 
         meta[filename] = HttpCacheEntry(
           url=url,

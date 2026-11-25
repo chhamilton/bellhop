@@ -19,8 +19,8 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
 
 2. **Two-Tier Declarative Configuration in `config.yaml` Only (No CLI Configuration Bloat)**
    - **All** persistent settings belong in `config.yaml` (with secrets in `credentials.yaml` or `.env`), organized into two tiers:
-     1. **Infrastructure (`config.yaml` only, never exposed to Web UI):** `credentials_file`, `paths`, and `web_server`.
-     2. **Operational (exposed in Web UI Settings excluding credentials):** `upstream_xtream`, `xtream_server`, and `pipeline` (`lineup`, `matching`, `validation`, `epg`, `output`).
+     1. **Infrastructure (`config.yaml` only, never exposed to Web UI):** `credentials_file`, `paths`, `web_server` (login is mandatory and cannot be disabled), and `xtream_server`.
+     2. **Operational (exposed in Web UI Settings to authenticated users only, excluding credentials):** `upstream_xtream` and `pipeline` (`lineup`, `matching`, `validation`, `epg`, `output`).
    - Do **not** add configuration flags back to the `bellhop` CLI. CLI arguments are strictly reserved for ephemeral execution control (`--config`, `--phase`, `--skip`, `--dry-run`, `--force-refresh`, `--reprobe-all`, `--reset-mapping`, `--quiet`, `--verbose`).
 
 3. **Credentials & Git Hygiene**

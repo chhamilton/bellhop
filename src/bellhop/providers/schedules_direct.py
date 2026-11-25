@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import re
@@ -28,6 +29,7 @@ from bellhop.providers.normalizer import (
   RawProviderSlot,
   normalize_provider_slots,
 )
+from bellhop_web.file_utils import chmod_private_file, write_private_text
 
 DEFAULT_SD_BASE_URL = "https://json.schedulesdirect.org/20141201"
 SD_USER_AGENT = "Bellhop/0.1"
@@ -152,9 +154,12 @@ class SchedulesDirectLineupProvider(LineupProvider):
       return self._token
     if self.token_cache_path and self.token_cache_path.is_file():
       try:
+        chmod_private_file(self.token_cache_path)
         raw = json.loads(self.token_cache_path.read_text(encoding="utf-8"))
+        cached_base = str(raw.get("base_url") or "").strip().rstrip("/")
         if (
           raw.get("username") == self.username
+          and (not cached_base or cached_base == self.base_url)
           and raw.get("token")
           and time.time() - float(raw.get("saved_at", 0.0)) < 23 * 3600
         ):
@@ -168,21 +173,19 @@ class SchedulesDirectLineupProvider(LineupProvider):
     self._token = token
     if self.token_cache_path is None:
       return
-    try:
-      self.token_cache_path.parent.mkdir(parents=True, exist_ok=True)
-      self.token_cache_path.write_text(
+    with contextlib.suppress(OSError):
+      write_private_text(
+        self.token_cache_path,
         json.dumps(
           {
             "username": self.username,
+            "base_url": self.base_url,
             "token": token,
             "saved_at": time.time(),
           },
           indent=2,
         ),
-        encoding="utf-8",
       )
-    except OSError:
-      pass
 
   async def _authenticate(self, client: aiohttp.ClientSession) -> str:
     if not self.has_credentials:

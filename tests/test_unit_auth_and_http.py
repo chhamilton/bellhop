@@ -55,12 +55,18 @@ def _write_minimal_bundle(xt_dir: Path) -> None:
 
 
 def test_sanitize_next_url_and_login_html_escaping() -> None:
-  """Verify open-redirect blocking and HTML single-quote escaping on `/login`."""
+  """Verify strict internal-only redirects and HTML single-quote escaping on `/login`."""
   assert sanitize_next_url(None) == "/"
   assert sanitize_next_url("/?cat=2&ch=1108") == "/?cat=2&ch=1108"
   assert sanitize_next_url("//evil.example/phish") == "/"
   assert sanitize_next_url("https://evil.example") == "/"
+  assert sanitize_next_url("http:/evil.example") == "/"
   assert sanitize_next_url("/\\evil.example") == "/"
+  assert sanitize_next_url("/\t/evil.example") == "/"
+  assert sanitize_next_url("/\n/evil.example") == "/"
+  assert sanitize_next_url("/%09/evil.example") == "/"
+  assert sanitize_next_url("/%2f/evil.example") == "/"
+  assert sanitize_next_url("/%5cevil.example") == "/"
   assert sanitize_next_url("/login?next=/") == "/"
 
   rendered = render_login_page_html(
@@ -75,23 +81,36 @@ def test_sanitize_next_url_and_login_html_escaping() -> None:
 def test_web_auth_token_signing_persistence_and_rotation_with_fake_clock(
   tmp_path: Path, fake_clock: FakeClock
 ) -> None:
-  """Verify HMAC session tokens, secret persistence, expiry, and rotation."""
+  """Verify HMAC session tokens, 0600 secret persistence, Unicode passwords, and mandatory login."""
+  import stat
+
+  # Unconfigured credentials MUST fail verification and MUST be rejected by WebGuideApp
+  unconfigured = WebAuthManager(WebAuthConfig())
+  assert unconfigured.enabled is True
+  assert unconfigured.has_credentials is False
+  assert unconfigured.verify_credentials("", "") is False
+  xt_empty = tmp_path / "empty_xtream"
+  xt_empty.mkdir()
+  with pytest.raises(ValueError, match="cannot be disabled"):
+    WebGuideApp(LineupGuideStore(xt_empty), auth=unconfigured)
+
   secret_file = tmp_path / "cache" / "bellhop_web" / "session_secret.key"
   auth1 = WebAuthManager(
     WebAuthConfig(
-      username="admin",
-      password="secret_web_password",
+      username="admín",
+      password="sëcret_web_password_🔐",
       session_ttl_hours=2.0,
       secret_file=secret_file,
     ),
     clock=fake_clock,
   )
   assert auth1.enabled is True
-  assert auth1.verify_credentials("admin", "secret_web_password") is True
-  assert auth1.verify_credentials("admin", "wrong") is False
+  assert auth1.verify_credentials("admín", "sëcret_web_password_🔐") is True
+  assert auth1.verify_credentials("admín", "wrong_é") is False
 
-  token, session = auth1.create_session_token("admin")
+  token, session = auth1.create_session_token("admín")
   assert secret_file.is_file()
+  assert stat.S_IMODE(secret_file.stat().st_mode) == 0o600
   assert session.expires_at == int(fake_clock.now) + 7200
 
   # Before half-TTL: valid, no renewal needed
@@ -107,20 +126,20 @@ def test_web_auth_token_signing_persistence_and_rotation_with_fake_clock(
   # Restart with same secret_file keeps cookie valid
   auth2 = WebAuthManager(
     WebAuthConfig(
-      username="admin",
-      password="secret_web_password",
+      username="admín",
+      password="sëcret_web_password_🔐",
       session_ttl_hours=2.0,
       secret_file=secret_file,
     ),
     clock=fake_clock,
   )
   verified = auth2.verify_session_token(token)
-  assert verified is not None and verified.username == "admin"
+  assert verified is not None and verified.username == "admín"
 
   # Password change invalidates existing cookies immediately
   auth_rotated = WebAuthManager(
     WebAuthConfig(
-      username="admin",
+      username="admín",
       password="brand_new_password",
       session_ttl_hours=2.0,
       secret_file=secret_file,
@@ -319,8 +338,8 @@ async def test_http_hardening_413_403_cors_and_reverse_proxy_throttling(
   try:
     async with new_test_session(base_a) as client:
       async with client.options("/api/lineup") as opt_r:
-        assert opt_r.status == 204
-        assert opt_r.headers.get("Access-Control-Allow-Origin") == "*"
+        assert opt_r.status == 401
+        assert "Access-Control-Allow-Origin" not in opt_r.headers
 
       oversized = b"x" * (DEFAULT_CLIENT_MAX_SIZE + 512)
       async with client.post(
@@ -406,3 +425,99 @@ async def test_http_hardening_413_403_cors_and_reverse_proxy_throttling(
   finally:
     await runner_b.cleanup()
     await app_unlisted.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_csrf_cors_and_hls_ssrf_protection(
+  tmp_path: Path, fake_clock: FakeClock
+) -> None:
+  """Verify Web Guide omits wildcard CORS, blocks CSRF/GET mutations, and rejects forged HLS tokens."""
+  import base64
+
+  xt_dir = tmp_path / "output" / "xtream"
+  _write_minimal_bundle(xt_dir)
+  auth = WebAuthManager(
+    WebAuthConfig(
+      username="admin",
+      password="secret",
+      secret_file=tmp_path / "session_secret.key",
+    ),
+    clock=fake_clock,
+  )
+  app = WebGuideApp(
+    LineupGuideStore(xt_dir),
+    auth=auth,
+    config_reader=lambda: {
+      "available": True,
+      "config_file": "config.yaml",
+      "config": {},
+    },
+    config_writer=lambda _u: {
+      "saved": True,
+      "restart_required": False,
+      "config_file": "config.yaml",
+      "config": {},
+    },
+    settle_sec=0.0,
+    clock=fake_clock,
+  )
+  await app.startup()
+  runner, port = await start_site(app.build_app(), "127.0.0.1", 0)
+  try:
+    async with new_test_session(f"http://127.0.0.1:{port}") as client:
+      # Cross-site login blocked with 403
+      async with client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "secret"},
+        headers={"Origin": "https://attacker.example"},
+      ) as csrf_login:
+        assert csrf_login.status == 403
+
+      # Legitimate login succeeds and never emits wildcard CORS
+      async with client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "secret"},
+      ) as ok_login:
+        assert ok_login.status == 200
+        assert "Access-Control-Allow-Origin" not in ok_login.headers
+
+      async with client.get("/api/lineup") as lu_r:
+        assert lu_r.status == 200
+        assert "Access-Control-Allow-Origin" not in lu_r.headers
+
+      # State-changing GET routes are disabled (rejected with 404/405, zero state change)
+      for get_mut in (
+        "/api/auth/logout",
+        "/api/epg/refresh",
+        "/api/tuner/release",
+      ):
+        async with client.get(get_mut) as gm_r:
+          assert gm_r.status in {404, 405}
+
+      # Cross-site POST/PUT mutations blocked via Sec-Fetch-Site and Origin
+      async with client.put(
+        "/api/config",
+        json={},
+        headers={"Sec-Fetch-Site": "cross-site"},
+      ) as csrf_put:
+        assert csrf_put.status == 403
+
+      # Non-JSON Content-Type on PUT /api/config rejected with 415
+      async with client.put(
+        "/api/config",
+        data="{}",
+        headers={"Content-Type": "text/plain"},
+      ) as plain_put:
+        assert plain_put.status == 415
+
+      # Forged base64 URL in `/api/hls/<chno>/asset?u=` rejected with 403 (zero SSRF)
+      forged = (
+        base64.urlsafe_b64encode(b"http://127.0.0.1:22/secret")
+        .decode("ascii")
+        .rstrip("=")
+      )
+      async with client.get(f"/api/hls/1101/asset?u={forged}") as ssrf_r:
+        assert ssrf_r.status == 403
+  finally:
+    await runner.cleanup()
+    await app.shutdown()

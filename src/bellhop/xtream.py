@@ -14,6 +14,7 @@ import aiohttp
 
 from bellhop.config import AppConfig
 from bellhop.models import XtreamAccountInfo, XtreamStream
+from bellhop_web.file_utils import write_private_text
 
 DEFAULT_USER_AGENT = "Bellhop/0.1 (VLC/3.0.20 LibVLC/3.0.20)"
 
@@ -97,10 +98,7 @@ def _save_cached_catalog(
     "categories": categories,
     "streams": streams_raw,
   }
-  tmp_file = cache_file.with_suffix(".tmp")
-  with tmp_file.open("w", encoding="utf-8") as fh:
-    json.dump(data, fh, ensure_ascii=False)
-  tmp_file.replace(cache_file)
+  write_private_text(cache_file, json.dumps(data, ensure_ascii=False))
 
 
 async def fetch_xtream_account_info(

@@ -47,6 +47,7 @@ from bellhop.xtream import (
   fetch_xtream_catalog,
   load_catalog_from_json,
 )
+from bellhop_web.file_utils import write_private_text
 
 
 @dataclass(slots=True)
@@ -174,9 +175,7 @@ def _save_catalog_state(
     "last_diff": diff.to_dict(),
     "streams": [asdict(s) for s in catalog.streams],
   }
-  tmp_path = snap_path.with_suffix(".tmp")
-  tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-  tmp_path.replace(snap_path)
+  write_private_text(snap_path, json.dumps(payload, ensure_ascii=False))
 
 
 async def fetch_daily_iptv_catalog(

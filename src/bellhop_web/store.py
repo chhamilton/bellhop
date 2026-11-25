@@ -37,16 +37,12 @@ from __future__ import annotations
 
 import gzip
 import io
-import json
 import logging
 import time
-import xml.etree.ElementTree as ET
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-from xml.sax.saxutils import escape as xml_escape
 
 from bellhop_web.api_contracts import (
   GuideCategoryDict as GuideCategoryDict,
@@ -57,17 +53,9 @@ from bellhop_web.api_contracts import (
 from bellhop_web.api_contracts import (
   PublicChannelDict as PublicChannelDict,
 )
-from bellhop_web.export_bundle import (
-  ExportBundleReader,
-  as_str_dict,
-  parse_m3u8_fallback,
-)
+from bellhop_web.export_bundle import ExportBundleReader
 
 logger = logging.getLogger("bellhop_web.store")
-
-
-def _as_dict(val: object) -> dict[str, Any]:
-  return as_str_dict(val)
 
 
 def parse_xmltv_ts(raw: str) -> int:
@@ -372,7 +360,7 @@ class WebChannel:
 
 @dataclass(slots=True)
 class LineupSnapshot:
-  """Immutable in-memory snapshot of categories, channels, and EPG schedule items."""
+  """Immutable in-memory snapshot of lineup categories and mapped channels."""
 
   lineup_id: str = "CAN-BELLFIBE-MTL-X"
   provider: str = "Bell Fibe TV"
@@ -384,27 +372,10 @@ class LineupSnapshot:
   categories: list[GuideCategory] = field(default_factory=list)
   channels: list[WebChannel] = field(default_factory=list)
   channels_by_chno: dict[int, WebChannel] = field(default_factory=dict)
-  programs_by_epg_id: dict[str, list[ProgramItem]] = field(default_factory=dict)
-  programs_by_chno: dict[int, list[ProgramItem]] = field(default_factory=dict)
-
-  def programs_for_channel(self, ch: WebChannel) -> list[ProgramItem]:
-    """Return per-slot EPG items when present, falling back to `epg_channel_id`."""
-    slot_progs = self.programs_by_chno.get(ch.chno)
-    if slot_progs:
-      return slot_progs
-    return self.programs_by_epg_id.get(ch.epg_channel_id, [])
-
-  def channels_with_epg_count(self) -> int:
-    """Count distinct channels (or EPG IDs if channel list empty) with schedules."""
-    if self.channels and self.programs_by_chno:
-      return sum(1 for ch in self.channels if self.programs_for_channel(ch))
-    return sum(1 for v in self.programs_by_epg_id.values() if v)
 
   def build_epg_channel_lookup(self) -> dict[str, str]:
     """Build lowercase upstream channel ID -> canonical `epg_channel_id` lookup map."""
     lookup: dict[str, str] = {}
-    # Register primary `epg_channel_id` bindings first so secondary fallback aliases
-    # can never overwrite another station's primary EPG ID.
     for ch in self.channels:
       canonical = ch.epg_channel_id.strip()
       if canonical:
@@ -433,59 +404,25 @@ class LineupSnapshot:
           bucket.append(low)
     return {k: tuple(v) for k, v in chains.items()}
 
-  def epg_coverage_stats(
-    self, *, now_ts: int | None = None
-  ) -> tuple[int, int, int]:
-    """Return `(total_programs, active_programs, max_stop_timestamp)`."""
-    now = int(time.time()) if now_ts is None else now_ts
-    recent_floor = now - 3600
-    total = 0
-    active = 0
-    max_stop = 0
-    source_lists = (
-      [self.programs_for_channel(ch) for ch in self.channels]
-      if (self.channels and self.programs_by_chno)
-      else list(self.programs_by_epg_id.values())
-    )
-    for plist in source_lists:
-      for p in plist:
-        total += 1
-        if p.stop_timestamp > max_stop:
-          max_stop = p.stop_timestamp
-        if p.stop_timestamp == 0 or p.stop_timestamp > recent_floor:
-          active += 1
-    return total, active, max_stop
-
 
 class LineupGuideStore:
-  """Loads Phase (6) Xtream JSON / XMLTV outputs (or M3U8 fallback) with automatic hot-reload."""
+  """Loads Phase (6) Xtream JSON outputs (or M3U8 fallback) with automatic hot-reload."""
 
   def __init__(
     self,
     xtream_dir: Path,
     *,
     m3u8_path: Path | None = None,
-    xmltv_path: Path | None = None,
   ) -> None:
     self.xtream_dir = xtream_dir.resolve()
     self.m3u8_path = m3u8_path.resolve() if m3u8_path else None
-    self.xmltv_override = xmltv_path.resolve() if xmltv_path else None
-    extra_watched = [
-      self.xtream_dir / "get_epg.json",
-      self.xtream_dir / "xmltv.xml",
-    ]
-    if self.xmltv_override is not None:
-      extra_watched.append(self.xmltv_override)
     self._bundle_reader = ExportBundleReader(
       self.xtream_dir,
       m3u8_path=self.m3u8_path,
-      extra_watched_files=extra_watched,
     )
     self._last_signature: tuple[float, ...] = ()
     self._last_updated_at: float = 0.0
     self._snapshot: LineupSnapshot | None = None
-    self._epg_overlay: dict[str, list[ProgramItem]] | None = None
-    self._epg_chno_overlay: dict[int, list[ProgramItem]] | None = None
     self._epg_overlay_url: str = ""
 
   @property
@@ -507,6 +444,7 @@ class LineupGuideStore:
     return self._bundle_reader.compute_signature()
 
   def get_snapshot(self, *, force_reload: bool = False) -> LineupSnapshot:
+    """Return the current `LineupSnapshot`, reloading from disk when files changed."""
     sig = self._compute_signature()
     prev_snap = self._snapshot
     if (
@@ -515,16 +453,8 @@ class LineupGuideStore:
       return prev_snap
 
     snap = self._load_from_disk()
-    if self._epg_overlay is not None:
-      snap.programs_by_epg_id = {
-        k: list(v) for k, v in self._epg_overlay.items()
-      }
-      if self._epg_overlay_url and not snap.xmltv_url:
-        snap.xmltv_url = self._epg_overlay_url
-    if self._epg_chno_overlay is not None:
-      snap.programs_by_chno = {
-        k: list(v) for k, v in self._epg_chno_overlay.items()
-      }
+    if self._epg_overlay_url and not snap.xmltv_url:
+      snap.xmltv_url = self._epg_overlay_url
     snap.loaded_at = self._next_updated_at()
     self._snapshot = snap
     self._last_signature = sig
@@ -541,65 +471,16 @@ class LineupGuideStore:
       )
     return snap
 
-  def apply_epg_programs(
-    self,
-    programs_by_epg_id: Mapping[str, list[ProgramItem]],
-    *,
-    programs_by_chno: Mapping[int, list[ProgramItem]] | None = None,
-    xmltv_url: str = "",
-  ) -> int:
-    """Overlay dynamically fetched/cached EPG programs into memory (read-only on `output/`)."""
-    snap = self.get_snapshot()
-    normalized: dict[str, list[ProgramItem]] = {}
-    total_programs = 0
-    for cid, plist in programs_by_epg_id.items():
-      ordered = reconcile_non_overlapping_schedule(plist)
-      if ordered:
-        normalized[cid] = ordered
-        total_programs += len(ordered)
-
-    normalized_chno: dict[int, list[ProgramItem]] = {}
-    if programs_by_chno is not None:
-      total_programs = 0
-      for chno, plist in programs_by_chno.items():
-        ordered = reconcile_non_overlapping_schedule(plist)
-        if ordered:
-          normalized_chno[int(chno)] = ordered
-          total_programs += len(ordered)
-
-    self._epg_overlay = normalized
-    self._epg_chno_overlay = (
-      normalized_chno if programs_by_chno is not None else None
-    )
-    if xmltv_url:
-      self._epg_overlay_url = xmltv_url
-      snap.xmltv_url = xmltv_url
-    snap.programs_by_epg_id = {k: list(v) for k, v in normalized.items()}
-    snap.programs_by_chno = (
-      {k: list(v) for k, v in normalized_chno.items()}
-      if programs_by_chno is not None
-      else {}
-    )
-    snap.loaded_at = self._next_updated_at()
-    return total_programs
-
   def touch_epg_revision(self, *, xmltv_url: str = "") -> None:
-    """Bump snapshot timestamp and release any in-memory EPG overlays after SQLite commit."""
+    """Bump snapshot revision timestamp after a SQLite EPG commit."""
     snap = self.get_snapshot()
-    self._epg_overlay = None
-    self._epg_chno_overlay = None
     if xmltv_url:
       self._epg_overlay_url = xmltv_url
       snap.xmltv_url = xmltv_url
-    snap.programs_by_epg_id = {}
-    snap.programs_by_chno = {}
     snap.loaded_at = self._next_updated_at()
 
   def _load_from_disk(self) -> LineupSnapshot:
     bundle_data = self._bundle_reader.read()
-    epg_json_path = self.xtream_dir / "get_epg.json"
-    xmltv_path = self.xmltv_override or (self.xtream_dir / "xmltv.xml")
-
     if not bundle_data.initialized:
       return LineupSnapshot(
         lineup_id=bundle_data.lineup_id,
@@ -622,7 +503,6 @@ class LineupGuideStore:
 
     channels: list[WebChannel] = []
     channels_by_chno: dict[int, WebChannel] = {}
-    programs_by_epg_id: dict[str, list[ProgramItem]] = {}
 
     for rec in bundle_data.streams:
       web_ch = WebChannel(
@@ -646,41 +526,6 @@ class LineupGuideStore:
       channels.append(web_ch)
       channels_by_chno[rec.num] = web_ch
 
-      if (
-        rec.epg_channel_id
-        and rec.epg_channel_id not in programs_by_epg_id
-        and rec.inline_epg_listings
-      ):
-        programs_by_epg_id[rec.epg_channel_id] = [
-          self._program_from_dict(p, default_cid=rec.epg_channel_id)
-          for p in rec.inline_epg_listings
-          if p.get("title")
-        ]
-
-    resolved_xmltv_url = bundle_data.xmltv_url
-    if epg_json_path.is_file():
-      epg_data = _as_dict(json.loads(epg_json_path.read_text(encoding="utf-8")))
-      if not resolved_xmltv_url:
-        resolved_xmltv_url = str(epg_data.get("xmltv_url") or "").strip()
-      listings = epg_data.get("epg_listings")
-      if isinstance(listings, list) and listings:
-        programs_by_epg_id.clear()
-        for p in listings:
-          if not isinstance(p, Mapping) or not p.get("title"):
-            continue
-          cid = str(p.get("channel_id") or p.get("epg_id") or "").strip()
-          if cid:
-            programs_by_epg_id.setdefault(cid, []).append(
-              self._program_from_dict(p, default_cid=cid)
-            )
-    elif xmltv_path.is_file():
-      programs_by_epg_id = self._parse_xmltv(xmltv_path)
-
-    for cid_key in list(programs_by_epg_id):
-      programs_by_epg_id[cid_key] = reconcile_non_overlapping_schedule(
-        programs_by_epg_id[cid_key]
-      )
-
     channels.sort(key=lambda c: c.chno)
 
     return LineupSnapshot(
@@ -690,129 +535,8 @@ class LineupGuideStore:
       postal_prefix=bundle_data.postal_prefix,
       timezone=bundle_data.timezone,
       loaded_at=bundle_data.loaded_at,
-      xmltv_url=resolved_xmltv_url,
+      xmltv_url=bundle_data.xmltv_url,
       categories=normalized_cats,
       channels=channels,
       channels_by_chno=channels_by_chno,
-      programs_by_epg_id=programs_by_epg_id,
     )
-
-  @staticmethod
-  def _program_from_dict(
-    data: Mapping[str, Any], *, default_cid: str
-  ) -> ProgramItem:
-    return ProgramItem(
-      id=str(data.get("id") or ""),
-      channel_id=str(
-        data.get("channel_id") or data.get("epg_id") or default_cid
-      ),
-      title=str(data.get("title") or ""),
-      sub_title=str(data.get("sub_title") or ""),
-      description=str(data.get("description") or ""),
-      category=str(data.get("category") or ""),
-      start_timestamp=int(data.get("start_timestamp") or 0),
-      stop_timestamp=int(data.get("stop_timestamp") or 0),
-    )
-
-  @staticmethod
-  def _parse_xmltv(xml_path: Path) -> dict[str, list[ProgramItem]]:
-    by_id: dict[str, list[ProgramItem]] = {}
-    seq = 0
-    with open_xml_stream(xml_path) as fh:
-      try:
-        for _ev, elem in ET.iterparse(fh, events=("end",)):
-          tag = elem.tag.rsplit("}", 1)[-1]
-          if tag == "programme":
-            cid = (elem.attrib.get("channel") or "").strip()
-            title_el = elem.find("title")
-            title = (
-              (title_el.text or "").strip() if title_el is not None else ""
-            )
-            if cid and title:
-              seq += 1
-              sub_el = elem.find("sub-title")
-              desc_el = elem.find("desc")
-              cat_el = elem.find("category")
-              by_id.setdefault(cid, []).append(
-                ProgramItem(
-                  id=str(seq),
-                  channel_id=cid,
-                  title=title,
-                  sub_title=(sub_el.text or "").strip()
-                  if sub_el is not None
-                  else "",
-                  description=(desc_el.text or "").strip()
-                  if desc_el is not None
-                  else "",
-                  category=(cat_el.text or "").strip()
-                  if cat_el is not None
-                  else "",
-                  start_timestamp=parse_xmltv_ts(
-                    elem.attrib.get("start") or ""
-                  ),
-                  stop_timestamp=parse_xmltv_ts(elem.attrib.get("stop") or ""),
-                )
-              )
-            elem.clear()
-          elif tag == "channel":
-            elem.clear()
-      except ET.ParseError:
-        pass
-    return by_id
-
-  @staticmethod
-  def _parse_m3u8_fallback(
-    m3u_path: Path,
-  ) -> tuple[list[dict[str, str]], list[dict[str, Any]], str]:
-    return parse_m3u8_fallback(m3u_path)
-
-
-def _format_xmltv_ts(epoch_ts: int) -> str:
-  return datetime.fromtimestamp(epoch_ts, tz=timezone.utc).strftime(
-    "%Y%m%d%H%M%S +0000"
-  )
-
-
-def render_snapshot_xmltv(snap: LineupSnapshot) -> bytes:
-  """Render `snap`'s merged non-overlapping EPG into an UTF-8 XMLTV document."""
-  lines: list[str] = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<tv generator-info-name="Bellhop">',
-  ]
-  emitted_channels: dict[str, list[ProgramItem]] = {}
-  for ch in snap.channels:
-    cid = ch.epg_channel_id.strip()
-    if not cid or cid in emitted_channels:
-      continue
-    progs = snap.programs_for_channel(ch)
-    emitted_channels[cid] = progs
-    esc_cid = xml_escape(cid, {'"': "&quot;"})
-    esc_name = xml_escape(ch.name)
-    lines.append(f'  <channel id="{esc_cid}">')
-    lines.append(f"    <display-name>{esc_name}</display-name>")
-    if ch.logo:
-      esc_logo = xml_escape(ch.logo, {'"': "&quot;"})
-      lines.append(f'    <icon src="{esc_logo}"/>')
-    lines.append("  </channel>")
-
-  for cid, progs in emitted_channels.items():
-    esc_cid = xml_escape(cid, {'"': "&quot;"})
-    for p in progs:
-      if p.start_timestamp <= 0 or p.stop_timestamp <= p.start_timestamp:
-        continue
-      start_s = _format_xmltv_ts(p.start_timestamp)
-      stop_s = _format_xmltv_ts(p.stop_timestamp)
-      lines.append(
-        f'  <programme start="{start_s}" stop="{stop_s}" channel="{esc_cid}">'
-      )
-      lines.append(f"    <title>{xml_escape(p.title)}</title>")
-      if p.sub_title:
-        lines.append(f"    <sub-title>{xml_escape(p.sub_title)}</sub-title>")
-      if p.description:
-        lines.append(f"    <desc>{xml_escape(p.description)}</desc>")
-      if p.category:
-        lines.append(f"    <category>{xml_escape(p.category)}</category>")
-      lines.append("  </programme>")
-
-  lines.append("</tv>")
-  return ("\n".join(lines) + "\n").encode("utf-8")

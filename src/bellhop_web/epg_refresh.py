@@ -28,6 +28,7 @@ from bellhop_web.epg_db import (
   EpgCoverageSummary,
   EpgDatabase,
 )
+from bellhop_web.file_utils import ensure_private_dir
 from bellhop_web.http_utils import (
   ClientSessionFactory,
   default_session_factory,
@@ -39,7 +40,6 @@ from bellhop_web.sd_epg import (
 )
 from bellhop_web.store import (
   LineupGuideStore,
-  LineupSnapshot,
   ProgramItem,
   open_xml_stream,
   parse_xmltv_ts,
@@ -68,22 +68,13 @@ class EpgRefreshStatus:
   refresh_hours: float | None = None
 
   @classmethod
-  def disabled_for_snapshot(
-    cls,
-    snap: LineupSnapshot,
-    *,
-    now_ts: int | None = None,
-  ) -> EpgRefreshStatus:
-    total_progs, active_progs, max_stop = snap.epg_coverage_stats(now_ts=now_ts)
+  def disabled(cls) -> EpgRefreshStatus:
+    """Return a disabled EPG status record when no refresher is configured."""
     return cls(
       enabled=False,
       configured=False,
       refreshing=False,
       state="disabled",
-      program_count=total_progs,
-      active_program_count=active_progs,
-      channels_with_epg=snap.channels_with_epg_count(),
-      max_stop_timestamp=max_stop,
     )
 
   def to_dict(self) -> EpgStatusDict:
@@ -113,18 +104,6 @@ def _format_safe_error(exc: Exception) -> str:
   raw = str(exc).strip()
   msg = f"{type(exc).__name__}: {raw}" if raw else type(exc).__name__
   return _PASSWORD_QS_RE.sub(r"\1***", msg)
-
-
-def build_xmltv_url(server_url: str, username: str, password: str) -> str:
-  """Construct the provider's passthrough `xmltv.php` URL from Xtream credentials."""
-  base = server_url.strip().rstrip("/")
-  if not base or not username.strip() or not password.strip():
-    return ""
-  if not base.startswith(("http://", "https://")):
-    base = f"http://{base}"
-  return (
-    f"{base}/xmltv.php?username={username.strip()}&password={password.strip()}"
-  )
 
 
 def parse_xmltv_for_channels(
@@ -312,6 +291,7 @@ class EpgRefreshService:
     self._last_error: str | None = None
     self._covered_channel_ids: frozenset[str] = frozenset()
     self._covered_bundle_sig: tuple[float, ...] = ()
+    self._cov_cache: tuple[int, EpgCoverageSummary] | None = None
 
   def _resolve_effective_xmltv_url(self) -> str:
     # Prefer the passthrough URL embedded in the generated playlist, falling back to config
@@ -340,39 +320,28 @@ class EpgRefreshService:
       return True
     return bool(self._resolve_effective_xmltv_url())
 
-  def _coverage_for_snapshot(
-    self, snap: LineupSnapshot, *, now_ts: int
-  ) -> EpgCoverageSummary:
+  def _cached_coverage(self, *, now_ts: int) -> EpgCoverageSummary:
+    bucket = now_ts // 30
+    if self._cov_cache is not None and self._cov_cache[0] == bucket:
+      return self._cov_cache[1]
     cov = self.db.coverage_stats(now_ts=now_ts)
-    if cov.total_programs == 0:
-      s_total, s_active, s_max = snap.epg_coverage_stats(now_ts=now_ts)
-      if s_total > 0:
-        return EpgCoverageSummary(
-          total_programs=s_total,
-          active_programs=s_active,
-          max_stop_timestamp=s_max,
-          channels_with_epg=snap.channels_with_epg_count(),
-        )
+    self._cov_cache = (bucket, cov)
     return cov
 
   def hydrate_from_cache(self, *, now_ts: int | None = None) -> int:
     """Validate and prune the persistent SQLite EPG database on startup."""
+    self._cov_cache = None
     cache_path = self.db.db_path
-    legacy_epg = cache_path.parent / "epg_cache.json"
-    legacy_sd = cache_path.parent / "sd_epg_cache.json"
-    if cache_path.is_file():
-      try:
-        with cache_path.open("rb") as fh:
-          header = fh.read(16)
-        if header != b"SQLite format 3\x00":
-          logger.warning(
-            "Ignoring non-SQLite EPG cache file at %s.", cache_path
-          )
-          return 0
-      except OSError as exc:
-        logger.warning("Ignoring unreadable EPG cache %s: %s", cache_path, exc)
+    if not cache_path.is_file():
+      return 0
+    try:
+      with cache_path.open("rb") as fh:
+        header = fh.read(16)
+      if header != b"SQLite format 3\x00":
+        logger.warning("Ignoring non-SQLite EPG cache file at %s.", cache_path)
         return 0
-    elif not legacy_epg.is_file() and not legacy_sd.is_file():
+    except OSError as exc:
+      logger.warning("Ignoring unreadable EPG cache %s: %s", cache_path, exc)
       return 0
 
     try:
@@ -383,6 +352,7 @@ class EpgRefreshService:
         stale_cutoff_ts=stale_cutoff
       )
       if remaining == 0:
+        self._cov_cache = None
         if not self.db.has_sd_cache():
           self.db.delete_database()
         if evicted_count > 0:
@@ -428,6 +398,7 @@ class EpgRefreshService:
         self._state = "ok"
 
       cov = self.db.coverage_stats(now_ts=ref_now)
+      self._cov_cache = (ref_now // 30, cov)
       logger.info(
         "Hydrated %d SQLite EPG listings across %d channels from %s%s.",
         remaining,
@@ -442,13 +413,7 @@ class EpgRefreshService:
 
   def status_dict(self, *, now_ts: int | None = None) -> EpgStatusDict:
     effective_now = int(self._clock()) if now_ts is None else now_ts
-    cov = EpgCoverageSummary()
-    try:
-      snap = self.store.get_snapshot()
-      cov = self._coverage_for_snapshot(snap, now_ts=effective_now)
-    except Exception:
-      cov = self.db.coverage_stats(now_ts=effective_now)
-
+    cov = self._cached_coverage(now_ts=effective_now)
     return EpgRefreshStatus(
       enabled=self.config.enabled,
       configured=self.is_configured,
@@ -477,7 +442,7 @@ class EpgRefreshService:
     except Exception:
       return False, "no_snapshot"
 
-    cov = self._coverage_for_snapshot(snap, now_ts=now)
+    cov = self._cached_coverage(now_ts=now)
     active_progs = cov.active_programs
     max_stop_ts = cov.max_stop_timestamp
     current_epg_ids = frozenset(
@@ -731,7 +696,7 @@ class EpgRefreshService:
                 now_timestamp=int(self._clock()),
               )
             elif effective_url:
-              self.db.db_path.parent.mkdir(parents=True, exist_ok=True)
+              ensure_private_dir(self.db.db_path.parent)
               fd, tmp_name = tempfile.mkstemp(
                 prefix="xmltv_fetch_",
                 suffix=".xml",
@@ -838,6 +803,7 @@ class EpgRefreshService:
             self.db.db_path,
           )
 
+        self._cov_cache = None
         self._covered_channel_ids = covered_ids
         self._covered_bundle_sig = bundle_sig
         self._last_updated = now_epoch

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from collections.abc import Awaitable, Callable, Iterator
 from typing import Any
 
@@ -36,7 +37,7 @@ from bellhop_web.http_utils import (
 )
 from bellhop_web.sd_epg import SchedulesDirectEpgConfig
 from bellhop_web.server import WebGuideApp
-from bellhop_web.store import LineupGuideStore, render_snapshot_xmltv
+from bellhop_web.store import LineupGuideStore
 
 logger = logging.getLogger("bellhop.serve")
 
@@ -136,11 +137,6 @@ class UnifiedServeServer:
     xtream_dir = config.resolve_path(config.output.xtream_dir)
     m3u8_cand = config.resolve_path(config.output.playlist_path)
     m3u8_path = m3u8_cand if m3u8_cand.is_file() else None
-    xmltv_override = (
-      config.resolve_path(config.epg.xmltv_file)
-      if config.epg.xmltv_file is not None
-      else None
-    )
     cache_dir = config.resolve_path(config.xtream.cache_dir)
     fallback_xmltv_url = build_passthrough_xmltv_url(
       config, redact_secret=False
@@ -151,7 +147,6 @@ class UnifiedServeServer:
     web_store = LineupGuideStore(
       xtream_dir,
       m3u8_path=m3u8_path,
-      xmltv_path=xmltv_override,
     )
     epg_refresher = build_epg_refresher_from_config(
       config,
@@ -161,16 +156,57 @@ class UnifiedServeServer:
         config.serve.web.enabled or (config.serve.xtream.enabled and has_sd_epg)
       ),
     )
+
+    web_username = config.serve.web.username.strip()
+    web_password = config.serve.web.password.strip()
+    if config.serve.web.enabled and (not web_username or not web_password):
+      raise ValueError(
+        "Web Guide login cannot be disabled: configure `web_server.username` "
+        "and `web_server.password` in credentials.yaml, config.yaml, or "
+        "BELLHOP_WEB_USERNAME / BELLHOP_WEB_PASSWORD."
+      )
+    if not config.serve.web.enabled and (not web_username or not web_password):
+      web_username = "_disabled"
+      web_password = secrets.token_hex(24)
+
     web_auth = WebAuthManager(
       WebAuthConfig(
-        username=config.serve.web.username,
-        password=config.serve.web.password,
+        username=web_username,
+        password=web_password,
         session_ttl_hours=config.serve.web.session_ttl_hours,
         session_secret=config.serve.web.session_secret,
         secret_file=cache_dir / "bellhop_web" / "session_secret.key",
         secure_cookie=(config.serve.xtream.server_protocol == "https"),
       )
     )
+
+    config_target = config.config_file or (config.project_root / "config.yaml")
+
+    def _read_public_config() -> dict[str, Any]:
+      live_cfg = (
+        load_config(config_target) if config_target.is_file() else config
+      )
+      return {
+        "available": True,
+        "config_file": config_target.name,
+        "config": export_public_config(live_cfg),
+      }
+
+    def _write_public_config(updates: dict[str, Any]) -> dict[str, Any]:
+      new_cfg, restart_required = apply_public_config_update(
+        config_target, updates
+      )
+      epg_refresher.config.refresh_hours = new_cfg.epg.refresh_hours
+      epg_refresher.config.request_timeout_sec = (
+        new_cfg.xtream.request_timeout_sec
+      )
+      return {
+        "saved": True,
+        "restart_required": restart_required,
+        "config_file": config_target.name,
+        "config": export_public_config(new_cfg),
+      }
+
     web_app = WebGuideApp(
       web_store,
       settle_sec=max(0, config.serve.web.settle_ms) / 1000.0,
@@ -179,6 +215,8 @@ class UnifiedServeServer:
       auth=web_auth,
       trust_proxy_headers=config.serve.web.trust_proxy_headers,
       trusted_proxy_ips=config.serve.web.trusted_proxy_ips,
+      config_reader=_read_public_config,
+      config_writer=_write_public_config,
     )
 
     def _provide_xmltv_chunks() -> Iterator[bytes] | None:
@@ -186,8 +224,6 @@ class UnifiedServeServer:
       snap = web_store.get_snapshot()
       if epg_refresher.db.coverage_stats().total_programs > 0:
         return epg_refresher.db.iter_xmltv_chunks(snap)
-      if snap.channels_with_epg_count() > 0:
-        return iter((render_snapshot_xmltv(snap),))
       return None
 
     async def _provide_short_epg(
@@ -215,46 +251,15 @@ class UnifiedServeServer:
       public_host=config.serve.xtream.public_host,
       public_port=config.serve.xtream.public_port,
       server_protocol=config.serve.xtream.server_protocol,
+      trust_proxy_headers=config.serve.web.trust_proxy_headers,
+      trusted_proxy_ips=config.serve.web.trusted_proxy_ips,
       epg_xmltv_chunks_provider=_provide_xmltv_chunks if has_sd_epg else None,
       epg_short_provider=(
-        _provide_short_epg if epg_refresher.is_configured else None
+        _provide_short_epg
+        if (epg_refresher.config.enabled and epg_refresher.is_configured)
+        else None
       ),
     )
-
-    config_target = config.config_file or (config.project_root / "config.yaml")
-
-    def _read_public_config() -> dict[str, Any]:
-      live_cfg = (
-        load_config(config_target) if config_target.is_file() else config
-      )
-      return {
-        "available": True,
-        "config_file": str(config_target),
-        "config": export_public_config(live_cfg),
-      }
-
-    def _write_public_config(updates: dict[str, Any]) -> dict[str, Any]:
-      new_cfg, restart_required = apply_public_config_update(
-        config_target, updates
-      )
-      # Apply live-updatable operational knobs immediately (host-level web_server is untouched).
-      if web_app.epg_refresher is not None:
-        web_app.epg_refresher.config.refresh_hours = new_cfg.epg.refresh_hours
-        web_app.epg_refresher.config.request_timeout_sec = (
-          new_cfg.xtream.request_timeout_sec
-        )
-      xtream_app.public_host = new_cfg.serve.xtream.public_host
-      xtream_app.public_port = new_cfg.serve.xtream.public_port
-      xtream_app.server_protocol = new_cfg.serve.xtream.server_protocol
-      return {
-        "saved": True,
-        "restart_required": restart_required,
-        "config_file": str(config_target),
-        "config": export_public_config(new_cfg),
-      }
-
-    web_app._config_reader = _read_public_config
-    web_app._config_writer = _write_public_config
 
     return cls(
       web_app,
@@ -406,10 +411,10 @@ class UnifiedServeServer:
   def _make_health_handler(
     self, *, serve_web: bool, serve_xtream: bool
   ) -> _Handler:
-    async def _handle_health(_request: web.Request) -> web.StreamResponse:
+    async def _handle_health(request: web.Request) -> web.StreamResponse:
       if self.web_enabled:
         snap = self.web_app.store.get_snapshot()
-        epg_st = self.web_app._epg_status_dict(snap)
+        epg_st = self.web_app.epg_status()
         total_progs = epg_st["program_count"]
         active_progs = epg_st["active_program_count"]
         lineup_id = snap.lineup_id
@@ -417,7 +422,8 @@ class UnifiedServeServer:
         market = snap.market
         channel_count = len(snap.channels)
         category_count = len(snap.categories)
-        active_tuner = self.web_app.tuner.active_info
+        is_authed = self.web_app._session_for(request) is not None
+        active_tuner = self.web_app.tuner.active_info if is_authed else None
       else:
         xt_snap = self.xtream_app.store.get_snapshot()
         if self.web_app.epg_refresher is not None:

@@ -517,17 +517,12 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
 
     if not server.web_enabled:
       web_label = "[yellow]Disabled[/yellow] (`web_server.enabled: false`)"
-    elif server.web_auth_enabled:
+    else:
       web_label = (
         f"[bold green]Enabled[/bold green] "
         f"(login user: [cyan]{cfg.serve.web.username}[/cyan], "
         f"session TTL={cfg.serve.web.session_ttl_hours:g}h; "
         f"settle={cfg.serve.web.settle_ms}ms)"
-      )
-    else:
-      web_label = (
-        f"[bold green]Enabled[/bold green] "
-        f"(open access; single-tuner relay settle={cfg.serve.web.settle_ms}ms)"
       )
 
     if not server.xtream_enabled:
@@ -547,9 +542,11 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
 
     epg_lines = ""
     if web_snap is not None:
-      total_progs, active_progs, _ = web_snap.epg_coverage_stats()
       epg_ref = server.web_app.epg_refresher
       if epg_ref is not None and epg_ref.is_configured:
+        epg_st = epg_ref.status_dict()
+        total_progs = epg_st["program_count"]
+        active_progs = epg_st["active_program_count"]
         will_refresh, reason = epg_ref.needs_refresh()
         src_mode = (
           "Schedules Direct + XMLTV"
@@ -561,14 +558,15 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
           if will_refresh
           else f"{src_mode} (TTL {cfg.epg.refresh_hours:g}h; cache fresh)"
         )
-        epg_cache_label = str(epg_ref.config.cache_file)
+        epg_cache_label = str(epg_ref.db.db_path)
       else:
+        total_progs, active_progs = 0, 0
         epg_label = "Not configured"
         epg_cache_label = "(none)"
       epg_lines = (
         f"[bold]EPG Guide Items:[/bold]    [cyan]{active_progs:,}[/cyan] active / "
         f"[cyan]{total_progs:,}[/cyan] cached ({epg_label})\n"
-        f"[bold]EPG Disk Cache:[/bold]     {epg_cache_label}\n"
+        f"[bold]EPG Database:[/bold]       {epg_cache_label}\n"
       )
 
     console.print(

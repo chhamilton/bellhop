@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
+import secrets
 from collections.abc import Mapping, MutableMapping
 from io import StringIO
 from pathlib import Path
@@ -27,8 +30,8 @@ from bellhop_web.api_contracts import (
   PublicTvGuideDict,
   PublicUpstreamXtreamDict,
   PublicValidationDict,
-  PublicXtreamServerDict,
 )
+from bellhop_web.file_utils import PRIVATE_FILE_MODE, ensure_private_dir
 
 __all__ = [
   "PublicConfigPayload",
@@ -41,7 +44,6 @@ __all__ = [
   "PublicTvGuideDict",
   "PublicUpstreamXtreamDict",
   "PublicValidationDict",
-  "PublicXtreamServerDict",
   "apply_public_config_update",
   "export_public_config",
 ]
@@ -52,10 +54,10 @@ def export_public_config(config: AppConfig) -> PublicConfigPayload:
 
   Strictly exposes ONLY:
   - `upstream_xtream` (non-credential upstream IPTV settings)
-  - `xtream_server` (passthrough Xtream Codes API server settings; non-credential)
   - `pipeline` (lineup, matching, validation, EPG, and output toggles)
 
-  Strictly excludes `web_server`, `paths`, `credentials_file`, and all secrets.
+  Strictly excludes `web_server`, `xtream_server`, `paths`, `credentials_file`,
+  and all secrets.
 
   Args:
     config: Loaded `AppConfig` instance.
@@ -69,14 +71,6 @@ def export_public_config(config: AppConfig) -> PublicConfigPayload:
       "stream_format": config.xtream.stream_format,
       "request_timeout_sec": config.xtream.request_timeout_sec,
       "refresh_hours": config.xtream.cache_ttl_hours,
-    },
-    "xtream_server": {
-      "enabled": config.serve.xtream.enabled,
-      "host": config.serve.xtream.host,
-      "port": config.serve.xtream.port,
-      "public_host": config.serve.xtream.public_host,
-      "public_port": config.serve.xtream.public_port,
-      "server_protocol": config.serve.xtream.server_protocol,
     },
     "pipeline": {
       "lineup": {
@@ -123,29 +117,6 @@ def export_public_config(config: AppConfig) -> PublicConfigPayload:
       },
     },
   }
-
-
-def _opt_str(val: Any) -> str | None:
-  if val is None:
-    return None
-  s = str(val).strip()
-  return s if s else None
-
-
-def _req_port(
-  val: Any, field_name: str, *, allow_none: bool = False
-) -> int | None:
-  if val is None or (isinstance(val, str) and not val.strip()):
-    if allow_none:
-      return None
-    raise ValueError(f"{field_name} is required.")
-  try:
-    port = int(val)
-  except (TypeError, ValueError) as exc:
-    raise ValueError(f"{field_name} must be an integer.") from exc
-  if port < 1 or port > 65535:
-    raise ValueError(f"{field_name} must be between 1 and 65535.")
-  return port
 
 
 def _pos_float(val: Any, field_name: str, *, allow_zero: bool = False) -> float:
@@ -258,8 +229,9 @@ def apply_public_config_update(
   """Validate and atomically merge operational settings into two-tier `config.yaml`.
 
   Preserves YAML comments, quotes, and `${ENV}` placeholders via `ruamel.yaml`.
-  Strictly scopes updates to `upstream_xtream`, `xtream_server`, and `pipeline`.
-  Never modifies `web_server`, `paths`, `credentials_file`, or any credentials.
+  Strictly scopes updates to `upstream_xtream` and `pipeline`.
+  Never modifies `web_server`, `xtream_server`, `paths`, `credentials_file`,
+  or any credentials.
 
   Args:
     config_path: Target `config.yaml` path to update.
@@ -326,61 +298,7 @@ def apply_public_config_update(
         current_resolved=before_cfg.xtream.cache_ttl_hours,
       )
 
-  # 2. xtream_server (passthrough Xtream API only; web_server never touched)
-  u_sx = updates.get("xtream_server")
-  if isinstance(u_sx, dict):
-    sx = _ensure_dict(raw, "xtream_server")
-    if "enabled" in u_sx:
-      _set_rt_value(
-        sx,
-        "enabled",
-        bool(u_sx["enabled"]),
-        current_resolved=before_cfg.serve.xtream.enabled,
-      )
-    if "host" in u_sx:
-      _set_rt_value(
-        sx,
-        "host",
-        _opt_str(u_sx["host"]),
-        current_resolved=before_cfg.serve.xtream.host,
-      )
-    if "port" in u_sx:
-      _set_rt_value(
-        sx,
-        "port",
-        _req_port(u_sx["port"], "xtream_server.port", allow_none=True),
-        current_resolved=before_cfg.serve.xtream.port,
-      )
-    if "public_host" in u_sx:
-      _set_rt_value(
-        sx,
-        "public_host",
-        _opt_str(u_sx["public_host"]),
-        current_resolved=before_cfg.serve.xtream.public_host,
-      )
-    if "public_port" in u_sx:
-      _set_rt_value(
-        sx,
-        "public_port",
-        _req_port(
-          u_sx["public_port"], "xtream_server.public_port", allow_none=True
-        ),
-        current_resolved=before_cfg.serve.xtream.public_port,
-      )
-    if "server_protocol" in u_sx:
-      proto = str(u_sx["server_protocol"] or "").strip().lower()
-      if proto not in {"http", "https"}:
-        raise ValueError(
-          "xtream_server.server_protocol must be 'http' or 'https'."
-        )
-      _set_rt_value(
-        sx,
-        "server_protocol",
-        proto,
-        current_resolved=before_cfg.serve.xtream.server_protocol,
-      )
-
-  # 3. pipeline (non-secret, non-path settings only)
+  # 2. pipeline (non-secret, non-path settings only; server properties excluded)
   u_pipe = updates.get("pipeline")
   if isinstance(u_pipe, dict):
     pipe = _ensure_dict(raw, "pipeline")
@@ -619,27 +537,28 @@ def apply_public_config_update(
       if "xtream_enabled" in u_out:
         _set_rt_value(out_d, "xtream_enabled", bool(u_out["xtream_enabled"]))
 
-  target.parent.mkdir(parents=True, exist_ok=True)
-  tmp_path = target.with_suffix(".yaml.tmp")
+  ensure_private_dir(target.parent)
+  tmp_path = target.with_name(f".{target.name}.{secrets.token_hex(6)}.tmp")
   buf = StringIO()
   rt_yaml.dump(raw, buf)
-  tmp_path.write_text(buf.getvalue(), encoding="utf-8")
+  fd = os.open(
+    str(tmp_path),
+    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+    PRIVATE_FILE_MODE,
+  )
   try:
+    with os.fdopen(fd, "wb") as fh:
+      fh.write(buf.getvalue().encode("utf-8"))
+    with contextlib.suppress(OSError):
+      os.chmod(tmp_path, PRIVATE_FILE_MODE)
     reloaded = load_config(tmp_path)
-  except Exception:
-    tmp_path.unlink(missing_ok=True)
+    if not reloaded.serve.web.enabled and not reloaded.serve.xtream.enabled:
+      raise ValueError("At least one server must remain enabled.")
+    os.replace(tmp_path, target)
+  except BaseException:
+    with contextlib.suppress(OSError):
+      tmp_path.unlink(missing_ok=True)
     raise
 
-  if not reloaded.serve.web.enabled and not reloaded.serve.xtream.enabled:
-    tmp_path.unlink(missing_ok=True)
-    raise ValueError("At least one server must remain enabled.")
-
-  tmp_path.replace(target)
   final_cfg = load_config(target)
-
-  restart_required = (
-    before_cfg.serve.xtream.enabled != final_cfg.serve.xtream.enabled
-    or before_cfg.serve.xtream_host != final_cfg.serve.xtream_host
-    or before_cfg.serve.xtream_port != final_cfg.serve.xtream_port
-  )
-  return final_cfg, restart_required
+  return final_cfg, False

@@ -51,6 +51,7 @@ from bellhop.providers import (
   parse_tvguide_provider_id,
 )
 from bellhop.providers.normalizer import populate_sibling_exclusions
+from bellhop_web.file_utils import write_private_text
 
 # Gracenote / Schedules Direct SD-JSON lineupId convention:
 # <ISO3_COUNTRY>-<HEADEND_CODE>-<DEVICE_TYPE>
@@ -153,7 +154,7 @@ class LineupRetrievalResult:
 
 def build_default_providers(config: AppConfig) -> list[LineupProvider]:
   """Construct the ordered registry of lineup providers from `AppConfig`."""
-  state_dir = config.resolve_path(config.state.state_dir)
+  cache_dir = config.resolve_path(config.xtream.cache_dir)
   yaml_path = config.resolve_path(config.lineup.file)
   sd_cfg = config.lineup.schedules_direct
   tvg_cfg = config.lineup.tvguide
@@ -164,7 +165,7 @@ def build_default_providers(config: AppConfig) -> list[LineupProvider]:
       username=sd_cfg.username,
       password=sd_cfg.password,
       base_url=sd_cfg.base_url,
-      token_cache_path=state_dir / "sd_token.json",
+      token_cache_path=cache_dir / "sd_token.json",
       auto_add_lineup=sd_cfg.auto_add_lineup,
     ),
     YamlLineupProvider(yaml_path),
@@ -427,7 +428,6 @@ async def retrieve_cable_lineup(
         )
         re_diff = compute_lineup_diff(previous_lineup, re_grouped)
         if not dry_run:
-          snap_path.parent.mkdir(parents=True, exist_ok=True)
           payload = {
             "saved_timestamp": saved_ts,
             "retrieved_at": re_grouped.retrieved_at,
@@ -436,11 +436,9 @@ async def retrieve_cable_lineup(
             "last_diff": re_diff.to_dict(),
             "lineup": re_grouped.to_dict(),
           }
-          tmp_path = snap_path.with_suffix(".tmp")
-          tmp_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+          write_private_text(
+            snap_path, json.dumps(payload, indent=2, ensure_ascii=False)
           )
-          tmp_path.replace(snap_path)
         if config.lineup.exclude_audio:
           re_grouped.channels = _filter_excluded_audio(re_grouped.channels)
         return LineupRetrievalResult(
@@ -468,7 +466,6 @@ async def retrieve_cable_lineup(
   diff = compute_lineup_diff(previous_lineup, fresh_lineup)
 
   if not dry_run:
-    snap_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
       "saved_timestamp": time.time(),
       "retrieved_at": fresh_lineup.retrieved_at,
@@ -477,11 +474,9 @@ async def retrieve_cable_lineup(
       "last_diff": diff.to_dict(),
       "lineup": fresh_lineup.to_dict(),
     }
-    tmp_path = snap_path.with_suffix(".tmp")
-    tmp_path.write_text(
-      json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    write_private_text(
+      snap_path, json.dumps(payload, indent=2, ensure_ascii=False)
     )
-    tmp_path.replace(snap_path)
 
   if config.lineup.exclude_audio:
     fresh_lineup.channels = _filter_excluded_audio(fresh_lineup.channels)

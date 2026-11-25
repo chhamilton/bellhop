@@ -12,6 +12,7 @@ import pytest
 
 from bellhop.config import load_config
 from bellhop.runner import PipelineRunner, PipelineRunOptions
+from bellhop_web.auth import WebAuthConfig, WebAuthManager
 from bellhop_web.epg_refresh import EpgRefreshConfig, EpgRefreshService
 from bellhop_web.http_utils import start_site
 from bellhop_web.server import WebGuideApp
@@ -219,13 +220,27 @@ pipeline:
       store,
       EpgRefreshConfig(enabled=True, refresh_hours=6.0, cache_file=epg_cache),
     )
-    app = WebGuideApp(store, settle_sec=0.05, epg_refresher=refresher)
+    auth = WebAuthManager(
+      WebAuthConfig(
+        username="e2e_admin",
+        password="e2e_web_pw",
+        secret_file=tmp_path / "session.key",
+      )
+    )
+    app = WebGuideApp(
+      store, auth=auth, settle_sec=0.05, epg_refresher=refresher
+    )
     await app.startup()
     web_runner, web_port = await start_site(app.build_app(), "127.0.0.1", 0)
     web_base = f"http://127.0.0.1:{web_port}"
 
     try:
       async with new_test_session(web_base, timeout=10.0) as client:
+        async with client.post(
+          "/api/auth/login",
+          json={"username": "e2e_admin", "password": "e2e_web_pw"},
+        ) as login_r:
+          assert login_r.status == 200
         # Wait for automatic passthrough EPG fetch & disk cache persistence
         health: dict[str, object] = {}
         for _ in range(60):
@@ -358,13 +373,25 @@ async def test_e2e_reload_channel_deep_link_race_placeholder_failover_and_hls(
     )
 
     store = LineupGuideStore(xt_dir)
-    app = WebGuideApp(store, settle_sec=0.05)
+    auth = WebAuthManager(
+      WebAuthConfig(
+        username="e2e_admin",
+        password="e2e_web_pw",
+        secret_file=tmp_path / "session2.key",
+      )
+    )
+    app = WebGuideApp(store, auth=auth, settle_sec=0.05)
     await app.startup()
     web_runner, web_port = await start_site(app.build_app(), "127.0.0.1", 0)
     web_base = f"http://127.0.0.1:{web_port}"
 
     try:
       async with new_test_session(web_base, timeout=10.0) as client:
+        async with client.post(
+          "/api/auth/login",
+          json={"username": "e2e_admin", "password": "e2e_web_pw"},
+        ) as login_r:
+          assert login_r.status == 200
         # 1. Reload race: tab-old is streaming Ch 1101 (failing over past /video/black.ts to #101),
         #    then reloaded tab-new opens /api/stream/1101.ts?client=tab-new,
         #    then tab-old's delayed pagehide beacon hits /api/tuner/release?client=tab-old!

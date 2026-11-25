@@ -111,6 +111,8 @@ paths:
 web_server:
   host: "127.0.0.1"
   port: 0
+  username: "web_u"
+  password: "web_p"
 upstream_xtream:
   server_url: "{upstream.base_url}"
   username: "{upstream.username}"
@@ -159,13 +161,22 @@ pipeline:
       async with TestHttpClient(
         base_url=serve_base, timeout=10.0, follow_redirects=False
       ) as client:
-        # Unified /health check
+        # Unified /health check (unauthenticated: no active_tuner leak)
         health = (await client.get("/health")).json()
         assert health["status"] == "ok"
         assert health["web_guide_enabled"] is True
         assert health["xtream_api_enabled"] is True
         assert health["category_count"] == 2
         assert health["channel_count"] == 2
+        assert health["active_tuner"] is None
+
+        # Unauthenticated Web Guide routes require login; sign in first
+        assert (await client.get("/api/lineup")).status_code == 401
+        login_ok = await client.post(
+          "/api/auth/login",
+          json={"username": "web_u", "password": "web_p"},
+        )
+        assert login_ok.status_code == 200
 
         # --- Web Guide routes on the same port ---
         idx = await client.get("/?cat=2&view=timeline&ch=1108")
@@ -564,7 +575,23 @@ async def test_bellhop_serve_default_bind_config_and_unconfigured_xtream_auth(
   assert cfg_default.serve.host == "0.0.0.0"
   assert cfg_default.serve.port == 8080
 
-  # Custom bind address/port with no serve credentials: Web Guide works, Xtream API stays locked
+  # Web Guide enabled WITHOUT credentials MUST fail fast with ValueError
+  cfg_no_web_creds_path = tmp_path / "no_web_creds.yaml"
+  cfg_no_web_creds_path.write_text(
+    f"""\
+paths:
+  xtream_output_dir: "{xt_dir}"
+web_server:
+  enabled: true
+  host: "127.0.0.1"
+  port: 0
+""",
+    encoding="utf-8",
+  )
+  with pytest.raises(ValueError, match="Web Guide login cannot be disabled"):
+    UnifiedServeServer.from_config(load_config(cfg_no_web_creds_path))
+
+  # Custom bind address/port with Web Guide credentials only: Web Guide works, Xtream API stays locked
   cfg_custom_path = tmp_path / "custom_cfg.yaml"
   cfg_custom_path.write_text(
     f"""\
@@ -573,6 +600,8 @@ paths:
 web_server:
   host: "127.0.0.1"
   port: 0
+  username: "web_u"
+  password: "web_p"
 """,
     encoding="utf-8",
   )
@@ -581,11 +610,20 @@ web_server:
   await srv.start()
   try:
     async with TestHttpClient(
-      base_url=f"http://127.0.0.1:{srv.bound_port}", timeout=5.0
+      base_url=f"http://127.0.0.1:{srv.bound_port}",
+      timeout=5.0,
+      follow_redirects=False,
     ) as client:
       health = (await client.get("/health")).json()
       assert health["web_guide_enabled"] is True
       assert health["xtream_api_enabled"] is False
+      assert (await client.get("/")).status_code == 302
+      assert (
+        await client.post(
+          "/api/auth/login",
+          json={"username": "web_u", "password": "web_p"},
+        )
+      ).status_code == 200
       assert (await client.get("/")).status_code == 200
       assert (await client.get("/api/lineup")).status_code == 200
       assert (await client.get("/player_api.php")).json() == {
@@ -653,6 +691,8 @@ web_server:
   enabled: true
   host: "127.0.0.1"
   port: {web_p}
+  username: "web_u"
+  password: "web_p"
 xtream_server:
   enabled: true
   port: {xt_p}
@@ -681,6 +721,12 @@ xtream_server:
       assert web_health["web_guide_enabled"] is True
       assert web_health["xtream_api_enabled"] is False
       assert web_health["shared_listener"] is False
+      assert (
+        await client.post(
+          f"{web_base}/api/auth/login",
+          json={"username": "web_u", "password": "web_p"},
+        )
+      ).status_code == 200
       assert (await client.get(f"{web_base}/")).status_code == 200
       assert (await client.get(f"{web_base}/api/lineup")).status_code == 200
       assert (await client.get(f"{web_base}/player_api.php")).status_code == 404
@@ -712,6 +758,18 @@ xtream_server:
         xml_redir.headers["location"]
         == "http://upstream.example/xmltv.php?username=u&password=p"
       )
+
+      # Repeated bad Xtream credentials trigger 429 LoginRateLimiter brute-force protection
+      for _ in range(10):
+        await client.get(
+          f"{xt_base}/xmltv.php",
+          params={"username": "split_user", "password": "wrong_password"},
+        )
+      throttled = await client.get(
+        f"{xt_base}/xmltv.php",
+        params={"username": "split_user", "password": "split_password"},
+      )
+      assert throttled.status_code == 429
   finally:
     await srv.stop()
 
@@ -1055,7 +1113,6 @@ pipeline:
       assert payload["available"] is True
       assert set(payload["config"].keys()) == {
         "upstream_xtream",
-        "xtream_server",
         "pipeline",
       }
 
@@ -1065,6 +1122,10 @@ pipeline:
         "password",
         "session_secret",
         "web_server",
+        "xtream_server",
+        "public_host",
+        "public_port",
+        "server_protocol",
         "paths",
         "serve",
         "web",
@@ -1087,7 +1148,7 @@ pipeline:
       assert forbidden_keys.isdisjoint(all_keys)
 
       # 3. PUT /api/config updates operational fields and ignores any injected
-      #    web_server, paths, directory, or credential mutations
+      #    web_server, xtream_server, paths, directory, or credential mutations
       put_resp = await client.put(
         "/api/config",
         json={
@@ -1145,9 +1206,8 @@ pipeline:
       put_data = put_resp.json()
       assert put_data["saved"] is True
       assert put_data["restart_required"] is False
+      assert "xtream_server" not in put_data["config"]
       assert put_data["config"]["upstream_xtream"]["stream_format"] == "m3u8"
-      assert put_data["config"]["xtream_server"]["public_host"] == "tv.local"
-      assert put_data["config"]["xtream_server"]["server_protocol"] == "https"
       assert (
         put_data["config"]["pipeline"]["lineup"]["collapse_sd_dupes"] is False
       )
@@ -1174,14 +1234,14 @@ pipeline:
         is True
       )
 
-      # Live runtime operational knobs applied immediately; web_server tuner untouched
+      # Live runtime operational knobs applied immediately; server bind/xtream_server untouched
       assert srv.web_app.tuner.settle_sec == pytest.approx(0.18)
       assert srv.web_app.epg_refresher is not None
       assert srv.web_app.epg_refresher.config.refresh_hours == pytest.approx(
         12.0
       )
-      assert srv.xtream_app.public_host == "tv.local"
-      assert srv.xtream_app.server_protocol == "https"
+      assert srv.xtream_app.public_host is None
+      assert srv.xtream_app.server_protocol == "http"
 
       # Reload from disk: ALL credentials, web_server settings, paths, AND comments were preserved!
       saved_yaml = cfg_path.read_text(encoding="utf-8")
@@ -1213,22 +1273,24 @@ pipeline:
       ]
       assert reloaded.serve.xtream.username == "xt_user"
       assert reloaded.serve.xtream.password == "xt_secret_pass"
+      assert reloaded.serve.xtream.public_host is None
+      assert reloaded.serve.xtream.server_protocol == "http"
 
-      # 4. Changing Xtream passthrough server port sets restart_required=True
-      port_resp = await client.put(
+      # 4. Non-JSON Content-Type on PUT /api/config is rejected with 415
+      wrong_ct = await client.put(
         "/api/config",
-        json={"xtream_server": {"port": 8081}},
+        data=b'{"upstream_xtream": {"stream_format": "ts"}}',
+        headers={"Content-Type": "text/plain"},
       )
-      assert port_resp.status_code == 200
-      assert port_resp.json()["restart_required"] is True
+      assert wrong_ct.status_code == 415
 
-      # 5. Invalid config values return 400 and leave config.yaml valid
+      # 5. Invalid operational config values return 400 and leave config.yaml valid
       bad_resp = await client.put(
         "/api/config",
-        json={"xtream_server": {"port": 99999}},
+        json={"upstream_xtream": {"stream_format": "flv"}},
       )
       assert bad_resp.status_code == 400
-      assert "65535" in bad_resp.json()["error"]
-      assert load_config(cfg_path).serve.xtream.port == 8081
+      assert "stream_format" in bad_resp.json()["error"]
+      assert load_config(cfg_path).xtream.stream_format == "m3u8"
   finally:
     await srv.stop()

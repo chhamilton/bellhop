@@ -15,12 +15,11 @@ Xtream Codes HTTP Contract & Wire Layouts
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hmac
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -31,15 +30,20 @@ from aiohttp import web
 
 from bellhop.config import AppConfig
 from bellhop.epg_loader import build_passthrough_xmltv_url
+from bellhop_web.auth import LoginRateLimiter
 from bellhop_web.export_bundle import ExportBundleReader, as_str_dict
 from bellhop_web.http_utils import (
+  DEFAULT_TRUSTED_PROXY_IPS,
+  IpNetwork,
   build_access_urls,
   bytes_response,
   create_web_app,
   detect_device_ip,
   json_response,
+  parse_trusted_proxy_networks,
   redirect_response,
   resolve_bind_host,
+  resolve_request_client_ip,
   start_site,
 )
 
@@ -316,7 +320,9 @@ class XtreamPassthroughServer:
     public_host: str | None = None,
     public_port: int | None = None,
     server_protocol: str = "http",
-    epg_xmltv_provider: Callable[[], bytes | None] | None = None,
+    login_limiter: LoginRateLimiter | None = None,
+    trust_proxy_headers: bool = False,
+    trusted_proxy_ips: Sequence[str] = DEFAULT_TRUSTED_PROXY_IPS,
     epg_xmltv_chunks_provider: Callable[[], Iterator[bytes] | None]
     | None = None,
     epg_short_provider: Callable[
@@ -332,7 +338,11 @@ class XtreamPassthroughServer:
     self.public_host = public_host
     self.public_port = public_port
     self.server_protocol = server_protocol
-    self.epg_xmltv_provider = epg_xmltv_provider
+    self.login_limiter: LoginRateLimiter = login_limiter or LoginRateLimiter()
+    self.trust_proxy_headers = bool(trust_proxy_headers)
+    self._trusted_proxy_networks: tuple[IpNetwork, ...] = (
+      parse_trusted_proxy_networks(trusted_proxy_ips)
+    )
     self.epg_xmltv_chunks_provider = epg_xmltv_chunks_provider
     self.epg_short_provider = epg_short_provider
     self._runner: web.AppRunner | None = None
@@ -438,9 +448,49 @@ class XtreamPassthroughServer:
   def _is_authorized(self, user: str, passwd: str) -> bool:
     if not self.username or not self.password:
       return False
-    return hmac.compare_digest(user, self.username) and hmac.compare_digest(
-      passwd, self.password
+    return hmac.compare_digest(
+      user.encode("utf-8"), self.username.encode("utf-8")
+    ) and hmac.compare_digest(
+      passwd.encode("utf-8"), self.password.encode("utf-8")
     )
+
+  def _verify_request_auth(
+    self,
+    request: web.Request,
+    user: str,
+    passwd: str,
+    *,
+    json_fail: bool = False,
+  ) -> web.Response | None:
+    """Return `None` when authorized, or a `401`/`200 auth:0`/`429` response."""
+    client_ip = resolve_request_client_ip(
+      request,
+      trust_proxy_headers=self.trust_proxy_headers,
+      trusted_networks=self._trusted_proxy_networks,
+    )
+    retry_after = self.login_limiter.check(client_ip)
+    if retry_after > 0:
+      hdrs = {"Retry-After": str(retry_after)}
+      if json_fail:
+        return json_response(
+          {"user_info": {"auth": 0}, "error": "Too many failed attempts"},
+          status=HTTPStatus.TOO_MANY_REQUESTS,
+          headers=hdrs,
+        )
+      return bytes_response(
+        b"Too Many Requests",
+        "text/plain",
+        status=HTTPStatus.TOO_MANY_REQUESTS,
+        headers=hdrs,
+      )
+    if not self._is_authorized(user, passwd):
+      if self.username and self.password:
+        self.login_limiter.record_failure(client_ip)
+      if json_fail:
+        return json_response({"user_info": {"auth": 0}})
+      return self._unauthorized()
+    self.login_limiter.record_success(client_ip)
+    return None
 
   def _resolve_advertised_host_port(
     self, headers: Mapping[str, str]
@@ -536,10 +586,14 @@ class XtreamPassthroughServer:
     self, request: web.Request
   ) -> web.StreamResponse:
     params = await self._params(request)
-    if not self._is_authorized(
-      params.get("username", ""), params.get("password", "")
-    ):
-      return json_response({"user_info": {"auth": 0}})
+    denied = self._verify_request_auth(
+      request,
+      params.get("username", ""),
+      params.get("password", ""),
+      json_fail=True,
+    )
+    if denied is not None:
+      return denied
 
     snap = self.store.get_snapshot()
     action = params.get("action", "").strip().lower()
@@ -597,10 +651,14 @@ class XtreamPassthroughServer:
 
   async def _handle_panel_api(self, request: web.Request) -> web.StreamResponse:
     params = await self._params(request)
-    if not self._is_authorized(
-      params.get("username", ""), params.get("password", "")
-    ):
-      return json_response({"user_info": {"auth": 0}})
+    denied = self._verify_request_auth(
+      request,
+      params.get("username", ""),
+      params.get("password", ""),
+      json_fail=True,
+    )
+    if denied is not None:
+      return denied
 
     snap = self.store.get_snapshot()
     user_info, server_info = self._build_user_and_server_info(
@@ -621,13 +679,14 @@ class XtreamPassthroughServer:
     self, request: web.Request
   ) -> web.StreamResponse:
     params = await self._params(request)
-    if not self._is_authorized(
-      params.get("username", ""), params.get("password", "")
-    ):
-      return self._unauthorized()
+    denied = self._verify_request_auth(
+      request, params.get("username", ""), params.get("password", "")
+    )
+    if denied is not None:
+      return denied
 
     if self.epg_xmltv_chunks_provider is not None:
-      chunk_iter = self.epg_xmltv_chunks_provider()
+      chunk_iter = await asyncio.to_thread(self.epg_xmltv_chunks_provider)
       if chunk_iter is not None:
         close_iter = getattr(chunk_iter, "close", None)
         try:
@@ -641,20 +700,17 @@ class XtreamPassthroughServer:
             headers={"Content-Type": "application/xml; charset=utf-8"},
           )
           await resp.prepare(request)
-          for chunk in chunk_iter:
+          while True:
+            chunk = await asyncio.to_thread(next, chunk_iter, None)
+            if chunk is None:
+              break
             if chunk:
               await resp.write(chunk)
           await resp.write_eof()
           return resp
         finally:
           if callable(close_iter):
-            with contextlib.suppress(Exception):
-              close_iter()
-
-    if self.epg_xmltv_provider is not None:
-      merged_xml = self.epg_xmltv_provider()
-      if merged_xml:
-        return bytes_response(merged_xml, "application/xml; charset=utf-8")
+            await asyncio.to_thread(close_iter)
 
     snap = self.store.get_snapshot()
     if not snap.xmltv_url:
@@ -666,10 +722,11 @@ class XtreamPassthroughServer:
     return redirect_response(snap.xmltv_url)
 
   async def _handle_nonlive(self, request: web.Request) -> web.StreamResponse:
-    if not self._is_authorized(
-      request.match_info["user"], request.match_info["passwd"]
-    ):
-      return self._unauthorized()
+    denied = self._verify_request_auth(
+      request, request.match_info["user"], request.match_info["passwd"]
+    )
+    if denied is not None:
+      return denied
     return bytes_response(
       b"Not found", "text/plain", status=HTTPStatus.NOT_FOUND
     )
@@ -678,8 +735,9 @@ class XtreamPassthroughServer:
     self, request: web.Request
   ) -> web.StreamResponse:
     info = request.match_info
-    if not self._is_authorized(info["user"], info["passwd"]):
-      return self._unauthorized()
+    denied = self._verify_request_auth(request, info["user"], info["passwd"])
+    if denied is not None:
+      return denied
 
     stream_key = int(info["sid"])
     snap = self.store.get_snapshot()
@@ -709,8 +767,9 @@ class XtreamPassthroughServer:
     params = await self._params(request)
     user = params.get("username", "")
     passwd = params.get("password", "")
-    if not self._is_authorized(user, passwd):
-      return self._unauthorized()
+    denied = self._verify_request_auth(request, user, passwd)
+    if denied is not None:
+      return denied
 
     snap = self.store.get_snapshot()
     raw_type = params.get("type", default_type).strip().lower()

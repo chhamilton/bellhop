@@ -19,6 +19,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import re
 import socket
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from http import HTTPStatus
@@ -364,12 +365,34 @@ def redirect_response(
 # -----------------------------------------------------------------------------
 # Application factory & site startup
 # -----------------------------------------------------------------------------
+_STREAM_CRED_PATH_RE = re.compile(
+  r"^/(?:(?:live|movie|series|timeshift)/)?([^/]+)/([^/]+)/(\d+(?:\.[A-Za-z0-9]+)?)$"
+)
+
+
+def _redact_request_path(path: str) -> str:
+  """Mask embedded Xtream stream credentials inside `/live/<user>/<pass>/<id>` paths."""
+  return _STREAM_CRED_PATH_RE.sub(r"/live/\1/***/\3", path)
+
+
+def _is_web_guide_path(path: str) -> bool:
+  """Return `True` for Web Guide UI/API routes (which never allow wildcard CORS)."""
+  return path in (
+    "/",
+    "/index.html",
+    "/login",
+    "/favicon.ico",
+    "/favicon.svg",
+    "/health",
+  ) or path.startswith(("/api/", "/static/"))
+
+
 @web.middleware
 async def _preflight_and_error_middleware(
   request: web.Request, handler: _Handler
 ) -> web.StreamResponse:
-  """Answer CORS preflights and convert errors into JSON responses."""
-  if request.method == "OPTIONS":
+  """Answer Xtream CORS preflights and convert errors into JSON responses."""
+  if request.method == "OPTIONS" and not _is_web_guide_path(request.path):
     return web.Response(status=HTTPStatus.NO_CONTENT)
   max_bytes = request.app.get(_MAX_BODY_KEY, DEFAULT_CLIENT_MAX_SIZE)
   if request.content_length is not None and request.content_length > max_bytes:
@@ -383,8 +406,9 @@ async def _preflight_and_error_middleware(
   except web.HTTPException as exc:
     if exc.status < 400:
       raise
+    safe_path = _redact_request_path(request.path)
     message = (
-      f"Not found: {request.path}"
+      f"Not found: {safe_path}"
       if exc.status == HTTPStatus.NOT_FOUND
       else exc.reason
     )
@@ -392,20 +416,25 @@ async def _preflight_and_error_middleware(
   except asyncio.CancelledError:
     raise
   except Exception as exc:
-    logger.exception("Unhandled HTTP server error on %s: %s", request.path, exc)
+    logger.exception(
+      "Unhandled HTTP server error on %s: %s",
+      _redact_request_path(request.path),
+      exc,
+    )
     return json_response(
       {"error": "Internal server error"},
       status=HTTPStatus.INTERNAL_SERVER_ERROR,
     )
 
 
-async def _add_cors_headers(
-  _request: web.Request, response: web.StreamResponse
+async def _add_security_headers(
+  request: web.Request, response: web.StreamResponse
 ) -> None:
-  response.headers.setdefault("Access-Control-Allow-Origin", "*")
-  response.headers.setdefault(
-    "Access-Control-Allow-Methods", "GET, POST, PUT, HEAD, OPTIONS"
-  )
+  if not _is_web_guide_path(request.path):
+    response.headers.setdefault("Access-Control-Allow-Origin", "*")
+    response.headers.setdefault(
+      "Access-Control-Allow-Methods", "GET, POST, HEAD, OPTIONS"
+    )
   response.headers.setdefault("Content-Security-Policy", WEB_CSP_POLICY)
   response.headers.setdefault("X-Content-Type-Options", "nosniff")
 
@@ -419,7 +448,7 @@ def create_web_app(
     middlewares=[_preflight_and_error_middleware],
   )
   app[_MAX_BODY_KEY] = client_max_size
-  app.on_response_prepare.append(_add_cors_headers)
+  app.on_response_prepare.append(_add_security_headers)
   return app
 
 

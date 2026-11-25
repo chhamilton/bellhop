@@ -31,7 +31,7 @@ web_server:
   host: "0.0.0.0"
   port: 8080
   settle_ms: 180
-  # Web Guide login credentials (leave blank to disable login)
+  # Web Guide login credentials (REQUIRED when web_server.enabled is true)
   username: "${BELLHOP_WEB_USERNAME}"
   password: "${BELLHOP_WEB_PASSWORD}"
   session_ttl_hours: 168.0
@@ -41,17 +41,6 @@ web_server:
   trusted_proxy_ips:
     - "127.0.0.1"
     - "::1"
-
-# =============================================================================
-# 2. OPERATIONAL SETTINGS (Editable via Web UI Settings panel; no credentials)
-# =============================================================================
-upstream_xtream:
-  server_url: "${XTREAM_SERVER_URL}"
-  username: "${XTREAM_USERNAME}"
-  password: "${XTREAM_PASSWORD}"
-  stream_format: "ts"
-  request_timeout_sec: 90.0
-  refresh_hours: 24.0
 
 xtream_server:
   enabled: true
@@ -63,6 +52,17 @@ xtream_server:
   public_host: null
   public_port: null
   server_protocol: "http"
+
+# =============================================================================
+# 2. OPERATIONAL SETTINGS (Editable via Web UI Settings panel; no credentials)
+# =============================================================================
+upstream_xtream:
+  server_url: "${XTREAM_SERVER_URL}"
+  username: "${XTREAM_USERNAME}"
+  password: "${XTREAM_PASSWORD}"
+  stream_format: "ts"
+  request_timeout_sec: 90.0
+  refresh_hours: 24.0
 
 pipeline:
   lineup:

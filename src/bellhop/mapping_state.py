@@ -77,6 +77,7 @@ from bellhop.validator import (
   strip_slot_language_mismatch,
 )
 from bellhop.xtream import XtreamCatalog
+from bellhop_web.file_utils import write_private_text
 
 VERIFIED_AUDIO_LANG_BONUS = 6.0
 AUDIO_LANG_MISMATCH_PENALTY = 25.0
@@ -378,16 +379,13 @@ def save_mapping_document(
   *,
   redact_secret: str = "",
 ) -> Path:
-  """Persist the channel mapping document atomically to disk."""
-  path.parent.mkdir(parents=True, exist_ok=True)
-  tmp = path.with_suffix(".tmp")
-  tmp.write_text(
+  """Persist the channel mapping document atomically to disk (`0o600`)."""
+  write_private_text(
+    path,
     json.dumps(
       doc.to_dict(redact_secret=redact_secret), indent=2, ensure_ascii=False
     ),
-    encoding="utf-8",
   )
-  tmp.replace(path)
   return path
 
 

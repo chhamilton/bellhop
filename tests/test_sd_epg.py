@@ -467,9 +467,10 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
     assert epg_db_file.is_file()
 
     snap = store.get_snapshot()
-    # In-memory snapshot holds ZERO ProgramItem objects — all airings live in SQLite!
-    assert snap.programs_by_epg_id == {}
-    assert snap.programs_by_chno == {}
+    # In-memory snapshot holds ZERO ProgramItem attributes — all airings live in SQLite!
+    assert len(snap.channels) == 5
+    assert not hasattr(snap, "programs_by_epg_id")
+    assert not hasattr(snap, "programs_by_chno")
 
     # 1. `50 AMI-télé` (missing from XMLTV) is populated from Schedules Direct with S02E04 subtitle!
     ami_progs = refresher.db.query_channel_schedule(50, "bell.50.ca")
@@ -529,7 +530,13 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
       epg=EpgConfig(verify=False, refresh_hours=6.0),
       output=OutputConfig(xtream_dir=Path("output/xtream")),
       serve=ServeConfig(
-        web=ServeWebConfig(enabled=True, host="127.0.0.1", port=0),
+        web=ServeWebConfig(
+          enabled=True,
+          host="127.0.0.1",
+          port=0,
+          username="web_admin",
+          password="web_pw",
+        ),
         xtream=ServeXtreamConfig(
           enabled=True,
           host="127.0.0.1",
@@ -551,6 +558,11 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
     try:
       base_url = f"http://127.0.0.1:{unified.bound_port}"
       async with new_test_session() as client:
+        async with client.post(
+          f"{base_url}/api/auth/login",
+          json={"username": "web_admin", "password": "web_pw"},
+        ) as r_login:
+          assert r_login.status == 200
         async with client.get(f"{base_url}/api/epg/220") as r220:
           assert r220.status == 200
           j220 = await r220.json()
@@ -612,98 +624,136 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
       await unified.stop()
 
 
-def test_legacy_json_epg_caches_auto_migrate_to_sqlite(tmp_path: Path) -> None:
-  """Verify legacy `sd_epg_cache.json` and `epg_cache.json` import into `epg.sqlite3` once."""
+@pytest.mark.asyncio
+async def test_epg_db_permissions_corrupt_recovery_schema_bump_and_cli_banner(
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Verify `0o600` DB mode, corrupt/schema-bump recovery, and `bellhop serve` SQLite banner."""
+  import argparse
+  import contextlib
+  import io
+  import sqlite3
+  import stat
+
+  from rich.console import Console
+
+  from bellhop import cli
+  from bellhop_web.store import ProgramItem
+
   cache_dir = tmp_path / "cache" / "bellhop_web"
+  db_path = cache_dir / "epg.sqlite3"
+  now_ts = int(datetime.now(tz=timezone.utc).timestamp())
+
+  # 1. Corrupt non-SQLite file on disk is safely replaced and restricted to 0o600
   cache_dir.mkdir(parents=True)
-  legacy_sd = cache_dir / "sd_epg_cache.json"
-  legacy_epg = cache_dir / "epg_cache.json"
-  now_ts = 1_795_530_000
-
-  legacy_sd.write_text(
-    json.dumps(
-      {
-        "version": 1,
-        "lineups": {
-          "CAN-0004980-X": {
-            "name": "Bell Fibe TV",
-            "location": "Montréal",
-            "modified": "2026-11-23T00:00:00Z",
-            "fetched_at": float(now_ts),
-            "stations": {
-              "19548": {
-                "name": "HBO Canada",
-                "callsign": "HBOCAN",
-                "language": "en",
-              }
-            },
-            "chno_to_station": {"1306": "19548"},
-          }
-        },
-        "schedules": {
-          "19548": {
-            "2026-11-24": {
-              "md5": "md5-19548",
-              "airings": [
-                {
-                  "program_id": "MV012345670000",
-                  "program_md5": "md5-mv",
-                  "start_ts": now_ts - 600,
-                  "stop_ts": now_ts + 3000,
-                  "is_live": False,
-                }
-              ],
-            }
-          }
-        },
-        "programs": {
-          "MV012345670000": {
-            "md5": "md5-mv",
-            "title": "Dune: Part Two",
-            "sub_title": "2024",
-            "description": "Migrated from SD JSON.",
-            "category": "Movie",
-          }
-        },
-      }
-    ),
-    encoding="utf-8",
-  )
-
-  legacy_epg.write_text(
-    json.dumps(
-      {
-        "version": 3,
-        "fetched_at": float(now_ts),
-        "covered_channel_ids": ["hbo.us"],
-        "channels": {},
-        "channels_by_chno": {
-          "1306": [
-            {
-              "id": "sd-MV012345670000",
-              "title": "Dune: Part Two",
-              "sub_title": "2024",
-              "description": "Migrated from EPG JSON.",
-              "category": "Movie",
-              "start_timestamp": now_ts - 600,
-              "stop_timestamp": now_ts + 3000,
-            }
-          ]
-        },
-      }
-    ),
-    encoding="utf-8",
-  )
-
-  db = EpgDatabase(cache_dir / "epg.sqlite3")
+  db_path.write_bytes(b"not-a-valid-sqlite-header-at-all")
+  db = EpgDatabase(db_path)
   db.ensure_initialized()
+  assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+  assert stat.S_IMODE(cache_dir.stat().st_mode) == 0o700
 
-  assert not legacy_sd.exists()
-  assert not legacy_epg.exists()
-  assert db.has_sd_cache() is True
-  assert db.get_sd_program_md5s(["MV012345670000"]) == {
-    "MV012345670000": "md5-mv"
-  }
-  sched = db.query_channel_schedule(1306, "HBO.us")
-  assert len(sched) == 1
-  assert sched[0].title == "Dune: Part Two"
+  # 2. Schema version mismatch dynamically drops arbitrary tables via sqlite_master
+  with contextlib.closing(sqlite3.connect(db_path)) as raw_conn:
+    raw_conn.execute("CREATE TABLE obsolete_future_table (x TEXT)")
+    raw_conn.execute("PRAGMA user_version = 99")
+    raw_conn.commit()
+
+  db_reopened = EpgDatabase(db_path)
+  db_reopened.ensure_initialized()
+  with contextlib.closing(sqlite3.connect(db_path)) as raw_conn:
+    tables = {
+      str(r[0])
+      for r in raw_conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+      ).fetchall()
+    }
+    ver = int(raw_conn.execute("PRAGMA user_version").fetchone()[0])
+  assert "obsolete_future_table" not in tables
+  assert "guide_airings" in tables
+  assert ver == 1
+
+  # 3. `bellhop serve` CLI startup banner reads active/cached counts from SQLite
+  xt_dir = tmp_path / "output" / "xtream"
+  xt_dir.mkdir(parents=True)
+  (xt_dir / "bellhop_xtream_playlist.json").write_text(
+    json.dumps(
+      {
+        "lineup_info": {
+          "lineup_id": "CAN-0004980-X",
+          "provider": "Bell Fibe TV",
+          "market": "Montréal",
+        },
+        "server_info": {
+          "timezone": "America/Montreal",
+          "xmltv_url": "http://panel.example/xmltv.php?username=u&password=p",
+        },
+        "live_categories": [
+          {"category_id": "1", "category_name": "Movies", "parent_id": 0}
+        ],
+        "live_streams": [
+          {
+            "num": 1306,
+            "name": "HBO",
+            "stream_type": "live",
+            "stream_id": 2306,
+            "epg_channel_id": "HBO.us",
+            "category_id": "1",
+            "category_name": "Movies",
+            "direct_source": "http://panel.example/live/u/p/2306.ts",
+          }
+        ],
+      }
+    ),
+    encoding="utf-8",
+  )
+  db_reopened.replace_guide_schedules(
+    snap=LineupGuideStore(xt_dir).get_snapshot(),
+    programs_by_id={
+      "HBO.us": [
+        ProgramItem(
+          id="1",
+          channel_id="HBO.us",
+          title="Dune: Part Two",
+          start_timestamp=now_ts - 600,
+          stop_timestamp=now_ts + 3000,
+        )
+      ]
+    },
+    fetched_at=float(now_ts),
+    covered_channel_ids=frozenset({"hbo.us"}),
+  )
+  cfg_file = tmp_path / "config.yaml"
+  cfg_file.write_text(
+    f"""\
+paths:
+  cache_dir: "{tmp_path / "cache"}"
+  xtream_output_dir: "{xt_dir}"
+web_server:
+  enabled: true
+  host: "127.0.0.1"
+  port: 0
+  username: "banner_admin"
+  password: "banner_secret"
+xtream_server:
+  enabled: false
+""",
+    encoding="utf-8",
+  )
+
+  buf = io.StringIO()
+  monkeypatch.setattr(
+    cli, "console", Console(file=buf, force_terminal=False, width=120)
+  )
+
+  async def _stop_immediately(self: UnifiedServeServer) -> None:
+    await self.stop()
+
+  monkeypatch.setattr(UnifiedServeServer, "serve_forever", _stop_immediately)
+  rc = await cli._execute_cli_serve(
+    argparse.Namespace(config=cfg_file, quiet=False, verbose=False)
+  )
+  assert rc == 0
+  banner_text = buf.getvalue()
+  assert "1 active / 1 cached" in banner_text
+  assert "epg.sqlite3" in banner_text

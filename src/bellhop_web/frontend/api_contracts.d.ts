@@ -117,15 +117,6 @@ interface ChannelEpgResponse {
   programs: ProgramItem[];
 }
 
-interface XtreamServerPublicConfig {
-  enabled: boolean;
-  host: string | null;
-  port: number | null;
-  public_host: string | null;
-  public_port: number | null;
-  server_protocol: string;
-}
-
 interface UpstreamXtreamPublicConfig {
   server_url: string;
   stream_format: string;
@@ -194,7 +185,6 @@ interface PipelinePublicConfig {
 
 interface PublicConfig {
   upstream_xtream: UpstreamXtreamPublicConfig;
-  xtream_server: XtreamServerPublicConfig;
   pipeline: PipelinePublicConfig;
 }
 

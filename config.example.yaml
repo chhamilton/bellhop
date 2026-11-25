@@ -3,10 +3,11 @@
 # Secrets should live in `credentials.yaml` (referenced below) or `.env`.
 #
 # Structure:
-#   Section 1 (Host & Infrastructure): filesystem paths and Web Guide server bind/auth.
+#   Section 1 (Host & Server Infrastructure): filesystem paths, Web Guide server,
+#             and passthrough Xtream Codes API server bind/auth settings.
 #             Configured in this file ONLY (never exposed or modified via the Web UI).
-#   Section 2 (Operational Settings):  upstream IPTV server, passthrough Xtream server,
-#             and pipeline behavior. Inspectable & editable via the Web UI Settings panel
+#   Section 2 (Operational Settings): upstream IPTV source and pipeline behavior.
+#             Inspectable & editable by the authenticated user via Web UI Settings
 #             (usernames & passwords remain strictly excluded from the Web UI).
 
 # =============================================================================
@@ -38,7 +39,7 @@ web_server:
   port: 8080
   # Single-tuner settle delay (ms) between closing one live browser stream and opening another
   settle_ms: 180
-  # Web Guide UI login credentials (distinct from `xtream_server` API credentials; leave blank to disable login)
+  # Web Guide UI login credentials (REQUIRED when web_server.enabled is true; login cannot be disabled)
   # Can also live under `web_server:` in credentials.yaml or via BELLHOP_WEB_USERNAME / BELLHOP_WEB_PASSWORD
   username: "${BELLHOP_WEB_USERNAME}"
   password: "${BELLHOP_WEB_PASSWORD}"
@@ -55,22 +56,8 @@ web_server:
     - "127.0.0.1"
     - "::1"
 
-# =============================================================================
-# 2. OPERATIONAL SETTINGS (Editable via Web UI Settings panel; no credentials)
-# =============================================================================
-upstream_xtream:
-  # Upstream Xtream Codes IPTV provider settings (credentials live in credentials.yaml or .env)
-  server_url: "${XTREAM_SERVER_URL}"
-  username: "${XTREAM_USERNAME}"
-  password: "${XTREAM_PASSWORD}"
-  # Stream output format: "ts" (MPEG-TS, lowest latency) or "m3u8" (HLS)
-  stream_format: "ts"
-  request_timeout_sec: 90.0
-  # Phase (2) `catalog`: Daily IPTV playlist fetch cadence (hours)
-  refresh_hours: 24.0
-
 xtream_server:
-  # Passthrough Xtream Codes API server (`bellhop serve`)
+  # Passthrough Xtream Codes API server (`bellhop serve`) — config file only
   # Leave host/port null to co-exist on the `web_server` listener (0.0.0.0:8080),
   # or set explicit values to bind the Xtream API on a dedicated port/interface.
   enabled: true
@@ -84,6 +71,20 @@ xtream_server:
   public_host: null
   public_port: null
   server_protocol: "http"
+
+# =============================================================================
+# 2. OPERATIONAL SETTINGS (Editable via Web UI Settings panel; no credentials)
+# =============================================================================
+upstream_xtream:
+  # Upstream Xtream Codes IPTV provider settings (credentials live in credentials.yaml or .env)
+  server_url: "${XTREAM_SERVER_URL}"
+  username: "${XTREAM_USERNAME}"
+  password: "${XTREAM_PASSWORD}"
+  # Stream output format: "ts" (MPEG-TS, lowest latency) or "m3u8" (HLS)
+  stream_format: "ts"
+  request_timeout_sec: 90.0
+  # Phase (2) `catalog`: Daily IPTV playlist fetch cadence (hours)
+  refresh_hours: 24.0
 
 pipeline:
   lineup:

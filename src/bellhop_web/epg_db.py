@@ -1,14 +1,13 @@
 """Relational SQLite 3 (WAL mode) backing store for EPG schedules and SD-JSON MD5 caches.
 
-Replaces in-memory JSON blobs (`epg_cache.json` and `sd_epg_cache.json`) with a
-single embedded SQLite database (`cache/bellhop_web/epg.sqlite3`):
+Manages the embedded SQLite database (`cache/bellhop_web/epg.sqlite3`):
 - Safe concurrent access (`PRAGMA journal_mode=WAL`, `busy_timeout=5000`) across
   `bellhop serve` HTTP readers and `bellhop run --phase epg` batch writers.
 - Sub-millisecond indexed range queries for `/api/lineup`, `/api/epg/<chno>`,
   and Xtream `get_short_epg` / `get_simple_data_table`.
 - Constant-memory (`~64 KB` chunked) cursor streaming for `/xmltv.php`.
-- Persistent, unbounded MD5 differential tables (`sd_schedule_days`, `sd_programs`)
-  for Schedules Direct with automatic one-time import from legacy JSON caches.
+- Persistent MD5 differential tables (`sd_schedule_days`, `sd_programs`)
+  for Schedules Direct.
 """
 
 from __future__ import annotations
@@ -17,7 +16,9 @@ import base64
 import contextlib
 import json
 import logging
+import os
 import sqlite3
+import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -26,6 +27,11 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
+from bellhop_web.file_utils import (
+  PRIVATE_FILE_MODE,
+  chmod_private_file,
+  ensure_private_dir,
+)
 from bellhop_web.store import (
   LineupSnapshot,
   ProgramItem,
@@ -177,10 +183,23 @@ class EpgDatabase:
   def __init__(self, db_path: Path = DEFAULT_EPG_DB_FILE) -> None:
     self.db_path = db_path
     self._initialized = False
+    self._init_lock = threading.Lock()
+
+  def _enforce_private_permissions(self) -> None:
+    for suffix in ("", "-wal", "-shm"):
+      chmod_private_file(Path(f"{self.db_path}{suffix}"))
 
   @contextlib.contextmanager
   def _connect(self) -> Iterator[sqlite3.Connection]:
-    self.db_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(self.db_path.parent)
+    if not self.db_path.exists():
+      with contextlib.suppress(OSError):
+        fd = os.open(
+          str(self.db_path),
+          os.O_WRONLY | os.O_CREAT,
+          PRIVATE_FILE_MODE,
+        )
+        os.close(fd)
     conn = sqlite3.connect(
       str(self.db_path),
       timeout=5.0,
@@ -193,6 +212,7 @@ class EpgDatabase:
       conn.execute("PRAGMA foreign_keys=ON")
       conn.execute("PRAGMA busy_timeout=5000")
       conn.execute("PRAGMA temp_store=MEMORY")
+      self._enforce_private_permissions()
       yield conn
     finally:
       conn.close()
@@ -206,34 +226,37 @@ class EpgDatabase:
         cand.unlink(missing_ok=True)
 
   def ensure_initialized(self) -> None:
-    """Create or migrate SQLite tables and import legacy JSON caches once."""
+    """Create or migrate SQLite tables under a thread-safe initialization lock."""
     if self._initialized and self.db_path.is_file():
       return
-    if self.db_path.is_file():
+    with self._init_lock:
+      if self._initialized and self.db_path.is_file():
+        return
+      if self.db_path.is_file():
+        try:
+          with self.db_path.open("rb") as fh:
+            header = fh.read(16)
+          if header and header != b"SQLite format 3\x00":
+            logger.warning(
+              "Replacing non-SQLite file at %s with fresh EPG database.",
+              self.db_path,
+            )
+            self.delete_database()
+        except OSError:
+          pass
       try:
-        with self.db_path.open("rb") as fh:
-          header = fh.read(16)
-        if header and header != b"SQLite format 3\x00":
-          logger.warning(
-            "Replacing non-SQLite file at %s with fresh EPG database.",
-            self.db_path,
-          )
-          self.delete_database()
-      except OSError:
-        pass
-    try:
-      self._init_schema()
-    except sqlite3.DatabaseError as exc:
-      logger.warning(
-        "Recreating unreadable SQLite EPG database %s (%s).",
-        self.db_path,
-        exc,
-      )
-      self.delete_database()
-      self._init_schema()
+        self._init_schema()
+      except sqlite3.DatabaseError as exc:
+        logger.warning(
+          "Recreating unreadable SQLite EPG database %s (%s).",
+          self.db_path,
+          exc,
+        )
+        self.delete_database()
+        self._init_schema()
 
-    self._initialized = True
-    self._migrate_legacy_json_caches()
+      self._enforce_private_permissions()
+      self._initialized = True
 
   def _init_schema(self) -> None:
     with self._connect() as conn:
@@ -242,16 +265,15 @@ class EpgDatabase:
       try:
         if cur_ver != EPG_DB_SCHEMA_VERSION:
           if cur_ver != 0:
-            for tbl in (
-              "epg_meta",
-              "sd_lineups",
-              "sd_stations",
-              "sd_channel_map",
-              "sd_schedule_days",
-              "sd_programs",
-              "guide_airings",
-            ):
-              conn.execute(f"DROP TABLE IF EXISTS {tbl}")
+            existing_tables = [
+              str(r[0])
+              for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name NOT LIKE 'sqlite_%'"
+              ).fetchall()
+            ]
+            for tbl in existing_tables:
+              conn.execute(f'DROP TABLE IF EXISTS "{tbl}"')
           for stmt in _DDL_STATEMENTS:
             conn.execute(stmt)
           conn.execute(f"PRAGMA user_version = {EPG_DB_SCHEMA_VERSION}")
@@ -262,271 +284,6 @@ class EpgDatabase:
       except Exception:
         conn.execute("ROLLBACK")
         raise
-
-  # ---------------------------------------------------------------------------
-  # One-time Legacy JSON Cache Migration (`sd_epg_cache.json` + `epg_cache.json`)
-  # ---------------------------------------------------------------------------
-  def _migrate_legacy_json_caches(self) -> None:
-    parent = self.db_path.parent
-    legacy_sd = parent / "sd_epg_cache.json"
-    legacy_epg = parent / "epg_cache.json"
-    if not legacy_sd.is_file() and not legacy_epg.is_file():
-      return
-
-    with self._connect() as conn:
-      has_sd = int(
-        conn.execute("SELECT COUNT(*) FROM sd_programs").fetchone()[0]
-      )
-      has_guide = int(
-        conn.execute("SELECT COUNT(*) FROM guide_airings").fetchone()[0]
-      )
-
-      if legacy_sd.is_file() and has_sd == 0:
-        try:
-          raw_sd = json.loads(legacy_sd.read_text(encoding="utf-8"))
-          if isinstance(raw_sd, dict) and raw_sd.get("version") == 1:
-            self._import_legacy_sd_dict(conn, raw_sd)
-            logger.info(
-              "Migrated legacy Schedules Direct cache %s into %s.",
-              legacy_sd,
-              self.db_path,
-            )
-            with contextlib.suppress(OSError):
-              legacy_sd.unlink(missing_ok=True)
-        except (OSError, ValueError, TypeError) as exc:
-          logger.warning(
-            "Skipping unreadable legacy SD cache %s: %s", legacy_sd, exc
-          )
-
-      if legacy_epg.is_file() and has_guide == 0:
-        try:
-          raw_epg = json.loads(legacy_epg.read_text(encoding="utf-8"))
-          if isinstance(raw_epg, dict) and raw_epg.get("version") in (2, 3):
-            self._import_legacy_epg_dict(conn, raw_epg)
-            logger.info(
-              "Migrated legacy EPG cache %s into %s.",
-              legacy_epg,
-              self.db_path,
-            )
-            with contextlib.suppress(OSError):
-              legacy_epg.unlink(missing_ok=True)
-        except (OSError, ValueError, TypeError) as exc:
-          logger.warning(
-            "Skipping unreadable legacy EPG cache %s: %s", legacy_epg, exc
-          )
-
-  @staticmethod
-  def _import_legacy_sd_dict(
-    conn: sqlite3.Connection, raw_sd: Mapping[str, Any]
-  ) -> None:
-    now = time.time()
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-      raw_lus = raw_sd.get("lineups")
-      if isinstance(raw_lus, Mapping):
-        for lid, lu_obj in raw_lus.items():
-          if not isinstance(lu_obj, Mapping):
-            continue
-          conn.execute(
-            """
-            INSERT OR REPLACE INTO sd_lineups
-              (lineup_id, name, location, modified, fetched_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-              str(lid),
-              str(lu_obj.get("name") or lid),
-              str(lu_obj.get("location") or ""),
-              str(lu_obj.get("modified") or ""),
-              float(lu_obj.get("fetched_at") or now),
-            ),
-          )
-          raw_sts = lu_obj.get("stations")
-          if isinstance(raw_sts, Mapping):
-            conn.executemany(
-              """
-              INSERT OR REPLACE INTO sd_stations
-                (lineup_id, station_id, name, callsign, language)
-              VALUES (?, ?, ?, ?, ?)
-              """,
-              [
-                (
-                  str(lid),
-                  str(sid),
-                  str(st.get("name") or ""),
-                  str(st.get("callsign") or ""),
-                  str(st.get("language") or ""),
-                )
-                for sid, st in raw_sts.items()
-                if isinstance(st, Mapping)
-              ],
-            )
-          raw_map = lu_obj.get("chno_to_station")
-          if isinstance(raw_map, Mapping):
-            map_rows: list[tuple[str, int, str]] = []
-            for ch_k, sid_v in raw_map.items():
-              with contextlib.suppress(ValueError):
-                map_rows.append((str(lid), int(ch_k), str(sid_v)))
-            conn.executemany(
-              """
-              INSERT OR REPLACE INTO sd_channel_map (lineup_id, chno, station_id)
-              VALUES (?, ?, ?)
-              """,
-              map_rows,
-            )
-
-      raw_sched = raw_sd.get("schedules")
-      if isinstance(raw_sched, Mapping):
-        sched_rows: list[tuple[str, str, str, str]] = []
-        for sid, by_dt in raw_sched.items():
-          if not isinstance(by_dt, Mapping):
-            continue
-          for dt_str, dt_obj in by_dt.items():
-            if not isinstance(dt_obj, Mapping):
-              continue
-            airings = dt_obj.get("airings")
-            if not isinstance(airings, list):
-              continue
-            sched_rows.append(
-              (
-                str(sid),
-                str(dt_str),
-                str(dt_obj.get("md5") or ""),
-                json.dumps(airings, ensure_ascii=False, separators=(",", ":")),
-              )
-            )
-        conn.executemany(
-          """
-          INSERT OR REPLACE INTO sd_schedule_days
-            (station_id, schedule_date, md5, airings_json)
-          VALUES (?, ?, ?, ?)
-          """,
-          sched_rows,
-        )
-
-      raw_progs = raw_sd.get("programs")
-      if isinstance(raw_progs, Mapping):
-        conn.executemany(
-          """
-          INSERT OR REPLACE INTO sd_programs
-            (program_id, md5, title, sub_title, description, category, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          """,
-          [
-            (
-              str(pid),
-              str(p.get("md5") or ""),
-              str(p.get("title") or ""),
-              str(p.get("sub_title") or ""),
-              str(p.get("description") or ""),
-              str(p.get("category") or ""),
-              now,
-            )
-            for pid, p in raw_progs.items()
-            if isinstance(p, Mapping) and p.get("title")
-          ],
-        )
-      conn.execute("COMMIT")
-    except Exception:
-      conn.execute("ROLLBACK")
-      raise
-
-  @staticmethod
-  def _import_legacy_epg_dict(
-    conn: sqlite3.Connection, raw_epg: Mapping[str, Any]
-  ) -> None:
-    rows: list[tuple[int, str, int, int, str, str, str, str, str, str]] = []
-    by_chno = raw_epg.get("channels_by_chno")
-    if isinstance(by_chno, Mapping) and by_chno:
-      for ch_k, items in by_chno.items():
-        try:
-          chno = int(ch_k)
-        except ValueError:
-          continue
-        if not isinstance(items, list):
-          continue
-        for p in items:
-          if not isinstance(p, Mapping) or not p.get("title"):
-            continue
-          start_ts = int(p.get("start_timestamp") or 0)
-          stop_ts = int(p.get("stop_timestamp") or 0)
-          if start_ts <= 0 or stop_ts <= start_ts:
-            continue
-          uid = str(p.get("id") or "")
-          rows.append(
-            (
-              chno,
-              f"ch.{chno}",
-              start_ts,
-              stop_ts,
-              uid,
-              str(p["title"]),
-              str(p.get("sub_title") or ""),
-              str(p.get("description") or ""),
-              str(p.get("category") or ""),
-              "sd" if uid.startswith("sd-") else "xmltv",
-            )
-          )
-    else:
-      channels_map = raw_epg.get("channels")
-      if isinstance(channels_map, Mapping):
-        for cid, items in channels_map.items():
-          if not isinstance(items, list):
-            continue
-          for p in items:
-            if not isinstance(p, Mapping) or not p.get("title"):
-              continue
-            start_ts = int(p.get("start_timestamp") or 0)
-            stop_ts = int(p.get("stop_timestamp") or 0)
-            if start_ts <= 0 or stop_ts <= start_ts:
-              continue
-            rows.append(
-              (
-                0,
-                str(cid),
-                start_ts,
-                stop_ts,
-                str(p.get("id") or ""),
-                str(p["title"]),
-                str(p.get("sub_title") or ""),
-                str(p.get("description") or ""),
-                str(p.get("category") or ""),
-                "xmltv",
-              )
-            )
-
-    if not rows:
-      return
-
-    fetched_at = float(raw_epg.get("fetched_at") or time.time())
-    covered = raw_epg.get("covered_channel_ids")
-    covered_list = (
-      [str(x) for x in covered] if isinstance(covered, list) else []
-    )
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-      conn.execute("DELETE FROM guide_airings")
-      conn.executemany(
-        """
-        INSERT OR REPLACE INTO guide_airings
-          (chno, epg_channel_id, start_ts, stop_ts, program_uid,
-           title, sub_title, description, category, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows,
-      )
-      conn.execute(
-        "INSERT OR REPLACE INTO epg_meta (key, value) VALUES ('fetched_at', ?)",
-        (str(fetched_at),),
-      )
-      conn.execute(
-        "INSERT OR REPLACE INTO epg_meta (key, value) VALUES ('covered_channel_ids', ?)",
-        (json.dumps(covered_list),),
-      )
-      conn.execute("COMMIT")
-    except Exception:
-      conn.execute("ROLLBACK")
-      raise
 
   # ---------------------------------------------------------------------------
   # Metadata & Guide Schedule Persistence
@@ -576,38 +333,6 @@ class EpgDatabase:
       except Exception:
         conn.execute("ROLLBACK")
         raise
-
-  def insert_airing_for_test(
-    self,
-    *,
-    chno: int = 0,
-    epg_channel_id: str,
-    item: ProgramItem,
-    source: str = "xmltv",
-  ) -> None:
-    """Insert a single airing row (used by unit tests verifying stale eviction)."""
-    self.ensure_initialized()
-    with self._connect() as conn:
-      conn.execute(
-        """
-        INSERT OR REPLACE INTO guide_airings
-          (chno, epg_channel_id, start_ts, stop_ts, program_uid,
-           title, sub_title, description, category, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-          chno,
-          epg_channel_id,
-          item.start_timestamp,
-          item.stop_timestamp,
-          item.id,
-          item.title,
-          item.sub_title,
-          item.description,
-          item.category,
-          source,
-        ),
-      )
 
   def replace_guide_schedules(
     self,

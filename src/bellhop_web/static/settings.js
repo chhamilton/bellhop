@@ -6,7 +6,7 @@ import { restoreFocus } from "./render.js";
 const errorMessage = (err) => err instanceof Error ? err.message : String(err);
 export const createSettingsController = (deps) => {
     const { elPlayerOverlay, elSettingsBtn, elSettingsOverlay, elSettingsBackdrop, elSettingsCloseBtn, elSettingsFileBadge, elSettingsTabs, elSettingsForm, elSettingsBody, elSettingsStatus, elSettingsReloadBtn, elSettingsSaveBtn, redirectToLogin, } = deps;
-    let activeSettingsTab = "xtream_server";
+    let activeSettingsTab = "upstream_xtream";
     let lastFocusedBeforeSettings = null;
     const setSettingsStatus = (msg, kind = "") => {
         if (!elSettingsStatus)
@@ -66,7 +66,6 @@ export const createSettingsController = (deps) => {
         if (!elSettingsBody)
             return;
         const xt = cfg.upstream_xtream || {};
-        const sx = cfg.xtream_server || {};
         const pipe = cfg.pipeline || {};
         const lu = pipe.lineup || {};
         const tvg = lu.tvguide || {};
@@ -80,21 +79,7 @@ export const createSettingsController = (deps) => {
             .join("\n");
         const exclText = (lu.excluded_channels || []).join(", ");
         elSettingsBody.innerHTML = `
-      <div class="settings-pane" data-settings-pane="xtream_server">
-        <div class="settings-group">
-          <h3>Xtream Codes Passthrough API Server</h3>
-          ${renderCheckboxField("cfg-sx-enabled", "Enable passthrough Xtream Codes API (/player_api.php, /get.php, /xmltv.php)", sx.enabled !== false)}
-          <div class="settings-grid">
-            ${renderTextField("cfg-sx-host", "Bind Host Override (optional)", sx.host, { placeholder: "Share Web Guide host", hint: "Leave blank to share the Web Guide listener host" })}
-            ${renderNumberField("cfg-sx-port", "Bind Port Override (optional)", sx.port, { step: "1", min: "1", placeholder: "Share Web Guide port", hint: "Leave blank to share the Web Guide port, or set a dedicated port" })}
-            ${renderTextField("cfg-sx-pub-host", "Advertised Public Host (optional)", sx.public_host, { placeholder: "Auto from Host header / LAN IP" })}
-            ${renderNumberField("cfg-sx-pub-port", "Advertised Public Port (optional)", sx.public_port, { step: "1", min: "1", placeholder: "Auto from Host header" })}
-            ${renderSelectField("cfg-sx-proto", "Advertised Protocol", sx.server_protocol || "http", [["http", "http"], ["https", "https"]])}
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-pane" data-settings-pane="upstream_xtream" hidden>
+      <div class="settings-pane" data-settings-pane="upstream_xtream">
         <div class="settings-group">
           <h3>Upstream Xtream IPTV Source</h3>
           <div class="settings-grid">
@@ -187,15 +172,7 @@ export const createSettingsController = (deps) => {
             const el = document.getElementById(id);
             return (el?.value ?? "").trim();
         };
-        const optStr = (id) => {
-            const s = valStr(id);
-            return s ? s : null;
-        };
         const reqNum = (id) => Number(valStr(id));
-        const optInt = (id) => {
-            const s = valStr(id);
-            return s ? Number(s) : null;
-        };
         const isChecked = (id) => {
             const el = document.getElementById(id);
             return Boolean(el?.checked);
@@ -208,14 +185,6 @@ export const createSettingsController = (deps) => {
                 stream_format: valStr("cfg-xt-format"),
                 request_timeout_sec: reqNum("cfg-xt-timeout"),
                 refresh_hours: reqNum("cfg-xt-refresh"),
-            },
-            xtream_server: {
-                enabled: isChecked("cfg-sx-enabled"),
-                host: optStr("cfg-sx-host"),
-                port: optInt("cfg-sx-port"),
-                public_host: optStr("cfg-sx-pub-host"),
-                public_port: optInt("cfg-sx-pub-port"),
-                server_protocol: valStr("cfg-sx-proto"),
             },
             pipeline: {
                 lineup: {

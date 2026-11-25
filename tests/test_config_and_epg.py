@@ -147,7 +147,7 @@ pipeline:
   assert cfg.serve.xtream.server_protocol == "https"
 
   pub = export_public_config(cfg)
-  assert set(pub.keys()) == {"upstream_xtream", "xtream_server", "pipeline"}
+  assert set(pub.keys()) == {"upstream_xtream", "pipeline"}
 
   bad_proxy_cfg = tmp_path / "bad_proxy.yaml"
   bad_proxy_cfg.write_text(
@@ -190,11 +190,13 @@ pipeline:
     encoding="utf-8",
   )
 
+  import stat
+
   updated, restart_req = apply_public_config_update(
     cfg_file,
     {
       "upstream_xtream": {"stream_format": "m3u8", "request_timeout_sec": 25.0},
-      "xtream_server": {"public_host": "lan.local"},
+      "xtream_server": {"public_host": "hacked.local", "enabled": False},
       "pipeline": {
         "matching": {"upgrade_hysteresis_score": 8.0},
         "output": {"m3u8_enabled": False},
@@ -202,25 +204,25 @@ pipeline:
     },
   )
   assert restart_req is False
+  assert stat.S_IMODE(cfg_file.stat().st_mode) == 0o600
   assert updated.xtream.stream_format == "m3u8"
   assert updated.xtream.username == "up_u"
   assert updated.xtream.password == "up_p"
   assert updated.state.upgrade_hysteresis_score == 8.0
   assert updated.output.m3u8_enabled is False
-  assert updated.serve.xtream.public_host == "lan.local"
+  # Server properties (`xtream_server` / `web_server`) are config-file-only and ignored!
+  assert updated.serve.xtream.public_host is None
+  assert updated.serve.xtream.enabled is True
   assert updated.serve.xtream.password == "xt_p"
 
   # Validation failures leave existing file untouched
   invalid_payloads: list[dict[str, object]] = [
     {"upstream_xtream": {"stream_format": "mp4"}},
-    {"xtream_server": {"server_protocol": "ftp"}},
     {"pipeline": {"lineup": {"backend": "unknown_backend"}}},
     {"pipeline": {"lineup": {"lineup_id": "   "}}},
     {"pipeline": {"lineup": {"numbering_mode": "invalid"}}},
     {"pipeline": {"lineup": {"pinned_streams": "not-a-dict"}}},
     {"pipeline": {"lineup": {"excluded_channels": "not-a-list"}}},
-    # Disabling xtream_server when web_server.enabled is already false must fail
-    {"xtream_server": {"enabled": False}},
   ]
   for bad in invalid_payloads:
     with pytest.raises(ValueError):
@@ -293,7 +295,6 @@ def test_apply_public_config_update_preserves_comments_and_env_placeholders(
   public_doc = export_public_config(before_docker)
   save_body: dict[str, object] = {
     "upstream_xtream": dict(public_doc["upstream_xtream"]),
-    "xtream_server": dict(public_doc["xtream_server"]),
     "pipeline": {
       **dict(public_doc["pipeline"]),
       "matching": {"upgrade_hysteresis_score": 7.5},

@@ -52,6 +52,7 @@ from bellhop.models import (
   ProbeResultDict,
   XtreamStream,
 )
+from bellhop_web.file_utils import write_private_text
 
 ChannelReportStatus = Literal["active", "failed_validation", "unmatched"]
 
@@ -259,11 +260,10 @@ def write_m3u8(
   config: AppConfig,
   output_path: Path | None = None,
 ) -> Path:
-  """Write the rendered M3U8 playlist to disk and return its resolved Path."""
+  """Write the rendered M3U8 playlist to disk (`0o600`) and return its Path."""
   dest = config.resolve_path(output_path or config.output.playlist_path)
-  dest.parent.mkdir(parents=True, exist_ok=True)
   content = render_m3u8(lineup, mappings, config)
-  dest.write_text(content, encoding="utf-8")
+  write_private_text(dest, content)
   return dest
 
 
@@ -599,7 +599,6 @@ def write_report(
 ) -> Path:
   """Write the JSON diagnostics report to disk and return its resolved Path."""
   dest = config.resolve_path(output_path or config.output.report_path)
-  dest.parent.mkdir(parents=True, exist_ok=True)
   payload = build_report_dict(
     lineup,
     mappings,
@@ -608,6 +607,5 @@ def write_report(
     validation_skipped=validation_skipped,
     mapping_summary=mapping_summary,
   )
-  with dest.open("w", encoding="utf-8") as fh:
-    json.dump(payload, fh, indent=2, ensure_ascii=False)
+  write_private_text(dest, json.dumps(payload, indent=2, ensure_ascii=False))
   return dest

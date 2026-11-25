@@ -727,6 +727,7 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
       cfg_payload = cfg_r.json()
       assert cfg_payload["available"] is True
       assert "web_server" not in cfg_payload["config"]
+      assert "xtream_server" not in cfg_payload["config"]
       assert "paths" not in cfg_payload["config"]
       assert "container_pw" not in cfg_r.text
       assert "up_secret" not in cfg_r.text
