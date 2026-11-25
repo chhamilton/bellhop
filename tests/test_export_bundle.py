@@ -6,9 +6,9 @@ import ast
 import json
 from pathlib import Path
 
-from bellhop.xtream_server import XtreamExportStore
-from bellhop_web.export_bundle import ExportBundleReader
-from bellhop_web.store import LineupGuideStore
+from bellhop.common.export_bundle import ExportBundleReader
+from bellhop.web.store import LineupGuideStore
+from bellhop.xtream.server import XtreamExportStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -148,21 +148,57 @@ def test_export_bundle_reader_fallbacks_and_category_synthesis(
   assert from_primary.provider == "Bellhop Primary"
 
 
-def test_bellhop_web_package_never_imports_bellhop() -> None:
-  """Enforce architectural boundary: `src/bellhop_web` never imports `bellhop.*`."""
-  web_pkg = REPO_ROOT / "src" / "bellhop_web"
+def test_bellhop_domain_layer_boundaries() -> None:
+  """Enforce strict one-way domain layering across `src/bellhop/` subpackages."""
+  assert not (REPO_ROOT / "src" / "bellhop_web").exists(), (
+    "Legacy top-level src/bellhop_web/ must not exist; domain subpackages live under src/bellhop/"
+  )
+
+  allowed_deps: dict[str, set[str]] = {
+    "common": set(),
+    "config": {"common"},
+    "epg": {"common", "config"},
+    "web": {"common", "epg"},
+    "xtream": {"common", "config", "epg"},
+    "pipeline": {"common", "config", "epg", "xtream"},
+    "serve": {"common", "config", "epg", "web", "xtream"},
+  }
+
+  pkg_root = REPO_ROOT / "src" / "bellhop"
   violations: list[str] = []
-  for py_file in sorted(web_pkg.rglob("*.py")):
+
+  def _domain_of_module(mod: str) -> str | None:
+    if not mod.startswith("bellhop."):
+      return None
+    parts = mod.split(".")
+    return parts[1] if len(parts) >= 2 else None
+
+  for py_file in sorted(pkg_root.rglob("*.py")):
+    rel = py_file.relative_to(pkg_root)
+    src_domain = rel.parts[0] if len(rel.parts) >= 2 else rel.stem
+    if src_domain not in allowed_deps:
+      continue
+    permitted = allowed_deps[src_domain] | {src_domain}
     tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
     for node in ast.walk(tree):
+      imported: list[tuple[int, str]] = []
       if isinstance(node, ast.Import):
-        for alias in node.names:
-          if alias.name == "bellhop" or alias.name.startswith("bellhop."):
-            violations.append(f"{py_file.name}:{node.lineno} -> {alias.name}")
-      elif isinstance(node, ast.ImportFrom):
-        mod = node.module or ""
-        if mod == "bellhop" or mod.startswith("bellhop."):
-          violations.append(f"{py_file.name}:{node.lineno} -> {mod}")
+        imported.extend((node.lineno, alias.name) for alias in node.names)
+      elif isinstance(node, ast.ImportFrom) and node.module:
+        imported.append((node.lineno, node.module))
+      for lineno, mod in imported:
+        if mod == "bellhop_web" or mod.startswith("bellhop_web."):
+          violations.append(f"{rel}:{lineno} -> legacy {mod}")
+          continue
+        target_domain = _domain_of_module(mod)
+        if target_domain is not None and target_domain not in permitted:
+          violations.append(
+            f"{rel}:{lineno} ({src_domain}) -> forbidden {mod} ({target_domain})"
+          )
+        # `bellhop.pipeline` may import `bellhop.xtream.client`, never `bellhop.xtream.server`
+        if src_domain == "pipeline" and mod.startswith("bellhop.xtream.server"):
+          violations.append(f"{rel}:{lineno} (pipeline) -> forbidden {mod}")
+
   assert violations == [], (
-    f"Package boundary violated in bellhop_web: {violations}"
+    f"Domain layer boundary violated in src/bellhop/: {violations}"
   )

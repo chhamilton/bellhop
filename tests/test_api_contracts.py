@@ -8,9 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from bellhop.config import load_config
-from bellhop.serve import UnifiedServeServer
-from bellhop_web.api_contracts import (
+from bellhop.common.api_contracts import (
   API_CONTRACT_TYPES,
   AuthStatusResponseDict,
   ChannelEpgResponseDict,
@@ -21,7 +19,9 @@ from bellhop_web.api_contracts import (
   build_api_json_schemas,
   validate_typed_dict_payload,
 )
-from bellhop_web.store import ProgramItem
+from bellhop.config import load_config
+from bellhop.serve import UnifiedServeServer
+from bellhop.web.store import ProgramItem
 from tests.http_mock import TestHttpClient
 
 

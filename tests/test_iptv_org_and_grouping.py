@@ -15,17 +15,17 @@ from bellhop.config import (
   StateConfig,
   XtreamConfig,
 )
-from bellhop.dial_grouping import assign_dial_contiguous_groups
-from bellhop.iptv_org import (
+from bellhop.pipeline.dial_grouping import assign_dial_contiguous_groups
+from bellhop.pipeline.iptv_org import (
   IptvOrgClient,
   IptvOrgError,
   IptvOrgIndex,
   fold_latin_accents,
 )
-from bellhop.lineup_retriever import retrieve_cable_lineup
-from bellhop.matcher import ChannelMatcher
-from bellhop.models import LineupChannel, XtreamStream
-from bellhop.providers import (
+from bellhop.pipeline.lineup_retriever import retrieve_cable_lineup
+from bellhop.pipeline.matcher import ChannelMatcher
+from bellhop.pipeline.models import LineupChannel, XtreamStream
+from bellhop.pipeline.providers import (
   RawProviderSlot,
   TvGuideLineupProvider,
   normalize_provider_slots,

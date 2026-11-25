@@ -8,12 +8,12 @@ You may obtain a copy of the License at:
   http://www.apache.org/licenses/LICENSE-2.0
 
 -------------------------------------------------------------------------------
-Bundled Third-Party Components (`src/bellhop_web/static/vendor/`)
+Bundled Third-Party Components (`src/bellhop/web/static/vendor/`)
 -------------------------------------------------------------------------------
 
 This distribution bundles the following unmodified browser media playback
 libraries under the Apache License, Version 2.0 (see
-`src/bellhop_web/static/vendor/VERSIONS.md` for pinned versions and SHA-256
+`src/bellhop/web/static/vendor/VERSIONS.md` for pinned versions and SHA-256
 digests):
 
 - mpegts.js (v1.7.3) — https://github.com/xqq/mpegts.js

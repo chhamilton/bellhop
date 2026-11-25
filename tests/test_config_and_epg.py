@@ -15,7 +15,7 @@ from bellhop.config import (
   export_public_config,
   load_config,
 )
-from bellhop.epg_loader import build_passthrough_xmltv_url, verify_epg_endpoint
+from bellhop.epg.xmltv import build_passthrough_xmltv_url, verify_epg_endpoint
 from tests.http_mock import MockHttpServer
 
 

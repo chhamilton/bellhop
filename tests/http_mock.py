@@ -16,7 +16,7 @@ import aiohttp.abc
 from aiohttp import web
 from yarl import URL
 
-from bellhop_web.http_utils import start_site
+from bellhop.common.http_utils import start_site
 
 MockHandler = Callable[
   [web.Request], web.StreamResponse | Awaitable[web.StreamResponse]

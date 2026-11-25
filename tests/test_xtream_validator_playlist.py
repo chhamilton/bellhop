@@ -16,16 +16,16 @@ from bellhop.config import (
   ValidationConfig,
   XtreamConfig,
 )
-from bellhop.lineup_loader import CableLineup
-from bellhop.models import (
+from bellhop.pipeline.lineup_loader import CableLineup
+from bellhop.pipeline.models import (
   LineupChannel,
   MappedChannel,
   MatchCandidate,
   XtreamAccountInfo,
   XtreamStream,
 )
-from bellhop.playlist import build_report_dict, render_m3u8
-from bellhop.validator import (
+from bellhop.pipeline.playlist import build_report_dict, render_m3u8
+from bellhop.pipeline.validator import (
   StreamValidator,
   effective_concurrency,
   has_mpegts_sync,
@@ -425,7 +425,7 @@ def test_exported_group_dial_ranges_reflect_surviving_validated_channels(
   tmp_path: Path,
 ) -> None:
   """Verify every exported group carries `(lo–hi)` computed from surviving channels only."""
-  from bellhop.xtream_exporter import build_xtream_export_bundle
+  from bellhop.pipeline.xtream_exporter import build_xtream_export_bundle
 
   lineup = CableLineup(
     lineup_id="TVG-9100000607",

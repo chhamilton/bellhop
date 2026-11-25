@@ -1,9 +1,13 @@
 # AGENTS.md — Bellhop Workspace Guide
 
 ## Project Overview
-This repository implements **Bellhop**, installed via a single `bellhop` CLI (`bellhop run` & `bellhop serve`) from `pyproject.toml` and organized into two clean Python packages:
-1. **`bellhop` (`src/bellhop/`)** — A declarative, stateful 6-phase pipeline (`PipelineRunner`) that maps a raw Xtream Codes IPTV catalog (~16,600+ live streams) onto an official cable/fiber TV lineup (currently **Bell Fibe TV — Montréal, QC**, scalable to any US/Canadian provider via TV Guide or Schedules Direct), validates **only** matched candidate streams, exports Extended **M3U8** + **Xtream JSON** playlists with passthrough EPG metadata, and serves the unified Web Guide + Passthrough Xtream Codes API server via `bellhop serve` (`UnifiedServeServer`).
-2. **`bellhop_web` (`src/bellhop_web/`)** — The decoupled `aiohttp.web` guide UI, TypeScript frontend (`frontend/` → `static/`), cookie auth (`bellhop_session`), WAL-mode SQLite EPG & Schedules Direct backing store (`cache/bellhop_web/epg.sqlite3`), and **single-tuner relay** (`TunerSessionManager`), hosted by `bellhop serve` without importing `bellhop.*`.
+This repository implements **Bellhop**, installed via a single `bellhop` CLI (`bellhop run` & `bellhop serve`) from `pyproject.toml` and organized into layered domain subpackages under `src/bellhop/`:
+- **`bellhop.common` (`src/bellhop/common/`)** — Foundational owner-only file permissions (`file_utils.py`), shared HTTP `TypedDict` contracts & TypeScript codegen (`api_contracts.py`), `aiohttp` factories/middleware/rate-limiting (`http_utils.py`), and cached `ExportBundleReader` (`export_bundle.py`).
+- **`bellhop.config` (`src/bellhop/config/`)** — Two-tier YAML/env configuration (`model.py`, `load.py`, `public.py`).
+- **`bellhop.epg` (`src/bellhop/epg/`)** — Embedded WAL-mode SQLite 3 EPG & Schedules Direct backing store (`db.py`, `cache/bellhop_web/epg.sqlite3`), shared `SchedulesDirectSession` (`sd_client.py`), SD-JSON MD5 differential fetcher (`sd_epg.py`), XMLTV parser/verifier (`xmltv.py`), background refresher (`refresh.py`), and pipeline sync adapter (`sync.py`).
+- **`bellhop.pipeline` (`src/bellhop/pipeline/`)** — Declarative, stateful 6-phase pipeline (`runner.py`) mapping raw Xtream catalogs onto official cable/fiber TV lineups (`providers/`: `tvguide`, `schedules_direct`, `yaml`), multi-signal `ChannelMatcher` (`matcher.py` + `matcher_vocab.py`), candidate-only `StreamValidator` (`validator.py`), and Extended **M3U8** + **Xtream JSON** exporters (`playlist.py`, `xtream_exporter.py`).
+- **`bellhop.xtream` (`src/bellhop/xtream/`)** — Upstream `player_api.php` client (`client.py`) and local `XtreamPassthroughServer` (`server.py`, serving SQLite-backed XMLTV/short-EPG and `302` stream passthroughs).
+- **`bellhop.web` (`src/bellhop/web/`)** — Decoupled `aiohttp.web` TV Guide UI (`server.py`, `store.py`, `auth.py`), strict ES2022 TypeScript frontend (`frontend/` → `static/`), and **single-tuner relay** (`TunerSessionManager`), co-hosted with `bellhop.xtream` by `UnifiedServeServer` (`src/bellhop/serve.py`).
 
 Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persistent service with internal scheduling**, explicit sync controls, **multi-lineup / multi-playlist support**, and optional proxied stream relay.
 
@@ -28,14 +32,14 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
    - Do **not** mask passwords with `***` inside `state/channel_mapping.json`, `output/bellhop.m3u8`, or `output/xtream/get_live_streams.json`: Xtream stream URLs require embedded credentials to play (masking caused `HTTP 513` upstream errors). Redaction belongs only in UI/API serialization (`AppConfig.to_dict(redact_secrets=True)` and `WebChannel.to_public_dict()`, which exposes `/api/stream/<chno>.ts`), while `/api/config` (`export_public_config`) omits credentials, `web_server`, and paths altogether.
    - **Passthrough & SQLite EPG Model:** By design, `XtreamPassthroughServer` (`302` redirects on `/live/<user>/<pass>/<id>`) returns the upstream IPTV stream URL (including upstream credentials) in the `Location` header to authenticated Xtream clients so video streams directly from the provider without double-proxying, while `/xmltv.php` and `get_short_epg` serve lineup-filtered EPG locally from `epg.sqlite3` (`302` redirecting `/xmltv.php` to upstream only as a fallback if SQLite is empty). Browser viewers using the Web TV Guide stream via the server-side `/api/stream/<chno>.ts` and `/api/hls/<chno>/index.m3u8` relays, which never expose upstream credentials.
 
-4. **Package Boundary (`bellhop` vs `bellhop_web`) & Strict Typing**
-   - Keep `src/bellhop_web/` as a pure web/UI presentation, cookie-auth, API-contract, export-bundle, and single-tuner relay layer with **zero imports from `bellhop.*`** (enforced by `tests/test_export_bundle.py::test_bellhop_web_package_never_imports_bellhop`). `bellhop` depends one-way on `bellhop_web` to co-host `bellhop serve` and share `api_contracts.py`, `export_bundle.py`, and `http_utils.py`.
-   - Maintain `mypy --strict` across `src/` and `tests/` with zero `# type: ignore` suppressions; prefer explicit `@dataclass(slots=True)` structs and `TypedDict`s (`src/bellhop_web/api_contracts.py` -> auto-generated `frontend/api_contracts.d.ts`) over nested `dict[str, Any]`.
+4. **Domain Subpackage Layering (`src/bellhop/*`) & Strict Typing**
+   - Preserve the acyclic domain import DAG enforced by `tests/test_export_bundle.py::test_bellhop_domain_layer_boundaries`: `common` → `{}`; `config` → `{common}`; `epg` → `{common, config}`; `web` → `{common, epg}`; `xtream` → `{common, config, epg}`; `pipeline` → `{common, config, epg, xtream.client}`; `serve` → `{common, config, epg, web, xtream}`.
+   - Maintain `mypy --strict` across `src/` and `tests/` with zero `# type: ignore` suppressions; prefer explicit `@dataclass(slots=True)` structs and `TypedDict`s (`src/bellhop/common/api_contracts.py` -> auto-generated `src/bellhop/web/frontend/api_contracts.d.ts`) over nested `dict[str, Any]`.
 
 5. **Coding Style Preferences (Google Python Style & Strict TypeScript Frontend)**
    - **Python Style:** Follow the **Google Python Style Guide** — **no tabs, spaces only, 2-space indentation per depth**, 80-column code wrapping via `ruff format` (`E501` ignored so long URLs/strings aren't forcibly split), Google-style docstrings (`D` pydocstyle with `convention = "google"` enforced on modules, packages, public classes, and public functions; `D102`/`D105`/`D107` exempted on self-explanatory methods/`__init__`), and sorted imports via `[tool.ruff]` in `pyproject.toml`.
-   - **Frontend TypeScript:** All browser JS is authored in strictly typed ES2022 TypeScript modules under `src/bellhop_web/frontend/` (`api_contracts.d.ts`, `types.d.ts`, `prefs.ts`, `login.ts`, `guide_logic.ts`, `render.ts`, `player.ts`, `settings.ts`, `app.ts`; 2-space indent, `strict: true` + `noUncheckedIndexedAccess: true`) and compiled into `src/bellhop_web/static/*.js` via `.venv/bin/node ./node_modules/typescript/bin/tsc`. Compiled `static/*.js` and generated `api_contracts.d.ts` are intentionally committed so Python-only installs work without Node at runtime, guarded against drift by `tests/test_typecheck.py`. Never hand-edit `static/*.js` or `frontend/api_contracts.d.ts`.
-   - **Client-Side State (`localStorage["bellhop.settings"]`):** Store persistent browser UI preferences (theme, future view/favorite/player preferences) as structured JSON (nested dicts, arrays, strings, numbers, booleans) through `window.BellhopSettings` (`src/bellhop_web/frontend/prefs.ts`) rather than ad-hoc top-level `localStorage` keys.
+   - **Frontend TypeScript:** All browser JS is authored in strictly typed ES2022 TypeScript modules under `src/bellhop/web/frontend/` (`api_contracts.d.ts`, `types.d.ts`, `prefs.ts`, `login.ts`, `guide_logic.ts`, `render.ts`, `player.ts`, `settings.ts`, `app.ts`; 2-space indent, `strict: true` + `noUncheckedIndexedAccess: true`) and compiled into `src/bellhop/web/static/*.js` via `.venv/bin/node ./node_modules/typescript/bin/tsc`. Compiled `static/*.js` and generated `api_contracts.d.ts` are intentionally committed so Python-only installs work without Node at runtime, guarded against drift by `tests/test_typecheck.py`. Never hand-edit `static/*.js` or `frontend/api_contracts.d.ts`.
+   - **Client-Side State (`localStorage["bellhop.settings"]`):** Store persistent browser UI preferences (theme, future view/favorite/player preferences) as structured JSON (nested dicts, arrays, strings, numbers, booleans) through `window.BellhopSettings` (`src/bellhop/web/frontend/prefs.ts`) rather than ad-hoc top-level `localStorage` keys.
 
 ---
 
@@ -50,34 +54,15 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
 │   ├── lineups/bell_fibe_montreal.yaml  # Curated 355-network / 698-slot Bell Fibe MTL lineup
 │   └── official_logos.json              # 339 verified tv-logo/tv-logos transparent PNG URLs
 ├── src/
-│   ├── bellhop/
-│   │   ├── cli.py               # `bellhop run` & `bellhop serve` CLI
-│   │   ├── config/              # Two-tier config package (`model.py`, `load.py`, `public.py`)
-│   │   ├── runner.py            # Reusable 6-phase `PipelineRunner` engine
-│   │   ├── lineup_retriever.py  # Phase (1) `lineup`: 30d snapshot + diff + backend dispatch
-│   │   ├── providers/           # `LineupProvider` ABC + `tvguide`, `schedules_direct`, `yaml`, `normalizer`
-│   │   ├── catalog_fetcher.py   # Phase (2) `catalog`: 24h Xtream JSON fetch + diff
-│   │   ├── xtream.py            # Low-level Xtream `player_api.php` client
-│   │   ├── matcher.py           # Multi-signal `ChannelMatcher` (identity, EPG, region, quality)
-│   │   ├── mapping_state.py     # Phase (3) `match`: incremental state + 5.0-pt hysteresis
-│   │   ├── validator.py         # Phase (4) `validate`: HTTP/MPEG-TS/HLS + optional ffprobe
-│   │   ├── playlist.py          # Phase (5) `m3u8`: Extended M3U8 + JSON report
-│   │   ├── epg_loader.py        # Passthrough `xmltv.php` URL builder & ~4 KB streaming verifier
-│   │   ├── xtream_exporter.py   # Phase (6) `xtream`: Official Xtream JSON + passthrough EPG exporter
-│   │   ├── xtream_server.py     # Passthrough Xtream Codes & M3U HTTP API server (`302` upstream)
-│   │   └── serve.py             # `UnifiedServeServer` co-hosting Web Guide + Xtream API (shared or split ports)
-│   └── bellhop_web/
-│       ├── api_contracts.py     # Shared HTTP `TypedDict`s, JSON Schema & `api_contracts.d.ts` generator
-│       ├── export_bundle.py     # Shared `ExportBundleReader` for `output/xtream/` + M3U8 fallbacks
-│       ├── http_utils.py        # Shared `aiohttp` server/client factories, CSP/CORS/413 & XFF helpers
-│       ├── auth.py              # HMAC-SHA256 `bellhop_session` cookie auth, rate limiter & `/login`
-│       ├── epg_db.py            # WAL-mode SQLite 3 backing store (`cache/bellhop_web/epg.sqlite3`)
-│       ├── sd_epg.py            # Schedules Direct SD-JSON (`20141201`) MD5 differential EPG client
-│       ├── epg_refresh.py       # Dynamic SD-JSON + XMLTV EPG refresher & SQLite hydrator
-│       ├── store.py             # Hot-reloading guide store backed by `ExportBundleReader`
-│       ├── server.py            # `WebGuideApp` + `TunerSessionManager` chunked MPEG-TS & HLS proxy
-│       ├── frontend/            # Strict ES2022 TypeScript modules (`guide_logic`, `render`, `player`, `settings`, `app`)
-│       └── static/              # HTML/CSS, SVG/ICO branding, compiled `*.js`, vendored players + `VERSIONS.md`
+│   └── bellhop/
+│       ├── cli.py               # `bellhop run` & `bellhop serve` CLI
+│       ├── serve.py             # `UnifiedServeServer` co-hosting Web Guide + Xtream API (shared or split ports)
+│       ├── common/              # Tier 0: `file_utils`, `api_contracts`, `http_utils`, cached `export_bundle`
+│       ├── config/              # Tier 1: Two-tier config package (`model.py`, `load.py`, `public.py`)
+│       ├── epg/                 # Tier 2: WAL SQLite `db`, `sd_client`, `sd_epg`, `xmltv`, `refresh`, `sync`
+│       ├── pipeline/            # Tier 3a: 6-phase `runner`, `providers/`, `matcher`, `validator`, `playlist`, `xtream_exporter`
+│       ├── xtream/              # Tier 3b: Upstream `client.py` + `XtreamPassthroughServer` (`server.py`)
+│       └── web/                 # Tier 3c: `auth`, `store`, `server` (`WebGuideApp` + `TunerSessionManager`), `frontend/`, `static/`
 ├── Dockerfile                   # Multi-stage Alpine container (`node:22-alpine` -> `python:3.13-alpine`)
 ├── docker/                      # `entrypoint.sh`, `bellhop-shim.sh` (`PUID`/`PGID`), & `config.docker.yaml`
 ├── docker-compose.example.yml   # Example Docker Compose stack with `/config`, `/data/{state,cache,output}`
@@ -99,7 +84,7 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
 .venv/bin/ruff format src tests
 .venv/bin/ruff check src tests
 
-# Typecheck & compile TypeScript frontend -> src/bellhop_web/static/*.js:
+# Typecheck & compile TypeScript frontend -> src/bellhop/web/static/*.js:
 .venv/bin/node ./node_modules/typescript/bin/tsc
 
 # Run strict static type checking across src/ and tests/:

@@ -27,8 +27,8 @@ from typing import Any
 import pytest
 import yaml
 
+from bellhop.common.http_utils import UPSTREAM_ERRORS
 from bellhop.config import load_config
-from bellhop_web.http_utils import UPSTREAM_ERRORS
 from tests.fake_xtream_server import (
   FakeProgram,
   FakeStreamDef,
@@ -213,7 +213,7 @@ def test_requirements_lock_and_vendored_player_provenance() -> None:
       f"Missing top-level runtime dependency {required_pkg} in requirements.lock"
     )
 
-  vendor_dir = REPO_ROOT / "src" / "bellhop_web" / "static" / "vendor"
+  vendor_dir = REPO_ROOT / "src" / "bellhop" / "web" / "static" / "vendor"
   versions_md = (vendor_dir / "VERSIONS.md").read_text(encoding="utf-8")
   assert "Apache-2.0" in versions_md
 

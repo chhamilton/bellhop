@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from bellhop.config import load_config
-from bellhop.runner import PipelineRunner, PipelineRunOptions
+from bellhop.pipeline.runner import PipelineRunner, PipelineRunOptions
 from bellhop.serve import UnifiedServeServer
 from bellhop.xtream import fetch_xtream_catalog
 from tests.fake_xtream_server import (

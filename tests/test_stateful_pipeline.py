@@ -7,10 +7,6 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 
-from bellhop.catalog_fetcher import (
-  compute_catalog_diff,
-  fetch_daily_iptv_catalog,
-)
 from bellhop.config import (
   AppConfig,
   LineupConfig,
@@ -18,23 +14,31 @@ from bellhop.config import (
   ValidationConfig,
   XtreamConfig,
 )
-from bellhop.lineup_loader import CableLineup
-from bellhop.lineup_retriever import (
+from bellhop.pipeline.catalog_fetcher import (
+  compute_catalog_diff,
+  fetch_daily_iptv_catalog,
+)
+from bellhop.pipeline.lineup_loader import CableLineup
+from bellhop.pipeline.lineup_retriever import (
   GracenoteLineupId,
   LineupRetrieverError,
   compute_lineup_diff,
   retrieve_cable_lineup,
 )
-from bellhop.mapping_state import (
+from bellhop.pipeline.mapping_state import (
   MappingDocument,
   mapping_document_to_mapped_channels,
   reconcile_rough_mapping,
   validate_mapping_candidates,
 )
-from bellhop.matcher import ChannelMatcher
-from bellhop.models import LineupChannel, XtreamAccountInfo, XtreamStream
-from bellhop.playlist import render_m3u8
-from bellhop.validator import StreamValidator
+from bellhop.pipeline.matcher import ChannelMatcher
+from bellhop.pipeline.models import (
+  LineupChannel,
+  XtreamAccountInfo,
+  XtreamStream,
+)
+from bellhop.pipeline.playlist import render_m3u8
+from bellhop.pipeline.validator import StreamValidator
 from bellhop.xtream import XtreamCatalog
 from tests.http_mock import MockHttpServer
 

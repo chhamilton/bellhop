@@ -24,7 +24,7 @@ import {
   parseUrlState,
   qualityBadgeClass,
   refreshScheduleWindows,
-} from "../../src/bellhop_web/static/guide_logic.js";
+} from "../../src/bellhop/web/static/guide_logic.js";
 
 test("escapeHtml, makeInitials, and qualityBadgeClass format safely", () => {
   assert.equal(escapeHtml(null), "");

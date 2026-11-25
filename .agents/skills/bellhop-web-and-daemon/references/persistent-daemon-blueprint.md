@@ -1,6 +1,6 @@
 # Blueprint: Persistent Internal Scheduler & Web Configuration/Monitoring App
 
-This document captures the architectural plan for evolving `PipelineRunner` (`src/bellhop/runner.py`) + `WebGuideApp` (`src/bellhop_web/server.py`) into a single self-scheduling, web-managed daemon.
+This document captures the architectural plan for evolving `PipelineRunner` (`src/bellhop/pipeline/runner.py`) + `WebGuideApp` (`src/bellhop/web/server.py`) into a single self-scheduling, web-managed daemon.
 
 ## 1. Unified Tuner Arbitration (Viewer Always Wins)
 Because `max_connections == 1`, live viewing and Phase (4) stream validation share one upstream tuner:

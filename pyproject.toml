@@ -40,13 +40,13 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 bellhop = ["py.typed"]
-bellhop_web = ["py.typed", "static/*", "static/vendor/*"]
+"bellhop.web" = ["static/*", "static/vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "--strict-markers --cov=bellhop --cov=bellhop_web --cov-report=term-missing:skip-covered --cov-fail-under=85"
+addopts = "--strict-markers --cov=bellhop --cov-report=term-missing:skip-covered --cov-fail-under=85"
 markers = [
     "docker: requires a live Docker or Podman container daemon",
     "slow: multi-phase end-to-end or subprocess integration test",
@@ -54,7 +54,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["bellhop", "bellhop_web"]
+source = ["bellhop"]
 
 [tool.coverage.report]
 exclude_also = [
@@ -94,4 +94,4 @@ convention = "google"
 
 [tool.ruff.lint.isort]
 force-single-line = false
-known-first-party = ["bellhop", "bellhop_web"]
+known-first-party = ["bellhop"]

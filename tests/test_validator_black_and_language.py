@@ -15,20 +15,20 @@ from bellhop.config import (
   ValidationConfig,
   XtreamConfig,
 )
-from bellhop.lineup_loader import CableLineup
-from bellhop.mapping_state import (
+from bellhop.pipeline.lineup_loader import CableLineup
+from bellhop.pipeline.mapping_state import (
   MappingDocument,
   load_mapping_document,
   reconcile_rough_mapping,
   save_mapping_document,
   validate_mapping_candidates,
 )
-from bellhop.models import (
+from bellhop.pipeline.models import (
   LineupChannel,
   XtreamAccountInfo,
   XtreamStream,
 )
-from bellhop.validator import (
+from bellhop.pipeline.validator import (
   StreamValidator,
   check_audio_language_compatibility,
   normalize_audio_language_code,

@@ -15,75 +15,35 @@ from typing import Any
 
 from aiohttp import web
 
+from bellhop.common.export_bundle import ExportBundleReader
+from bellhop.common.http_utils import (
+  ClientSessionFactory,
+  create_web_app,
+  json_response,
+  resolve_bind_host,
+  start_site,
+)
 from bellhop.config import (
   AppConfig,
   apply_public_config_update,
   export_public_config,
   load_config,
 )
-from bellhop.epg_loader import build_passthrough_xmltv_url
-from bellhop.xtream_server import (
+from bellhop.epg.sync import (
+  build_epg_refresher_from_config as build_epg_refresher_from_config,
+)
+from bellhop.epg.xmltv import build_passthrough_xmltv_url
+from bellhop.web.auth import WebAuthConfig, WebAuthManager
+from bellhop.web.server import WebGuideApp
+from bellhop.web.store import LineupGuideStore
+from bellhop.xtream.server import (
   XtreamExportStore,
   XtreamPassthroughServer,
-  resolve_bind_host,
 )
-from bellhop_web.auth import WebAuthConfig, WebAuthManager
-from bellhop_web.epg_refresh import EpgRefreshConfig, EpgRefreshService
-from bellhop_web.http_utils import (
-  ClientSessionFactory,
-  create_web_app,
-  json_response,
-  start_site,
-)
-from bellhop_web.sd_epg import SchedulesDirectEpgConfig
-from bellhop_web.server import WebGuideApp
-from bellhop_web.store import LineupGuideStore
 
 logger = logging.getLogger("bellhop.serve")
 
 _Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
-
-
-def build_epg_refresher_from_config(
-  config: AppConfig,
-  store: LineupGuideStore,
-  *,
-  session_factory: ClientSessionFactory | None = None,
-  enabled: bool = True,
-) -> EpgRefreshService:
-  """Construct an `EpgRefreshService` wired to `config`'s SD-JSON & XMLTV settings."""
-  xmltv_override = (
-    config.resolve_path(config.epg.xmltv_file)
-    if config.epg.xmltv_file is not None
-    else None
-  )
-  cache_dir = config.resolve_path(config.xtream.cache_dir)
-  epg_db_file = cache_dir / "bellhop_web" / "epg.sqlite3"
-  fallback_xmltv_url = build_passthrough_xmltv_url(config, redact_secret=False)
-  sd_raw = config.lineup.schedules_direct
-  sd_epg_cfg = SchedulesDirectEpgConfig(
-    username=sd_raw.username,
-    password=sd_raw.password,
-    base_url=sd_raw.base_url,
-    auto_add_lineup=sd_raw.auto_add_lineup,
-    preferred_lineup_id=config.lineup.lineup_id,
-    postal_code=config.lineup.postal_code,
-    timeout_sec=config.xtream.request_timeout_sec,
-    token_cache_file=cache_dir / "sd_token.json",
-  )
-  return EpgRefreshService(
-    store,
-    EpgRefreshConfig(
-      enabled=enabled,
-      refresh_hours=config.epg.refresh_hours,
-      request_timeout_sec=config.xtream.request_timeout_sec,
-      xmltv_url=fallback_xmltv_url,
-      xmltv_file=xmltv_override,
-      cache_file=epg_db_file,
-      sd_epg=sd_epg_cfg,
-    ),
-    session_factory=session_factory,
-  )
 
 
 class UnifiedServeServer:
@@ -141,9 +101,16 @@ class UnifiedServeServer:
       config, redact_secret=False
     )
 
+    shared_reader = ExportBundleReader(
+      xtream_dir,
+      m3u8_path=m3u8_path,
+      fallback_xmltv_url=fallback_xmltv_url,
+    )
     web_store = LineupGuideStore(
       xtream_dir,
       m3u8_path=m3u8_path,
+      fallback_xmltv_url=fallback_xmltv_url,
+      bundle_reader=shared_reader,
     )
     epg_refresher = build_epg_refresher_from_config(
       config,
@@ -218,6 +185,7 @@ class UnifiedServeServer:
       epg_refresher.trigger_background_if_needed(reason_prefix="xmltv")
       snap = web_store.get_snapshot()
       now_epoch = epg_refresher.current_epoch()
+      await asyncio.to_thread(epg_refresher.sync_external_if_needed, now_epoch)
       cov = epg_refresher.db.cached_coverage_stats(now_ts=now_epoch)
       if cov.total_programs == 0 and epg_refresher.db.db_path.is_file():
         cov = await asyncio.to_thread(
@@ -231,18 +199,26 @@ class UnifiedServeServer:
       chno: int, epg_channel_id: str, language: str, limit: int
     ) -> list[dict[str, Any]]:
       epg_refresher.trigger_background_if_needed(reason_prefix="short_epg")
-      return await asyncio.to_thread(
-        epg_refresher.db.query_xtream_epg_listings,
-        chno=chno,
-        epg_channel_id=epg_channel_id,
-        language=language,
-        now_ts=epg_refresher.current_epoch(),
-        limit=limit,
-      )
+      now_epoch = epg_refresher.current_epoch()
+
+      def _load_short() -> list[dict[str, Any]]:
+        epg_refresher.sync_external_if_needed(now_epoch)
+        return epg_refresher.db.query_xtream_epg_listings(
+          chno=chno,
+          epg_channel_id=epg_channel_id,
+          language=language,
+          now_ts=now_epoch,
+          limit=limit,
+        )
+
+      return await asyncio.to_thread(_load_short)
 
     epg_active = epg_refresher.config.enabled and epg_refresher.is_configured
     xtream_store = XtreamExportStore(
-      xtream_dir, fallback_xmltv_url=fallback_xmltv_url
+      xtream_dir,
+      m3u8_path=m3u8_path,
+      fallback_xmltv_url=fallback_xmltv_url,
+      bundle_reader=shared_reader,
     )
     xtream_app = XtreamPassthroughServer(
       xtream_store,
@@ -420,7 +396,7 @@ class UnifiedServeServer:
         market = snap.market
         channel_count = len(snap.channels)
         category_count = len(snap.categories)
-        is_authed = self.web_app._session_for(request) is not None
+        is_authed = self.web_app.is_authenticated(request)
         active_tuner = self.web_app.tuner.active_info if is_authed else None
       else:
         xt_snap = self.xtream_app.store.get_snapshot()

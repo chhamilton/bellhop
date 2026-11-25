@@ -10,13 +10,13 @@ from pathlib import Path
 import aiohttp
 import pytest
 
+from bellhop.common.http_utils import start_site
 from bellhop.config import load_config
-from bellhop.runner import PipelineRunner, PipelineRunOptions
-from bellhop_web.auth import WebAuthConfig, WebAuthManager
-from bellhop_web.epg_refresh import EpgRefreshConfig, EpgRefreshService
-from bellhop_web.http_utils import start_site
-from bellhop_web.server import WebGuideApp
-from bellhop_web.store import LineupGuideStore
+from bellhop.epg.refresh import EpgRefreshConfig, EpgRefreshService
+from bellhop.pipeline.runner import PipelineRunner, PipelineRunOptions
+from bellhop.web.auth import WebAuthConfig, WebAuthManager
+from bellhop.web.server import WebGuideApp
+from bellhop.web.store import LineupGuideStore
 from tests.fake_xtream_server import (
   FakeProgram,
   FakeStreamDef,

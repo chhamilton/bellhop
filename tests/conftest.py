@@ -32,7 +32,7 @@ def fake_clock() -> FakeClock:
 @pytest.fixture(autouse=True)
 def _hermetic_default_iptv_org(monkeypatch: pytest.MonkeyPatch) -> None:
   """Prevent hermetic tests from hitting live `iptv-org.github.io` unless mocked."""
-  from bellhop.iptv_org import (
+  from bellhop.pipeline.iptv_org import (
     DEFAULT_IPTV_ORG_API_URL,
     IptvOrgClient,
     IptvOrgFetchResult,

@@ -17,14 +17,18 @@ from bellhop.config import (
   OutputConfig,
   XtreamConfig,
 )
-from bellhop.lineup_loader import CableLineup
-from bellhop.mapping_state import (
+from bellhop.pipeline.lineup_loader import CableLineup
+from bellhop.pipeline.mapping_state import (
   mapping_document_to_mapped_channels,
   reconcile_rough_mapping,
 )
-from bellhop.models import LineupChannel, XtreamAccountInfo, XtreamStream
+from bellhop.pipeline.models import (
+  LineupChannel,
+  XtreamAccountInfo,
+  XtreamStream,
+)
+from bellhop.pipeline.xtream_exporter import export_xtream_playlist_and_guide
 from bellhop.xtream import XtreamCatalog, load_catalog_from_json
-from bellhop.xtream_exporter import export_xtream_playlist_and_guide
 from tests.http_mock import MockHttpServer
 
 SAMPLE_XMLTV = """\

@@ -11,18 +11,18 @@ import pytest
 from aiohttp import web
 from yarl import URL
 
-from bellhop_web.auth import WebAuthConfig, WebAuthManager
-from bellhop_web.epg_db import EpgDatabase
-from bellhop_web.epg_refresh import (
+from bellhop.common.http_utils import DEFAULT_CLIENT_MAX_SIZE, start_site
+from bellhop.epg.db import EpgDatabase
+from bellhop.epg.refresh import (
   EpgRefreshConfig,
   EpgRefreshService,
   parse_xmltv_for_channels,
 )
-from bellhop_web.http_utils import DEFAULT_CLIENT_MAX_SIZE, start_site
-from bellhop_web.server import (
+from bellhop.web.auth import WebAuthConfig, WebAuthManager
+from bellhop.web.server import (
   WebGuideApp,
 )
-from bellhop_web.store import (
+from bellhop.web.store import (
   LineupGuideStore,
   ProgramItem,
   reconcile_non_overlapping_schedule,
@@ -342,7 +342,7 @@ def test_store_reads_real_pipeline_outputs_if_present() -> None:
 
 @pytest.mark.asyncio
 async def test_tuner_release_scoped_by_client_id_prevents_reload_race() -> None:
-  from bellhop_web.server import TunerSessionManager
+  from bellhop.web.server import TunerSessionManager
 
   mgr = TunerSessionManager(settle_sec=0.0)
   session = await mgr.preempt_and_acquire(
@@ -626,7 +626,7 @@ def test_store_m3u8_and_gzip_xmltv_fallbacks(tmp_path: Path) -> None:
 async def test_public_logo_and_favicon_served_before_auth(
   tmp_path: Path,
 ) -> None:
-  from bellhop_web.auth import WebAuthConfig, WebAuthManager
+  from bellhop.web.auth import WebAuthConfig, WebAuthManager
 
   xt_dir = tmp_path / "output" / "xtream"
   _write_sample_xtream_dir(xt_dir, int(time.time()))
@@ -752,7 +752,7 @@ def test_wcag_aa_contrast_landmarks_and_keyboard_a11y_contracts() -> None:
   import re
 
   static_dir = (
-    Path(__file__).resolve().parents[1] / "src" / "bellhop_web" / "static"
+    Path(__file__).resolve().parents[1] / "src" / "bellhop" / "web" / "static"
   )
   index_html = (static_dir / "index.html").read_text(encoding="utf-8")
   styles_css = (static_dir / "styles.css").read_text(encoding="utf-8")
@@ -853,7 +853,7 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
   import logging
   from datetime import datetime, timezone
 
-  caplog.set_level(logging.INFO, logger="bellhop_web.store")
+  caplog.set_level(logging.INFO, logger="bellhop.web.store")
 
   now_ts = int(time.time())
   xt_dir = tmp_path / "output" / "xtream"

@@ -3,8 +3,8 @@
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ES2022",
-    "rootDir": "src/bellhop_web/frontend",
-    "outDir": "src/bellhop_web/static",
+    "rootDir": "src/bellhop/web/frontend",
+    "outDir": "src/bellhop/web/static",
     "strict": true,
     "noImplicitAny": true,
     "strictNullChecks": true,
@@ -17,5 +17,5 @@
     "newLine": "lf",
     "removeComments": false
   },
-  "include": ["src/bellhop_web/frontend/**/*.ts"]
+  "include": ["src/bellhop/web/frontend/**/*.ts"]
 }

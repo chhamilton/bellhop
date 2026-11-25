@@ -1,6 +1,6 @@
 # Provider Wire Formats & Matcher Scoring Reference
 
-## 1. `ChannelMatcher` Scoring Summary (`src/bellhop/matcher.py`)
+## 1. `ChannelMatcher` Scoring Summary (`src/bellhop/pipeline/matcher.py` & `matcher_vocab.py`)
 - **Hard disqualifiers:** Category banners, `24/7`, `PPV`, `VOD`, `catchup`, `18+`/`XXX`, `audio only` (note: `Adult Swim` and `Radio-Canada` are explicitly whitelisted), per-channel `exclude` phrases, identity baseline `< 40.0`, or total score `< 45.0`.
 - **Additive signals:**
   - Manual pin (`pinned_streams`): `1000.0`
@@ -10,7 +10,7 @@
   - Regional alignment: Montréal `+24`, Québec/CA-FR `+16`, Canada `+12`, US `+12`, East TZ `+5`, FR hint `+5` (penalties: Foreign `-45`, UK `-40`, France-for-QC `-28`, unrequested West `-22`, timeshift `+1/+2` `-18`)
   - Quality tier: `4K` `+15`, `FHD/1080p` `+14`, `RAW/60fps` `+11` (or `+4` bonus), `HD` `+10` (category HD `+5.5`), `HEVC` `+2`, `SD` `-8`, `(BK)/Backup` `-10`
 
-## 2. TV Guide Backend Wire Format (`src/bellhop/providers/tvguide.py`)
+## 2. TV Guide Backend Wire Format (`src/bellhop/pipeline/providers/tvguide.py`)
 Base URL: `https://backend.tvguide.com/tvschedules/tvguide` (requires `Referer: https://www.tvguide.com/` header)
 - **US ZIP discovery:** `GET /serviceproviders/zipcode/{zip5}/web` → `data.items[]` (`id`, `name`, `city`, `state`, `type`)
 - **Country discovery (Canada = `CAN`):** `GET /serviceproviders/country/{ISO3}/web` → `data.items[]` (Canadian postal codes like `H2Y1C6` are NOT accepted on `/zipcode/`; filter `/country/CAN/web` by FSA province/city instead)
@@ -20,7 +20,7 @@ Base URL: `https://backend.tvguide.com/tvschedules/tvguide` (requires `Referer: 
 - **Official station logo URL:** `https://www.tvguide.com/a/img/catalog` + `item["logo"]`
 - **Bell Fibe TV Montréal (Digital) ID:** `TVG-9100000607` (Videotron Montréal Digital: `TVG-9166060733`)
 
-## 3. Schedules Direct SD-JSON Wire Format (`src/bellhop/providers/schedules_direct.py`)
+## 3. Schedules Direct SD-JSON Wire Format (`src/bellhop/epg/sd_client.py` & `src/bellhop/pipeline/providers/schedules_direct.py`)
 Base URL: `https://json.schedulesdirect.org/20141201`
 - **Auth:** `POST /token` with `{"username": "...", "password": "<lowercase_sha1_hex>"}` → returns `{"code": 0, "token": "..."}`. Pass header `token: <token>` on all subsequent requests; re-authenticate on HTTP `401`/`403` or JSON `code` in `{4001, 4003, 4004}`.
 - **Discovery:** `GET /headends?country=CAN&postalcode=H2Y1C6` (no spaces in Canadian postal codes).

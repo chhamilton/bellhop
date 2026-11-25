@@ -23,14 +23,19 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from bellhop.catalog_fetcher import CatalogFetchResult
+from bellhop.common.api_contracts import EpgStatusDict
+from bellhop.common.http_utils import build_access_urls
 from bellhop.config import AppConfig, load_config
-from bellhop.lineup_loader import CableLineup
-from bellhop.lineup_retriever import LineupRetrievalResult, LineupRetrieverError
-from bellhop.mapping_state import MappingDocument
-from bellhop.models import MappedChannel
-from bellhop.playlist import resolve_group_display_map
-from bellhop.runner import (
+from bellhop.pipeline.catalog_fetcher import CatalogFetchResult
+from bellhop.pipeline.lineup_loader import CableLineup
+from bellhop.pipeline.lineup_retriever import (
+  LineupRetrievalResult,
+  LineupRetrieverError,
+)
+from bellhop.pipeline.mapping_state import MappingDocument
+from bellhop.pipeline.models import MappedChannel
+from bellhop.pipeline.playlist import resolve_group_display_map
+from bellhop.pipeline.runner import (
   PipelineConfigError,
   PipelineRunner,
   PipelineRunOptions,
@@ -39,11 +44,9 @@ from bellhop.runner import (
   parse_refresh_targets,
   resolve_active_phases,
 )
+from bellhop.pipeline.xtream_exporter import XtreamExportResult
 from bellhop.serve import UnifiedServeServer
-from bellhop.xtream import XtreamError
-from bellhop.xtream_exporter import XtreamExportResult
-from bellhop.xtream_server import build_access_urls
-from bellhop_web.api_contracts import EpgStatusDict
+from bellhop.xtream.client import XtreamError
 
 console = Console()
 
@@ -461,8 +464,8 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
   )
   if not args.quiet and not args.verbose:
     for log_name in (
-      "bellhop_web.epg",
-      "bellhop_web.store",
+      "bellhop.epg",
+      "bellhop.web.store",
       "bellhop.serve",
     ):
       logging.getLogger(log_name).setLevel(logging.INFO)

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from bellhop.matcher import ChannelMatcher, _is_plausible_native_epg
-from bellhop.models import LineupChannel, XtreamStream
-from bellhop.providers.normalizer import (
+from bellhop.pipeline.matcher import ChannelMatcher, _is_plausible_native_epg
+from bellhop.pipeline.models import LineupChannel, XtreamStream
+from bellhop.pipeline.providers.normalizer import (
   RawProviderSlot,
   normalize_provider_slots,
 )

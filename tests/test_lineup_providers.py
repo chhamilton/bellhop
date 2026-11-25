@@ -15,16 +15,16 @@ from bellhop.config import (
   SchedulesDirectConfig,
   StateConfig,
 )
-from bellhop.iptv_org import IptvOrgIndex
-from bellhop.lineup_retriever import (
+from bellhop.pipeline.iptv_org import IptvOrgIndex
+from bellhop.pipeline.lineup_retriever import (
   build_default_providers,
   discover_provider_lineups,
   retrieve_cable_lineup,
   select_lineup_provider,
 )
-from bellhop.matcher import ChannelMatcher
-from bellhop.models import XtreamStream
-from bellhop.providers import (
+from bellhop.pipeline.matcher import ChannelMatcher
+from bellhop.pipeline.models import XtreamStream
+from bellhop.pipeline.providers import (
   SchedulesDirectLineupProvider,
   TvGuideLineupProvider,
   YamlLineupProvider,

@@ -7,7 +7,7 @@ FROM node:22-alpine AS frontend-builder
 
 WORKDIR /build
 COPY package.json package-lock.json tsconfig.json ./
-COPY src/bellhop_web/frontend ./src/bellhop_web/frontend
+COPY src/bellhop/web/frontend ./src/bellhop/web/frontend
 RUN npm ci --no-audit --no-fund \
   && npx tsc --noEmit \
   && npx tsc
@@ -37,7 +37,7 @@ COPY pyproject.toml requirements.lock README.md LICENSE NOTICE ./
 COPY src ./src
 COPY data ./data
 COPY docker ./docker
-COPY --from=frontend-builder /build/src/bellhop_web/static/*.js ./src/bellhop_web/static/
+COPY --from=frontend-builder /build/src/bellhop/web/static/*.js ./src/bellhop/web/static/
 
 RUN pip install --no-cache-dir -r requirements.lock \
   && pip install --no-cache-dir --no-deps . \

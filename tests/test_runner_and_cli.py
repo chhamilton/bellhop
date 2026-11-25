@@ -9,7 +9,7 @@ import pytest
 
 from bellhop.cli import main as cli_main
 from bellhop.config import load_config
-from bellhop.runner import (
+from bellhop.pipeline.runner import (
   PipelineConfigError,
   PipelineRunner,
   PipelineRunOptions,

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from bellhop.mapping_state import (
+from bellhop.pipeline.mapping_state import (
   CandidateRecord,
   ChannelMappingSlot,
   _reconcile_single_slot,
 )
-from bellhop.models import LineupChannel
+from bellhop.pipeline.models import LineupChannel
 
 
 def _rds_channel() -> LineupChannel:

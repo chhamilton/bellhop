@@ -22,11 +22,11 @@ from bellhop.config import (
   ServeXtreamConfig,
   XtreamConfig,
 )
+from bellhop.epg.db import EpgDatabase
+from bellhop.epg.refresh import EpgRefreshConfig, EpgRefreshService
+from bellhop.epg.sd_epg import SchedulesDirectEpgConfig, hash_sd_password
 from bellhop.serve import UnifiedServeServer
-from bellhop_web.epg_db import EpgDatabase
-from bellhop_web.epg_refresh import EpgRefreshConfig, EpgRefreshService
-from bellhop_web.sd_epg import SchedulesDirectEpgConfig, hash_sd_password
-from bellhop_web.store import LineupGuideStore
+from bellhop.web.store import LineupGuideStore
 from tests.http_mock import MockHttpServer, new_test_session
 
 
@@ -638,11 +638,11 @@ async def test_epg_db_permissions_corrupt_recovery_schema_bump_and_cli_banner(
   from rich.console import Console
 
   from bellhop import cli
-  from bellhop_web.epg_db import (
+  from bellhop.epg.db import (
     SD_PROGRAM_RETENTION_DAYS,
     SD_PROGRAM_RETENTION_SEC,
   )
-  from bellhop_web.store import ProgramItem
+  from bellhop.web.store import ProgramItem
 
   assert SD_PROGRAM_RETENTION_DAYS == 14
 

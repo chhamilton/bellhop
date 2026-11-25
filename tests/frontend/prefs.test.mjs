@@ -11,7 +11,7 @@ import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 
-const PREFS_JS_PATH = path.resolve("src/bellhop_web/static/prefs.js");
+const PREFS_JS_PATH = path.resolve("src/bellhop/web/static/prefs.js");
 const PREFS_SOURCE = fs.readFileSync(PREFS_JS_PATH, "utf8");
 
 function createBrowserSandbox(initialStorage = {}) {

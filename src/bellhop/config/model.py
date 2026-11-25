@@ -6,9 +6,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from bellhop.iptv_org import DEFAULT_IPTV_ORG_API_URL
-from bellhop.lineup_loader import DEFAULT_BELL_FIBE_MTL_LINEUP_ID
-from bellhop_web.http_utils import DEFAULT_TRUSTED_PROXY_IPS
+from bellhop.common.http_utils import DEFAULT_TRUSTED_PROXY_IPS
+
+DEFAULT_BELL_FIBE_MTL_LINEUP_ID = "CAN-BELLFIBE-MTL-X"
+DEFAULT_IPTV_ORG_API_URL = "https://iptv-org.github.io/api"
 
 
 def _mask(secret: str, redact: bool) -> str:

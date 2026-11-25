@@ -5,7 +5,7 @@ Covers:
   - Python `ruff check` and `ruff format --check` (Google style, 2-space
     indentation, no tabs) plus tab-free verification across source files.
   - TypeScript `tsc --noEmit` strict checking and build-sync verification
-    between `src/bellhop_web/frontend/*.ts` and `src/bellhop_web/static/*.js`.
+    between `src/bellhop/web/frontend/*.ts` and `src/bellhop/web/static/*.js`.
   - Node unit tests for `BellhopSettings` (`tests/frontend/prefs.test.mjs`).
 """
 
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from bellhop_web.api_contracts import render_typescript_api_contracts
+from bellhop.common.api_contracts import render_typescript_api_contracts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -89,7 +89,7 @@ def test_ruff_google_style_and_no_tabs() -> None:
 
 def test_typescript_strict_and_compiled_assets_in_sync(tmp_path: Path) -> None:
   contracts_dts = (
-    REPO_ROOT / "src" / "bellhop_web" / "frontend" / "api_contracts.d.ts"
+    REPO_ROOT / "src" / "bellhop" / "web" / "frontend" / "api_contracts.d.ts"
   )
   assert contracts_dts.is_file(), (
     "Missing generated frontend/api_contracts.d.ts"
@@ -97,8 +97,8 @@ def test_typescript_strict_and_compiled_assets_in_sync(tmp_path: Path) -> None:
   assert contracts_dts.read_text(encoding="utf-8") == (
     render_typescript_api_contracts()
   ), (
-    "src/bellhop_web/frontend/api_contracts.d.ts is out of sync with "
-    "src/bellhop_web/api_contracts.py"
+    "src/bellhop/web/frontend/api_contracts.d.ts is out of sync with "
+    "src/bellhop/common/api_contracts.py"
   )
 
   node_bin = _resolve_venv_tool("node")
@@ -129,7 +129,7 @@ def test_typescript_strict_and_compiled_assets_in_sync(tmp_path: Path) -> None:
     f"TypeScript build failed:\n{build.stdout}\n{build.stderr}"
   )
 
-  static_dir = REPO_ROOT / "src" / "bellhop_web" / "static"
+  static_dir = REPO_ROOT / "src" / "bellhop" / "web" / "static"
   compiled_js = (
     "prefs.js",
     "login.js",

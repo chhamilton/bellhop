@@ -10,7 +10,13 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
+from bellhop.common.http_utils import (
+  DEFAULT_TRUSTED_PROXY_IPS,
+  parse_trusted_proxy_networks,
+)
 from bellhop.config.model import (
+  DEFAULT_BELL_FIBE_MTL_LINEUP_ID,
+  DEFAULT_IPTV_ORG_API_URL,
   AppConfig,
   EpgConfig,
   IptvOrgConfig,
@@ -24,12 +30,6 @@ from bellhop.config.model import (
   TvGuideConfig,
   ValidationConfig,
   XtreamConfig,
-)
-from bellhop.iptv_org import DEFAULT_IPTV_ORG_API_URL
-from bellhop.lineup_loader import DEFAULT_BELL_FIBE_MTL_LINEUP_ID
-from bellhop_web.http_utils import (
-  DEFAULT_TRUSTED_PROXY_IPS,
-  parse_trusted_proxy_networks,
 )
 
 ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")

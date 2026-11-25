@@ -17,9 +17,7 @@ from ruamel.yaml.scalarstring import (
   SingleQuotedScalarString,
 )
 
-from bellhop.config.load import load_config
-from bellhop.config.model import AppConfig
-from bellhop_web.api_contracts import (
+from bellhop.common.api_contracts import (
   PublicConfigPayload,
   PublicEpgDict,
   PublicLineupDict,
@@ -31,7 +29,9 @@ from bellhop_web.api_contracts import (
   PublicUpstreamXtreamDict,
   PublicValidationDict,
 )
-from bellhop_web.file_utils import PRIVATE_FILE_MODE, ensure_private_dir
+from bellhop.common.file_utils import PRIVATE_FILE_MODE, ensure_private_dir
+from bellhop.config.load import load_config
+from bellhop.config.model import AppConfig
 
 __all__ = [
   "PublicConfigPayload",

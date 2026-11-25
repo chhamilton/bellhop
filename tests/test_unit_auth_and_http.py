@@ -8,15 +8,7 @@ from pathlib import Path
 import pytest
 from yarl import URL
 
-from bellhop.config import load_config
-from bellhop_web.auth import (
-  LoginRateLimiter,
-  WebAuthConfig,
-  WebAuthManager,
-  render_login_page_html,
-  sanitize_next_url,
-)
-from bellhop_web.http_utils import (
+from bellhop.common.http_utils import (
   DEFAULT_CLIENT_MAX_SIZE,
   build_access_urls,
   parse_trusted_proxy_networks,
@@ -24,8 +16,16 @@ from bellhop_web.http_utils import (
   resolve_client_ip,
   start_site,
 )
-from bellhop_web.server import WebGuideApp
-from bellhop_web.store import LineupGuideStore
+from bellhop.config import load_config
+from bellhop.web.auth import (
+  LoginRateLimiter,
+  WebAuthConfig,
+  WebAuthManager,
+  render_login_page_html,
+  sanitize_next_url,
+)
+from bellhop.web.server import WebGuideApp
+from bellhop.web.store import LineupGuideStore
 from tests.conftest import FakeClock
 from tests.http_mock import new_test_session
 

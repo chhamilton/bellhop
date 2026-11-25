@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from bellhop.lineup_loader import CableLineup, load_lineup
-from bellhop.matcher import ChannelMatcher
-from bellhop.models import XtreamStream
-from bellhop.providers.normalizer import (
+from bellhop.pipeline.lineup_loader import CableLineup, load_lineup
+from bellhop.pipeline.matcher import ChannelMatcher
+from bellhop.pipeline.models import XtreamStream
+from bellhop.pipeline.providers.normalizer import (
   RawProviderSlot,
   normalize_provider_slots,
 )
