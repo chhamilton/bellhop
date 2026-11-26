@@ -14,7 +14,7 @@ import mimetypes
 import re
 import secrets
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from pathlib import Path
@@ -39,16 +39,19 @@ from bellhop.common.http_utils import (
   ClientSessionFactory,
   IpNetwork,
   LoginRateLimiter,
+  UpstreamTargetBlockedError,
   bytes_response,
   create_web_app,
   default_session_factory,
   detect_device_ip,
+  extract_explicit_private_origins,
   json_response,
+  open_upstream_url,
   parse_trusted_proxy_networks,
   redact_url_secrets,
   redirect_response,
   resolve_request_client_ip,
-  upstream_url,
+  validate_upstream_url,
 )
 from bellhop.common.http_utils import (
   build_access_urls as _build_access_urls,
@@ -95,6 +98,9 @@ HLS_URI_ATTR_RE = re.compile(r'URI="([^"]+)"')
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 HLS_ASSET_TTL_SEC = 300.0
 HLS_MAX_ASSETS = 1024
+HLS_SESSION_LEASE_SEC = 20.0
+DEFAULT_WRITE_TIMEOUT_SEC = 10.0
+_PREEMPTED_HLS_TTL_SEC = 120.0
 
 
 def _redact_upstream_text(text: str) -> str:
@@ -124,9 +130,11 @@ def rewrite_hls_manifest(
   """
   out_lines: list[str] = []
 
-  def _proxy_uri(raw_uri: str) -> str:
+  def _proxy_uri(raw_uri: str) -> str | None:
     resolved = urljoin(base_url, raw_uri.strip())
     tok = register_asset(chno, resolved)
+    if not tok:
+      return None
     return f"/api/hls/{chno}/asset?u={tok}"
 
   for raw_line in manifest_text.splitlines():
@@ -136,15 +144,27 @@ def rewrite_hls_manifest(
       continue
     if stripped.startswith("#"):
       if 'URI="' in stripped:
-        rewritten_tag = HLS_URI_ATTR_RE.sub(
-          lambda m: f'URI="{_proxy_uri(m.group(1))}"',
-          stripped,
-        )
+        blocked = False
+
+        def _replace_attr(m: re.Match[str]) -> str:
+          nonlocal blocked
+          proxied = _proxy_uri(m.group(1))
+          if proxied is None:
+            blocked = True
+            return m.group(0)
+          return f'URI="{proxied}"'
+
+        rewritten_tag = HLS_URI_ATTR_RE.sub(_replace_attr, stripped)
+        if blocked:
+          continue
         out_lines.append(rewritten_tag)
       else:
         out_lines.append(stripped)
       continue
-    out_lines.append(_proxy_uri(stripped))
+    proxied_line = _proxy_uri(stripped)
+    if proxied_line is None:
+      continue
+    out_lines.append(proxied_line)
 
   return "\n".join(out_lines) + "\n"
 
@@ -159,9 +179,16 @@ class ActiveTunerSession:
   mode: str
   started_at: float
   client_id: str = ""
+  tune_token: str = ""
+  lease_expires_at: float | None = None
   cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
   closed_event: asyncio.Event = field(default_factory=asyncio.Event)
   task: asyncio.Task[Any] | None = None
+
+  def is_expired(self, now: float) -> bool:
+    return self.closed_event.is_set() or (
+      self.lease_expires_at is not None and now >= self.lease_expires_at
+    )
 
 
 class TunerSessionManager:
@@ -179,12 +206,36 @@ class TunerSessionManager:
     self._clock = clock
     self._lock = asyncio.Lock()
     self._seq = 0
+    self._wait_ticket = 0
+    self._pending_settle = False
     self._active: ActiveTunerSession | None = None
+    self._preempted_hls_tunes: dict[tuple[str, int, str], float] = {}
+
+  def _prune_preempted_locked(self, now: float) -> None:
+    for key, exp in list(self._preempted_hls_tunes.items()):
+      if exp <= now:
+        self._preempted_hls_tunes.pop(key, None)
+
+  @staticmethod
+  def _cancelled_dummy(
+    *, chno: int, channel_name: str, mode: str, client_id: str, now: float
+  ) -> ActiveTunerSession:
+    dummy = ActiveTunerSession(
+      session_id=0,
+      chno=chno,
+      channel_name=channel_name,
+      mode=mode,
+      started_at=now,
+      client_id=client_id,
+    )
+    dummy.cancel_event.set()
+    dummy.closed_event.set()
+    return dummy
 
   @property
   def active_info(self) -> TunerActiveInfoDict | None:
     s = self._active
-    if s is None or s.closed_event.is_set():
+    if s is None or s.is_expired(self._clock()):
       return None
     return {
       "session_id": s.session_id,
@@ -201,29 +252,147 @@ class TunerSessionManager:
     mode: str = "mpegts",
     task: asyncio.Task[Any] | None = None,
     client_id: str = "",
+    *,
+    tune_token: str = "",
+    lease_ttl_sec: float | None = None,
+    is_disconnected: Callable[[], bool] | None = None,
+    on_preempt: Callable[[], None] | None = None,
   ) -> ActiveTunerSession:
+    self._wait_ticket += 1
+    my_ticket = self._wait_ticket
     async with self._lock:
-      had_previous = await self._close_active_locked()
-      if had_previous and self.settle_sec > 0:
+      await self._close_active_locked()
+      if on_preempt is not None:
+        on_preempt()
+      if my_ticket != self._wait_ticket or (
+        is_disconnected is not None and is_disconnected()
+      ):
+        return self._cancelled_dummy(
+          chno=chno,
+          channel_name=channel_name,
+          mode=mode,
+          client_id=client_id,
+          now=self._clock(),
+        )
+      if self._pending_settle and self.settle_sec > 0:
+        self._pending_settle = False
         await asyncio.sleep(self.settle_sec)
+        if my_ticket != self._wait_ticket or (
+          is_disconnected is not None and is_disconnected()
+        ):
+          return self._cancelled_dummy(
+            chno=chno,
+            channel_name=channel_name,
+            mode=mode,
+            client_id=client_id,
+            now=self._clock(),
+          )
+      self._pending_settle = False
       self._seq += 1
+      now = self._clock()
       session = ActiveTunerSession(
         session_id=self._seq,
         chno=chno,
         channel_name=channel_name,
         mode=mode,
-        started_at=self._clock(),
+        started_at=now,
         client_id=client_id,
+        tune_token=tune_token,
+        lease_expires_at=(
+          now + lease_ttl_sec if lease_ttl_sec is not None else None
+        ),
         task=task,
       )
       self._active = session
       return session
 
+  async def acquire_or_renew_hls(
+    self,
+    *,
+    chno: int,
+    channel_name: str,
+    client_id: str = "",
+    tune_token: str = "",
+    lease_ttl_sec: float = HLS_SESSION_LEASE_SEC,
+    task: asyncio.Task[Any] | None = None,
+    is_disconnected: Callable[[], bool] | None = None,
+    on_preempt: Callable[[int], None] | None = None,
+  ) -> tuple[ActiveTunerSession | None, bool]:
+    """Acquire or renew an HLS lease without preempting a newer viewer."""
+    self._wait_ticket += 1
+    my_ticket = self._wait_ticket
+    async with self._lock:
+      now = self._clock()
+      self._prune_preempted_locked(now)
+      if (
+        tune_token
+        and (client_id, chno, tune_token) in self._preempted_hls_tunes
+      ):
+        return None, False
+      cur = self._active
+      if (
+        cur is not None
+        and not cur.is_expired(now)
+        and cur.mode == "hls"
+        and cur.chno == chno
+        and cur.client_id == client_id
+        and cur.tune_token == tune_token
+      ):
+        cur.lease_expires_at = now + lease_ttl_sec
+        cur.task = task
+        return cur, False
+
+      await self._close_active_locked()
+      if on_preempt is not None:
+        on_preempt(chno)
+      if my_ticket != self._wait_ticket or (
+        is_disconnected is not None and is_disconnected()
+      ):
+        return None, False
+      if self._pending_settle and self.settle_sec > 0:
+        self._pending_settle = False
+        await asyncio.sleep(self.settle_sec)
+        if my_ticket != self._wait_ticket or (
+          is_disconnected is not None and is_disconnected()
+        ):
+          return None, False
+      self._pending_settle = False
+      self._seq += 1
+      now = self._clock()
+      session = ActiveTunerSession(
+        session_id=self._seq,
+        chno=chno,
+        channel_name=channel_name,
+        mode="hls",
+        started_at=now,
+        client_id=client_id,
+        tune_token=tune_token,
+        lease_expires_at=now + lease_ttl_sec,
+        task=task,
+      )
+      self._active = session
+      return session, True
+
+  def touch_hls_lease(
+    self, chno: int, *, lease_ttl_sec: float = HLS_SESSION_LEASE_SEC
+  ) -> bool:
+    """Extend the active HLS lease for `chno`; return `False` if preempted."""
+    s = self._active
+    now = self._clock()
+    if s is None or s.is_expired(now):
+      return True
+    if s.mode != "hls" or s.chno != chno:
+      return False
+    s.lease_expires_at = now + lease_ttl_sec
+    return True
+
   async def release_all(self, *, client_id: str | None = None) -> bool:
     async with self._lock:
+      now = self._clock()
       if (
         client_id
         and self._active is not None
+        and not self._active.is_expired(now)
         and self._active.client_id
         and self._active.client_id != client_id
       ):
@@ -236,17 +405,31 @@ class TunerSessionManager:
       self._active = None
 
   async def _close_active_locked(self) -> bool:
+    now = self._clock()
+    self._prune_preempted_locked(now)
     prev = self._active
     if prev is None or prev.closed_event.is_set():
       self._active = None
       return False
+    if prev.lease_expires_at is not None and now >= prev.lease_expires_at:
+      prev.closed_event.set()
+      self._active = None
+      return False
 
+    if prev.mode == "hls" and prev.tune_token:
+      self._preempted_hls_tunes[
+        (prev.client_id, prev.chno, prev.tune_token)
+      ] = now + _PREEMPTED_HLS_TTL_SEC
     prev.cancel_event.set()
     if prev.task is not None and not prev.task.done():
       prev.task.cancel()
-    with contextlib.suppress(asyncio.TimeoutError):
-      await asyncio.wait_for(prev.closed_event.wait(), timeout=1.5)
+    if prev.mode == "hls" and (prev.task is None or prev.task.done()):
+      prev.closed_event.set()
+    else:
+      with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(prev.closed_event.wait(), timeout=1.5)
     self._active = None
+    self._pending_settle = True
     return True
 
 
@@ -275,6 +458,7 @@ class WebGuideApp:
     config_reader: Callable[[], dict[str, Any]] | None = None,
     config_writer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     clock: Callable[[], float] = time.time,
+    write_timeout_sec: float = DEFAULT_WRITE_TIMEOUT_SEC,
   ) -> None:
     if not auth.has_credentials:
       raise ValueError(
@@ -284,6 +468,7 @@ class WebGuideApp:
     self.store = store
     self.static_dir = static_dir
     self._clock = clock
+    self.write_timeout_sec = max(0.01, float(write_timeout_sec))
     self.tuner = TunerSessionManager(settle_sec=settle_sec, clock=clock)
     self.epg_refresher = epg_refresher
     self.auth: WebAuthManager = auth
@@ -759,15 +944,16 @@ class WebGuideApp:
     self, request: web.Request
   ) -> web.StreamResponse:
     client_id = request.query.get("client", "").strip() or None
-    if (
-      not client_id
-      or not self._hls_owner_client
-      or self._hls_owner_client == client_id
-    ):
-      self._hls_edge_urls.clear()
-      self._hls_assets.clear()
-      self._hls_owner_client = ""
     released = await self.tuner.release_all(client_id=client_id)
+    if released or (
+      self.tuner.active_info is None
+      and (
+        not client_id
+        or not self._hls_owner_client
+        or self._hls_owner_client == client_id
+      )
+    ):
+      self._clear_all_hls_state()
     return json_response({"released": released})
 
   async def _handle_lineup(self, request: web.Request) -> web.StreamResponse:
@@ -926,12 +1112,44 @@ class WebGuideApp:
       and headers.get("content-length") is not None
     )
 
+  def _clear_all_hls_state(self) -> None:
+    self._hls_edge_urls.clear()
+    self._hls_assets.clear()
+    self._hls_owner_client = ""
+
+  def _prune_hls_other_channels(self, chno: int) -> None:
+    for other_ch in list(self._hls_edge_urls):
+      if other_ch != chno:
+        self._hls_edge_urls.pop(other_ch, None)
+    for tok, (asset_ch, _u, _exp) in list(self._hls_assets.items()):
+      if asset_ch != chno:
+        self._hls_assets.pop(tok, None)
+
+  @staticmethod
+  def _is_request_disconnected(request: web.Request) -> bool:
+    return request.transport is None or request.transport.is_closing()
+
+  def _allowed_private_origins_for(
+    self, ch: WebChannel | None
+  ) -> frozenset[tuple[str, int]]:
+    if ch is None:
+      return frozenset()
+    urls = list(self._candidate_urls_for(ch))
+    if edge := self._hls_edge_urls.get(ch.chno):
+      urls.append(edge[0])
+    return extract_explicit_private_origins(urls)
+
   def _register_hls_asset(self, chno: int, resolved_url: str) -> str:
     """Register an HTTP(S) HLS segment/playlist URL and return its opaque
     token.
     """
-    parsed = urlsplit(resolved_url)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+    ch = self.store.get_snapshot().channels_by_chno.get(chno)
+    allowed_origins = self._allowed_private_origins_for(ch)
+    try:
+      validate_upstream_url(
+        resolved_url, allowed_private_origins=allowed_origins
+      )
+    except (UpstreamTargetBlockedError, ValueError):
       return ""
     now = self._clock()
     if len(self._hls_assets) >= HLS_MAX_ASSETS:
@@ -981,16 +1199,18 @@ class WebGuideApp:
     if request.method == "HEAD":
       return bytes_response(b"", "video/mp2t")
 
-    self._hls_edge_urls.clear()
-    self._hls_assets.clear()
-    self._hls_owner_client = ""
+    allowed_origins = self._allowed_private_origins_for(ch)
     session = await self.tuner.preempt_and_acquire(
       chno=ch.chno,
       channel_name=ch.name,
       mode="mpegts",
       task=asyncio.current_task(),
       client_id=client_id,
+      is_disconnected=lambda: self._is_request_disconnected(request),
+      on_preempt=self._clear_all_hls_state,
     )
+    if session.cancel_event.is_set():
+      return web.Response(status=HTTPStatus.SERVICE_UNAVAILABLE)
 
     response: web.StreamResponse | None = None
     last_err = "No candidate stream succeeded"
@@ -1002,7 +1222,11 @@ class WebGuideApp:
           await asyncio.sleep(self.tuner.settle_sec)
 
         try:
-          async with self.client.get(upstream_url(target_url)) as resp:
+          async with open_upstream_url(
+            self.client,
+            target_url,
+            allowed_private_origins=allowed_origins,
+          ) as resp:
             if resp.status not in (200, 206):
               last_err = f"Upstream HTTP {resp.status}"
               continue
@@ -1029,13 +1253,27 @@ class WebGuideApp:
               },
             )
             response.enable_chunked_encoding()
-            await response.prepare(request)
+            await asyncio.wait_for(
+              response.prepare(request), timeout=self.write_timeout_sec
+            )
             async for chunk in resp.content.iter_chunked(16384):
               if session.cancel_event.is_set():
                 break
-              await response.write(chunk)
-            await response.write_eof()
+              await asyncio.wait_for(
+                response.write(chunk), timeout=self.write_timeout_sec
+              )
+            await asyncio.wait_for(
+              response.write_eof(), timeout=self.write_timeout_sec
+            )
             return response
+        except UpstreamTargetBlockedError as exc:
+          logger.warning(
+            "Blocked upstream stream target on ch %d: %s", chno, exc
+          )
+          last_err = "Upstream target blocked by SSRF policy"
+          if response is not None:
+            return response
+          continue
         except UPSTREAM_ERRORS as exc:
           logger.debug(
             "MPEG-TS candidate failed on ch %d: %s",
@@ -1052,21 +1290,36 @@ class WebGuideApp:
       return json_response(
         {"error": last_err, "chno": ch.chno}, status=HTTPStatus.BAD_GATEWAY
       )
-    except (asyncio.CancelledError, ConnectionResetError):
-      # Preempted by another viewer (tuner handoff) or viewer disconnected.
+    except (
+      asyncio.CancelledError,
+      asyncio.TimeoutError,
+      ConnectionResetError,
+      BrokenPipeError,
+    ):
+      # Preempted by another viewer (tuner handoff) or stalled/dead client.
       return response or web.Response(status=HTTPStatus.SERVICE_UNAVAILABLE)
     finally:
       await self.tuner.mark_closed(session)
 
-  async def _fetch_text(self, url: str) -> tuple[int, str, str]:
+  async def _fetch_text(
+    self,
+    url: str,
+    *,
+    allowed_private_origins: Collection[tuple[str, int]] = (),
+  ) -> tuple[int, str, str]:
     """GET `url`, returning `(status, final_url, decoded_body)`."""
-    async with self.client.get(upstream_url(url)) as resp:
+    async with open_upstream_url(
+      self.client,
+      url,
+      allowed_private_origins=allowed_private_origins,
+    ) as resp:
       body = await resp.read()
       return resp.status, str(resp.url), body.decode("utf-8", errors="replace")
 
   async def _handle_hls_index(self, request: web.Request) -> web.StreamResponse:
     chno = int(request.match_info["chno"])
     client_id = request.query.get("client", "").strip()
+    tune_token = request.query.get("t", "").strip()
     snap = self.store.get_snapshot()
     ch = snap.channels_by_chno.get(chno)
     cand_urls = self._candidate_urls_for(ch) if ch is not None else []
@@ -1075,78 +1328,112 @@ class WebGuideApp:
         {"error": f"Channel {chno} not found"}, status=HTTPStatus.NOT_FOUND
       )
 
-    # Close any continuous .ts connection and drop stale HLS sessions for OTHER
-    # channels
-    await self.tuner.release_all()
+    allowed_origins = self._allowed_private_origins_for(ch)
+    session, is_new = await self.tuner.acquire_or_renew_hls(
+      chno=ch.chno,
+      channel_name=ch.name,
+      client_id=client_id,
+      tune_token=tune_token,
+      task=asyncio.current_task(),
+      is_disconnected=lambda: self._is_request_disconnected(request),
+      on_preempt=self._prune_hls_other_channels,
+    )
+    if session is None or session.cancel_event.is_set():
+      return json_response(
+        {"error": "Stream preempted by another viewer"},
+        status=HTTPStatus.SERVICE_UNAVAILABLE,
+      )
     if client_id:
       self._hls_owner_client = client_id
-    for other_ch in list(self._hls_edge_urls):
-      if other_ch != chno:
-        self._hls_edge_urls.pop(other_ch, None)
-    for tok, (asset_ch, _u, _exp) in list(self._hls_assets.items()):
-      if asset_ch != chno:
-        self._hls_assets.pop(tok, None)
 
-    # 1. Reuse the cached edge playlist URL so 5s hls.js polls stay on one edge
-    #    session.
-    cached = self._hls_edge_urls.get(chno)
-    if cached is not None:
-      edge_url, ts = cached
-      if self._clock() - ts < 60.0:
-        try:
-          status, final_url, text = await self._fetch_text(edge_url)
-          if status == 200 and "#EXTM3U" in text:
-            self._hls_edge_urls[chno] = (final_url, self._clock())
-            return self._manifest_response(
-              rewrite_hls_manifest(
-                text,
-                final_url,
-                chno,
-                register_asset=self._register_hls_asset,
-              )
+    served_manifest = False
+    try:
+      # 1. Reuse the cached edge playlist URL so 5s hls.js polls stay on one
+      #    edge session.
+      cached = self._hls_edge_urls.get(chno)
+      if cached is not None:
+        edge_url, ts = cached
+        if self._clock() - ts < 60.0:
+          try:
+            status, final_url, text = await self._fetch_text(
+              edge_url, allowed_private_origins=allowed_origins
             )
-        except UPSTREAM_ERRORS:
-          pass
-      self._hls_edge_urls.pop(chno, None)
+            if status == 200 and "#EXTM3U" in text:
+              self._hls_edge_urls[chno] = (final_url, self._clock())
+              self.tuner.touch_hls_lease(chno)
+              served_manifest = True
+              return self._manifest_response(
+                rewrite_hls_manifest(
+                  text,
+                  final_url,
+                  chno,
+                  register_asset=self._register_hls_asset,
+                )
+              )
+          except UPSTREAM_ERRORS:
+            pass
+        self._hls_edge_urls.pop(chno, None)
 
-    # 2. Acquire a fresh HLS session across candidate URLs (skipping black.ts
-    #    placeholders).
-    last_err = "Upstream HLS unavailable"
-    for idx, raw_src in enumerate(cand_urls):
-      if idx > 0 and self.tuner.settle_sec > 0:
-        await asyncio.sleep(self.tuner.settle_sec)
-      hls_url = _to_hls_url(raw_src)
-      try:
-        status, final_url, manifest_text = await self._fetch_text(hls_url)
-      except UPSTREAM_ERRORS as exc:
-        logger.debug(
-          "HLS candidate failed on ch %d: %s",
-          chno,
-          _redact_upstream_text(str(exc)),
+      # 2. Acquire a fresh HLS session across candidate URLs (skipping black.ts
+      #    placeholders).
+      last_err = "Upstream HLS unavailable"
+      for idx, raw_src in enumerate(cand_urls):
+        if session.cancel_event.is_set():
+          return json_response(
+            {"error": "Stream preempted by another viewer"},
+            status=HTTPStatus.SERVICE_UNAVAILABLE,
+          )
+        if idx > 0 and self.tuner.settle_sec > 0:
+          await asyncio.sleep(self.tuner.settle_sec)
+        hls_url = _to_hls_url(raw_src)
+        try:
+          status, final_url, manifest_text = await self._fetch_text(
+            hls_url, allowed_private_origins=allowed_origins
+          )
+        except UpstreamTargetBlockedError as exc:
+          logger.warning("Blocked HLS target on ch %d: %s", chno, exc)
+          last_err = "HLS target blocked by SSRF policy"
+          continue
+        except UPSTREAM_ERRORS as exc:
+          logger.debug(
+            "HLS candidate failed on ch %d: %s",
+            chno,
+            _redact_upstream_text(str(exc)),
+          )
+          last_err = "HLS upstream connection failed"
+          continue
+        if status != 200:
+          last_err = f"Upstream HLS returned HTTP {status}"
+          continue
+        if "#EXTM3U" not in manifest_text:
+          last_err = "Invalid M3U8 response"
+          continue
+        if "/black.ts" in manifest_text.lower() and idx < len(cand_urls) - 1:
+          last_err = "Stream redirected to offline black.ts placeholder"
+          continue
+        if final_url != hls_url:
+          self._hls_edge_urls[chno] = (final_url, self._clock())
+        self.tuner.touch_hls_lease(chno)
+        served_manifest = True
+        return self._manifest_response(
+          rewrite_hls_manifest(
+            manifest_text,
+            final_url,
+            chno,
+            register_asset=self._register_hls_asset,
+          )
         )
-        last_err = "HLS upstream connection failed"
-        continue
-      if status != 200:
-        last_err = f"Upstream HLS returned HTTP {status}"
-        continue
-      if "#EXTM3U" not in manifest_text:
-        last_err = "Invalid M3U8 response"
-        continue
-      if "/black.ts" in manifest_text.lower() and idx < len(cand_urls) - 1:
-        last_err = "Stream redirected to offline black.ts placeholder"
-        continue
-      if final_url != hls_url:
-        self._hls_edge_urls[chno] = (final_url, self._clock())
-      return self._manifest_response(
-        rewrite_hls_manifest(
-          manifest_text,
-          final_url,
-          chno,
-          register_asset=self._register_hls_asset,
-        )
+
+      return json_response({"error": last_err}, status=HTTPStatus.BAD_GATEWAY)
+    except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError):
+      return json_response(
+        {"error": "Stream preempted by another viewer"},
+        status=HTTPStatus.SERVICE_UNAVAILABLE,
       )
-
-    return json_response({"error": last_err}, status=HTTPStatus.BAD_GATEWAY)
+    finally:
+      session.task = None
+      if session.cancel_event.is_set() or (is_new and not served_manifest):
+        await self.tuner.mark_closed(session)
 
   @staticmethod
   def _manifest_response(manifest: str) -> web.Response:
@@ -1161,6 +1448,11 @@ class WebGuideApp:
       return json_response(
         {"error": "Missing asset token"}, status=HTTPStatus.BAD_REQUEST
       )
+    if not self.tuner.touch_hls_lease(chno):
+      return json_response(
+        {"error": "HLS session preempted"},
+        status=HTTPStatus.SERVICE_UNAVAILABLE,
+      )
     asset_url = self._resolve_hls_asset(chno, token)
     if asset_url is None:
       return json_response(
@@ -1168,9 +1460,15 @@ class WebGuideApp:
         status=HTTPStatus.FORBIDDEN,
       )
 
+    ch = self.store.get_snapshot().channels_by_chno.get(chno)
+    allowed_origins = self._allowed_private_origins_for(ch)
     response: web.StreamResponse | None = None
     try:
-      async with self.client.get(upstream_url(asset_url)) as resp:
+      async with open_upstream_url(
+        self.client,
+        asset_url,
+        allowed_private_origins=allowed_origins,
+      ) as resp:
         if resp.status not in (200, 206):
           return json_response(
             {"error": f"HLS asset HTTP {resp.status}"},
@@ -1203,11 +1501,32 @@ class WebGuideApp:
           },
         )
         response.enable_chunked_encoding()
-        await response.prepare(request)
+        await asyncio.wait_for(
+          response.prepare(request), timeout=self.write_timeout_sec
+        )
         async for chunk in resp.content.iter_chunked(32768):
-          await response.write(chunk)
-        await response.write_eof()
+          await asyncio.wait_for(
+            response.write(chunk), timeout=self.write_timeout_sec
+          )
+        await asyncio.wait_for(
+          response.write_eof(), timeout=self.write_timeout_sec
+        )
         return response
+    except (
+      asyncio.TimeoutError,
+      ConnectionResetError,
+      BrokenPipeError,
+      asyncio.CancelledError,
+    ):
+      return response or web.Response(status=HTTPStatus.SERVICE_UNAVAILABLE)
+    except UpstreamTargetBlockedError as exc:
+      logger.warning("Blocked HLS segment redirect on ch %d: %s", chno, exc)
+      if response is not None:
+        return response
+      return json_response(
+        {"error": "HLS segment blocked by SSRF policy"},
+        status=HTTPStatus.BAD_GATEWAY,
+      )
     except UPSTREAM_ERRORS as exc:
       logger.debug(
         "HLS segment error on ch %d: %s",

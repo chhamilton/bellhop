@@ -27,8 +27,9 @@ from bellhop.common.file_utils import ensure_private_dir
 from bellhop.common.http_utils import (
   ClientSessionFactory,
   default_session_factory,
+  extract_explicit_private_origins,
+  open_upstream_url,
   redact_url_secrets,
-  upstream_url,
 )
 from bellhop.epg.constants import (
   EPG_MIN_FUTURE_COVERAGE_SEC,
@@ -496,6 +497,7 @@ class EpgRefreshService:
     if self._client is not None:
       await self._client.close()
       self._client = None
+    self.db.close()
 
   async def refresh_now(
     self, *, force: bool = True, reason: str = "manual"
@@ -622,8 +624,13 @@ class EpgRefreshService:
       client = self._client if self._client is not None else self._new_session()
       max_bytes = max(1024, self.config.max_xmltv_bytes)
       try:
+        allowed_origins = extract_explicit_private_origins((effective_url,))
         with open(fd, "wb") as out_fh:
-          async with client.get(upstream_url(effective_url)) as resp:
+          async with open_upstream_url(
+            client,
+            effective_url,
+            allowed_private_origins=allowed_origins,
+          ) as resp:
             resp.raise_for_status()
             if (
               resp.content_length is not None

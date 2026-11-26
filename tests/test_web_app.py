@@ -1252,3 +1252,200 @@ def test_epg_priority_fallback_and_weighted_interval_deoverlapping(
     a.start_timestamp < a.stop_timestamp <= b.start_timestamp
     for a, b in zip(clean, clean[1:], strict=False)
   )
+
+
+@pytest.mark.asyncio
+async def test_hls_ssrf_defense_cross_tab_preemption_and_write_timeout(
+  tmp_path: Path,
+) -> None:
+  """Verify HLS SSRF filtering, HLS/TS cross-tab isolation, & stall timeouts."""
+  from aiohttp import web
+
+  from bellhop.web.server import TunerSessionManager
+
+  xt_dir = tmp_path / "output" / "xtream"
+  _write_sample_xtream_dir(xt_dir, int(time.time()))
+  ts_chunk = (bytes([0x47, 0x40, 0x00, 0x10]) + b"\xcc" * 184) * 16
+  huge_chunk = (bytes([0x47, 0x40, 0x00, 0x10]) + b"\xaa" * 184) * 1400
+  hls_mode = "ssrf_manifest"
+  ts_connected = asyncio.Event()
+  ts_closed = asyncio.Event()
+
+  async def mock_upstream(req: web.Request) -> web.StreamResponse:
+    path = req.path
+    if path.endswith("/498715.m3u8"):
+      if hls_mode == "redirect_loopback":
+        return web.Response(
+          status=302, headers={"Location": "http://127.0.0.1:9999/secret"}
+        )
+      manifest = (
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        '#EXT-X-KEY:METHOD=AES-128,URI="http://127.0.0.1:9999/key"\n'
+        "http://127.0.0.1:9999/secret.ts\n"
+        "http://169.254.169.254/latest/meta-data\n"
+        "http://192.168.1.1/router.ts\n"
+        "file:///etc/passwd\n"
+        "seg001.ts\n"
+      )
+      return web.Response(
+        status=200,
+        headers={"Content-Type": "application/vnd.apple.mpegurl"},
+        text=manifest,
+      )
+    if path.endswith("/seg001.ts"):
+      return web.Response(
+        status=200, headers={"Content-Type": "video/mp2t"}, body=ts_chunk
+      )
+    if path.endswith("/500101.ts"):
+      ts_connected.set()
+      resp = web.StreamResponse(
+        status=200, headers={"Content-Type": "video/mp2t"}
+      )
+      await resp.prepare(req)
+      try:
+        for _ in range(300):
+          await resp.write(huge_chunk)
+          await asyncio.sleep(0.002)
+      finally:
+        ts_closed.set()
+      return resp
+    return web.Response(status=404)
+
+  store = LineupGuideStore(xt_dir)
+  async with MockHttpServer(mock_upstream) as mock:
+    app = WebGuideApp(
+      store,
+      auth=_make_auth(tmp_path),
+      settle_sec=0.01,
+      write_timeout_sec=0.05,
+      session_factory=mock.session_factory,
+    )
+    await app.startup()
+    runner, port = await start_site(app.build_app(), "127.0.0.1", 0)
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+      async with new_test_session(base_url, timeout=10.0) as client:
+        async with client.post(
+          "/api/auth/login",
+          json={"username": "admin", "password": "secret"},
+        ) as sign_in:
+          assert sign_in.status == 200
+          cookie_hdr = sign_in.headers["Set-Cookie"].split(";", 1)[0].strip()
+
+        # 1. Manifest SSRF filtering strips all private/loopback/file lines.
+        async with client.get(
+          "/api/hls/1101/index.m3u8?t=1000&client=tab-a"
+        ) as r_hls:
+          assert r_hls.status == 200
+          rewritten = await r_hls.text()
+        assert "/api/hls/1101/asset?u=" in rewritten
+        assert "?u=\n" not in rewritten and not rewritten.endswith("?u=")
+        assert "127.0.0.1" not in rewritten
+        assert "169.254.169.254" not in rewritten
+        assert "192.168.1.1" not in rewritten
+        assert "/etc/passwd" not in rewritten
+        assert "EXT-X-KEY" not in rewritten
+        asset_lines = [
+          ln for ln in rewritten.splitlines() if ln.startswith("/api/hls/")
+        ]
+        assert len(asset_lines) == 1
+        async with client.get(asset_lines[0]) as r_seg:
+          assert r_seg.status == 200
+          assert await r_seg.read() == ts_chunk
+
+        # Active HLS session is tracked in `/api/health`.
+        async with client.get("/api/health") as r_h1:
+          h1 = await r_h1.json()
+        assert h1["active_tuner"]["mode"] == "hls"
+        assert h1["active_tuner"]["chno"] == 1101
+
+        # 2. Tab B opens MPEG-TS on ch 1401, preempting Tab A's HLS session.
+        async with client.get("/api/stream/1401.ts?client=tab-b") as r_ts:
+          assert r_ts.status == 200
+          first = await r_ts.content.readexactly(188)
+          assert first[0] == 0x47
+
+          # Stale Tab A poll receives 503 and MUST NOT kill Tab B's stream!
+          async with client.get(
+            "/api/hls/1101/index.m3u8?t=1000&client=tab-a"
+          ) as r_stale:
+            assert r_stale.status == 503
+          second = await r_ts.content.readexactly(188)
+          assert second[0] == 0x47
+          async with client.get("/api/health") as r_h2:
+            h2 = await r_h2.json()
+          assert h2["active_tuner"]["mode"] == "mpegts"
+          assert h2["active_tuner"]["chno"] == 1401
+
+        await await_until(
+          lambda: app.tuner.active_info is None, description="TS tuner close"
+        )
+
+        # 3. `302` redirect to loopback returns 502 instead of fetching local.
+        hls_mode = "redirect_loopback"
+        async with client.get(
+          "/api/hls/1101/index.m3u8?t=2000&client=tab-a"
+        ) as r_ssrf:
+          assert r_ssrf.status == 502
+
+        # 4. Stalled client TCP reader hits `write_timeout_sec` and frees tuner.
+        ts_connected.clear()
+        ts_closed.clear()
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+          req_raw = (
+            "GET /api/stream/1401.ts?client=stalled HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            f"Cookie: {cookie_hdr}\r\n"
+            "Connection: close\r\n\r\n"
+          ).encode("ascii")
+          writer.write(req_raw)
+          await writer.drain()
+          await asyncio.wait_for(ts_connected.wait(), timeout=2.0)
+          # Read only headers, then pause reading so socket send buffer fills.
+          while True:
+            hdr_line = await asyncio.wait_for(reader.readline(), timeout=2.0)
+            if hdr_line in (b"\r\n", b"\n", b""):
+              break
+          await await_until(
+            lambda: app.tuner.active_info is None,
+            timeout_sec=5.0,
+            description="write timeout releases tuner on stalled client",
+          )
+        finally:
+          writer.close()
+          await writer.wait_closed()
+    finally:
+      await runner.cleanup()
+      await app.shutdown()
+
+  # 5. Rapid-zap ticket superseding cancels queued intermediate requests early.
+  mgr = TunerSessionManager(settle_sec=0.05)
+  s0 = await mgr.preempt_and_acquire(
+    chno=100, channel_name="C0", client_id="tab"
+  )
+
+  async def _delayed_close_s0() -> None:
+    await s0.cancel_event.wait()
+    await asyncio.sleep(0.02)
+    await mgr.mark_closed(s0)
+
+  closer = asyncio.create_task(_delayed_close_s0())
+  t1 = asyncio.create_task(
+    mgr.preempt_and_acquire(chno=101, channel_name="C1", client_id="tab")
+  )
+  await asyncio.sleep(0.005)
+  t2 = asyncio.create_task(
+    mgr.preempt_and_acquire(chno=102, channel_name="C2", client_id="tab")
+  )
+  t3 = asyncio.create_task(
+    mgr.preempt_and_acquire(chno=103, channel_name="C3", client_id="tab")
+  )
+  s1, s2, s3 = await asyncio.gather(t1, t2, t3)
+  await closer
+  assert s1.cancel_event.is_set() and s1.session_id == 0
+  assert s2.cancel_event.is_set() and s2.session_id == 0
+  assert not s3.cancel_event.is_set() and s3.session_id > 0
+  assert mgr.active_info is not None and mgr.active_info["chno"] == 103
+  await mgr.mark_closed(s3)

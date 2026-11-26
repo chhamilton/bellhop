@@ -52,6 +52,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
 
+from bellhop.common.http_utils import redact_url_secrets
 from bellhop.xtream.client import (
   XtreamAccountInfo as XtreamAccountInfo,
 )
@@ -239,9 +240,14 @@ class ProbeResult:
 
   def to_dict(self, *, redact_secret: str = "") -> ProbeResultDict:
     safe_url = (
-      self.url.replace(redact_secret, "***")
+      redact_url_secrets(self.url, secret=redact_secret)
       if (redact_secret and self.url)
       else self.url
+    )
+    safe_error = (
+      redact_url_secrets(self.error, secret=redact_secret)
+      if self.error is not None
+      else None
     )
     return {
       "stream_id": self.stream_id,
@@ -262,7 +268,7 @@ class ProbeResult:
       "width": self.width,
       "height": self.height,
       "fps": self.fps,
-      "error": self.error,
+      "error": safe_error,
       "checked_at": self.checked_at,
     }
 

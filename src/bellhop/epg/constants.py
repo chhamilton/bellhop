@@ -8,7 +8,10 @@ __all__ = [
   "EPG_MIN_FUTURE_COVERAGE_SEC",
   "EPG_RECENT_FLOOR_SEC",
   "EPG_STALE_ENTRY_GRACE_SEC",
+  "MAX_XMLTV_DECOMPRESSED_BYTES",
   "MAX_XMLTV_DOWNLOAD_BYTES",
+  "MAX_XMLTV_RAW_ITEMS_PER_CHANNEL",
+  "MAX_XMLTV_TEXT_CHARS",
   "SD_LINEUP_MAP_TTL_SEC",
   "SD_PROGRAM_RETENTION_DAYS",
   "SD_PROGRAM_RETENTION_SEC",
@@ -37,3 +40,12 @@ SD_PROGRAM_RETENTION_SEC = SD_PROGRAM_RETENTION_DAYS * 86400.0
 
 # Safety ceiling (`256 MiB`) on streamed upstream XMLTV downloads.
 MAX_XMLTV_DOWNLOAD_BYTES = 256 * 1024 * 1024
+
+# Safety ceiling (`512 MiB`) on decompressed XMLTV stream parsing.
+MAX_XMLTV_DECOMPRESSED_BYTES = 512 * 1024 * 1024
+
+# Maximum raw `<programme>` entries buffered per channel before pruning stale.
+MAX_XMLTV_RAW_ITEMS_PER_CHANNEL = 2000
+
+# Maximum characters retained for XMLTV text elements (`title`, `desc`, etc.).
+MAX_XMLTV_TEXT_CHARS = 8192

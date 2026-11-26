@@ -27,7 +27,7 @@ from rich.progress import (
 from rich.table import Table
 
 from bellhop.common.api_contracts import EpgStatusDict
-from bellhop.common.http_utils import build_access_urls
+from bellhop.common.http_utils import build_access_urls, redact_url_secrets
 from bellhop.config import AppConfig, load_config
 from bellhop.pipeline.catalog_fetcher import CatalogFetchResult
 from bellhop.pipeline.lineup_loader import CableLineup
@@ -307,9 +307,10 @@ def _print_xtream_panel(
       f"(HTTP {ver.status_code or 'OK'}, {ver.format_detected}, {ver.latency_ms:.0f}ms)"
     )
   else:
-    epg_status = (
-      f"[bold red]Unverified[/bold red] ({ver.error or 'check failed'})"
+    safe_ver_err = (
+      redact_url_secrets(ver.error) if ver.error else "check failed"
     )
+    epg_status = f"[bold red]Unverified[/bold red] ({safe_ver_err})"
 
   epg_url_line = res.xmltv_url_redacted or "(not configured)"
   sync_line = ""

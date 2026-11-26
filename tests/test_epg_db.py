@@ -393,3 +393,141 @@ async def test_xmltv_download_size_cap_aborts_and_unlinks_temp_file(
     assert "exceed" in (st["last_error"] or "").lower()
     assert "super_secret_pw" not in (st["last_error"] or "")
     assert list(cache_file.parent.glob("xmltv_fetch_*.xml")) == []
+
+
+def test_epg_db_keyset_query_plan_pooling_and_xmltv_bomb_guards(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Verify SQLite row-value index seek, read connection reuse, & bomb caps."""
+  import gzip
+
+  from bellhop.epg.models import reconcile_non_overlapping_schedule
+  from bellhop.epg.xmltv import parse_xmltv_for_channels
+
+  db_path = tmp_path / "cache" / "epg.sqlite3"
+  db = EpgDatabase(db_path)
+  snap = _StubSnapshot(
+    channels=(
+      _StubChannel(
+        chno=1101,
+        name="ICI RDI",
+        callsign="RDI",
+        epg_channel_id="ICIRDI.ca",
+      ),
+    )
+  )
+  now_ts = 1_763_510_400
+  db.replace_guide_schedules(
+    snap=snap,
+    programs_by_id={
+      "ICIRDI.ca": [
+        ProgramItem(
+          id="p1",
+          channel_id="ICIRDI.ca",
+          title="News",
+          start_timestamp=now_ts,
+          stop_timestamp=now_ts + 3600,
+        )
+      ]
+    },
+    fetched_at=float(now_ts),
+  )
+
+  # 1. Verify row-value keyset SQL compiles to an index SEARCH (never SCAN).
+  with contextlib.closing(sqlite3.connect(db_path)) as raw_conn:
+    plan = raw_conn.execute(
+      "EXPLAIN QUERY PLAN "
+      "SELECT chno, epg_channel_id, start_ts "
+      "FROM guide_airings "
+      "WHERE (chno, epg_channel_id, start_ts) > (?, ?, ?) "
+      "ORDER BY chno ASC, epg_channel_id ASC, start_ts ASC LIMIT ?",
+      (-1, "", -1, 100),
+    ).fetchall()
+  plan_text = " ".join(str(row[-1]) for row in plan).upper()
+  assert "SEARCH GUIDE_AIRINGS" in plan_text
+  assert "SCAN " not in plan_text
+
+  # 2. Verify repeated read queries reuse pooled connections with 0 chmods.
+  from typing import Any
+
+  connect_count = 0
+  chmod_calls: list[Path] = []
+  orig_connect: Any = sqlite3.connect
+
+  def _counting_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+    nonlocal connect_count
+    connect_count += 1
+    conn: sqlite3.Connection = orig_connect(*args, **kwargs)
+    return conn
+
+  monkeypatch.setattr(sqlite3, "connect", _counting_connect)
+  monkeypatch.setattr(
+    "bellhop.epg.db.chmod_private_file",
+    lambda p: chmod_calls.append(p),
+  )
+  assert db.get_meta()["fetched_at"]
+  assert len(db.query_channel_schedule(1101, "ICIRDI.ca")) == 1
+  by_chno, _ = db.query_lineup_window(min_stop_ts=0, max_start_ts=now_ts + 7200)
+  assert len(by_chno[1101]) == 1
+  assert b"".join(db.iter_xmltv_chunks(snap)).count(b"<programme") == 1
+  assert connect_count == 0
+  assert chmod_calls == []
+  db.close()
+
+  # 3. Verify gzip decompression bomb and ENTITY bomb are rejected while
+  #    benign DOCTYPE parses cleanly.
+  bomb_xml = (
+    '<?xml version="1.0"?><tv>'
+    '<programme start="20990101000000 +0000" stop="20990101010000 +0000" '
+    'channel="icirdi.ca"><title>' + ("A" * 40000) + "</title></programme></tv>"
+  ).encode("utf-8")
+  bomb_gz = tmp_path / "bomb.xml.gz"
+  bomb_gz.write_bytes(gzip.compress(bomb_xml))
+  with pytest.raises(ValueError, match="exceeded decompressed safety limit"):
+    parse_xmltv_for_channels(
+      bomb_gz,
+      {"icirdi.ca": "ICIRDI.ca"},
+      now_timestamp=now_ts,
+      max_decompressed_bytes=32768,
+    )
+
+  entity_xml = tmp_path / "entity.xml"
+  entity_xml.write_text(
+    '<?xml version="1.0"?><!DOCTYPE tv [<!ENTITY xxe "boom">]>'
+    "<tv><programme/></tv>",
+    encoding="utf-8",
+  )
+  with pytest.raises(ValueError, match="ENTITY"):
+    parse_xmltv_for_channels(
+      entity_xml, {"icirdi.ca": "ICIRDI.ca"}, now_timestamp=now_ts
+    )
+
+  doctype_xml = tmp_path / "doctype.xml"
+  doctype_xml.write_text(
+    '<?xml version="1.0"?><!DOCTYPE tv SYSTEM "xmltv.dtd"><tv>'
+    '<programme start="20990101000000 +0000" stop="20990101010000 +0000" '
+    'channel="icirdi.ca"><title>Clean DTD Show</title></programme></tv>',
+    encoding="utf-8",
+  )
+  parsed_doc = parse_xmltv_for_channels(
+    doctype_xml, {"icirdi.ca": "ICIRDI.ca"}, now_timestamp=now_ts
+  )
+  assert [p.title for p in parsed_doc["ICIRDI.ca"]] == ["Clean DTD Show"]
+
+  # 4. Verify heap-optimized schedule reconciliation on 1,500 items + overlaps.
+  bulk = [
+    ProgramItem(
+      id=str(i),
+      channel_id="ICIRDI.ca",
+      title=f"Show {i}",
+      start_timestamp=now_ts + i * 1800,
+      stop_timestamp=now_ts + i * 1800 + 1860,
+    )
+    for i in range(1500)
+  ]
+  reconciled = reconcile_non_overlapping_schedule(bulk)
+  assert len(reconciled) == 1500
+  assert all(
+    a.stop_timestamp <= b.start_timestamp
+    for a, b in zip(reconciled, reconciled[1:], strict=False)
+  )

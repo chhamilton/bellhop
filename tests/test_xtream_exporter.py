@@ -383,3 +383,55 @@ pipeline:
     (xtream_hd_dir / "get_live_streams.json").read_text(encoding="utf-8")
   )
   assert [s["num"] for s in hd_streams] == [1101, 1108]
+
+
+@pytest.mark.asyncio
+async def test_verify_epg_endpoint_redacts_secrets_in_error_and_bundle(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Verify failed `verify_epg_endpoint` error strings never leak passwords."""
+  import aiohttp
+
+  from bellhop.epg.xmltv import verify_epg_endpoint
+
+  cfg = AppConfig(
+    project_root=tmp_path,
+    xtream=XtreamConfig(
+      server_url="http://provider.example",
+      username="sub_user",
+      password="s3cr3t_epg_pw",
+      stream_format="ts",
+    ),
+    output=OutputConfig(xtream_dir=tmp_path / "output" / "xtream"),
+  )
+
+  def _fail_get(*_args: object, **_kwargs: object) -> object:
+    raise aiohttp.ClientError(
+      "Cannot connect to "
+      "http://provider.example/xmltv.php?username=sub_user&password=s3cr3t_epg_pw"
+    )
+
+  monkeypatch.setattr(aiohttp.ClientSession, "get", _fail_get)
+
+  lineup, catalog = _sample_lineup_and_catalog()
+  doc = reconcile_rough_mapping(None, lineup, catalog, cfg)
+  mappings = mapping_document_to_mapped_channels(doc, lineup)
+
+  async with aiohttp.ClientSession() as client:
+    ver = await verify_epg_endpoint(cfg, client=client)
+    assert ver.verified is False
+    assert ver.error is not None
+    assert "s3cr3t_epg_pw" not in ver.error
+    assert "***" in ver.error
+
+    res = await export_xtream_playlist_and_guide(
+      lineup,
+      mappings,
+      cfg,
+      account=catalog.account,
+      verify_epg=True,
+      client=client,
+    )
+  bundle = json.loads(res.bundle_path.read_text(encoding="utf-8"))
+  ver_err = bundle["epg_guide"]["verification"]["error"]
+  assert "s3cr3t_epg_pw" not in ver_err

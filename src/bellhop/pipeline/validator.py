@@ -20,6 +20,7 @@ import aiohttp
 from bellhop.common.http_utils import (
   ClientSessionFactory,
   default_session_factory,
+  redact_url_secrets,
   upstream_url,
 )
 from bellhop.config import AppConfig
@@ -482,7 +483,10 @@ class StreamValidator:
         stream_id=sid,
         url=self.build_stream_url(stream),
         ok=False,
-        error=f"Unexpected probe error: {exc}",
+        error=redact_url_secrets(
+          f"Unexpected probe error: {exc}",
+          secret=self.config.xtream.password,
+        ),
         checked_at=datetime.now(timezone.utc).isoformat(),
       )
       self._probe_cache[sid] = fallback
@@ -584,7 +588,10 @@ class StreamValidator:
             http_status=status,
             content_type=content_type,
             latency_ms=latency_ms,
-            error=f"Redirected to static offline placeholder ({final_url})",
+            error=redact_url_secrets(
+              f"Redirected to static offline placeholder ({final_url})",
+              secret=self.config.xtream.password,
+            ),
             checked_at=checked_at,
           )
 
@@ -624,7 +631,10 @@ class StreamValidator:
         url=url,
         ok=False,
         latency_ms=(time.perf_counter() - t0) * 1000.0,
-        error=f"HTTP error: {exc}",
+        error=redact_url_secrets(
+          f"HTTP error: {exc}",
+          secret=self.config.xtream.password,
+        ),
         checked_at=checked_at,
       )
 
@@ -813,7 +823,10 @@ class StreamValidator:
       err_msg = stderr.decode("utf-8", errors="replace").strip().splitlines()
       short_err = err_msg[-1] if err_msg else f"exit code {proc.returncode}"
       probe.ok = False
-      probe.error = f"ffprobe failed: {short_err}"
+      probe.error = redact_url_secrets(
+        f"ffprobe failed: {short_err}",
+        secret=self.config.xtream.password,
+      )
       return
 
     try:

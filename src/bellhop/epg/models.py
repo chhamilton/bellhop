@@ -4,17 +4,19 @@ protocols.
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import hashlib
-import io
+import heapq
 import json
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
 from bellhop.common.api_contracts import ProgramItemDict
+from bellhop.epg.constants import MAX_XMLTV_DECOMPRESSED_BYTES
 
 _BUMPER_OVERLAP_SEC = 300
 
@@ -39,13 +41,65 @@ def parse_xmltv_ts(raw: str) -> int:
     return 0
 
 
-def open_xml_stream(path: Path) -> io.BufferedReader | gzip.GzipFile:
-  """Open a plain or gzip-compressed XMLTV file for binary streaming."""
+class _BinaryReadable(Protocol):
+  def read(self, size: int = -1, /) -> bytes: ...
+
+
+class _BoundedXmlStream:
+  """Bounded binary reader defending `ET.iterparse` against zip/entity bombs."""
+
+  def __init__(
+    self,
+    raw: _BinaryReadable,
+    *,
+    max_bytes: int = MAX_XMLTV_DECOMPRESSED_BYTES,
+  ) -> None:
+    self._raw = raw
+    self._max_bytes = max(1, max_bytes)
+    self._bytes_read = 0
+    self._tail = b""
+
+  def read(self, size: int = -1) -> bytes:
+    remaining = self._max_bytes - self._bytes_read
+    read_cap = (
+      min(65536, remaining + 1) if size < 0 else min(size, remaining + 1)
+    )
+    if read_cap <= 0:
+      raise ValueError(
+        f"XMLTV stream exceeded decompressed safety limit ({self._max_bytes} bytes)."
+      )
+    chunk = self._raw.read(read_cap)
+    if not chunk:
+      return b""
+    self._bytes_read += len(chunk)
+    if self._bytes_read > self._max_bytes:
+      raise ValueError(
+        f"XMLTV stream exceeded decompressed safety limit ({self._max_bytes} bytes)."
+      )
+    scan_buf = (self._tail + chunk).lower()
+    if b"<!entity" in scan_buf:
+      raise ValueError(
+        "XMLTV stream contains forbidden XML ENTITY declaration."
+      )
+    self._tail = chunk[-16:]
+    return chunk
+
+
+@contextlib.contextmanager
+def open_xml_stream(
+  path: Path,
+  *,
+  max_bytes: int = MAX_XMLTV_DECOMPRESSED_BYTES,
+) -> Iterator[_BoundedXmlStream]:
+  """Open a plain or gzip-compressed XMLTV file with bounded decompression."""
   with path.open("rb") as probe_fh:
     magic = probe_fh.read(2)
   if magic == b"\x1f\x8b":
-    return gzip.open(path, "rb")
-  return path.open("rb")
+    with gzip.open(path, "rb") as gz_fh:
+      yield _BoundedXmlStream(gz_fh, max_bytes=max_bytes)
+  else:
+    with path.open("rb") as raw_fh:
+      yield _BoundedXmlStream(raw_fh, max_bytes=max_bytes)
 
 
 @dataclass(slots=True)
@@ -174,6 +228,9 @@ def reconcile_non_overlapping_schedule(
   n = len(coalesced)
   dp = [0.0] * n
   parent = [-1] * n
+  near_heap: list[tuple[int, int]] = []
+  best_far_dp = -1.0
+  best_far_idx = -1
 
   def _base_weight(p: ProgramItem, seq_idx: int) -> float:
     dur = float(p.stop_timestamp - p.start_timestamp)
@@ -185,9 +242,22 @@ def reconcile_non_overlapping_schedule(
     pj, idx_j = coalesced[j]
     dur_j = pj.stop_timestamp - pj.start_timestamp
     wj = _base_weight(pj, idx_j)
+    cutoff_stop = pj.start_timestamp - 60
+    while near_heap and near_heap[0][0] < cutoff_stop:
+      _stop_k, k = heapq.heappop(near_heap)
+      if dp[k] > best_far_dp or (dp[k] == best_far_dp and k > best_far_idx):
+        best_far_dp = dp[k]
+        best_far_idx = k
+
     best_val = wj
     best_prev = -1
-    for i in range(j - 1, -1, -1):
+    if best_far_idx != -1:
+      cand_far = best_far_dp + wj
+      if cand_far > best_val:
+        best_val = cand_far
+        best_prev = best_far_idx
+
+    for _stop_i, i in near_heap:
       pi, _ = coalesced[i]
       if pi.start_timestamp >= pj.start_timestamp:
         continue
@@ -202,11 +272,14 @@ def reconcile_non_overlapping_schedule(
         240.0 if abs(pi.stop_timestamp - pj.start_timestamp) <= 60 else 0.0
       )
       cand_val = dp[i] + wj - trimmed_penalty + contig_bonus
-      if cand_val > best_val:
+      if cand_val > best_val or (
+        cand_val == best_val and best_prev != -1 and i > best_prev
+      ):
         best_val = cand_val
         best_prev = i
     dp[j] = best_val
     parent[j] = best_prev
+    heapq.heappush(near_heap, (pj.stop_timestamp, j))
 
   best_end = max(range(n), key=lambda k: dp[k])
   chosen_rev: list[ProgramItem] = []

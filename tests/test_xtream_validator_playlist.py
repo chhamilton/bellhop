@@ -539,3 +539,96 @@ def test_exported_group_dial_ranges_reflect_surviving_validated_channels(
     "Science & Docs (1522–1528)",
     "Entertainment & Lifestyle (1602–1660)",
   }
+
+
+@pytest.mark.asyncio
+async def test_validator_and_report_redact_secrets_inside_error_strings(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Verify `ProbeResult.to_dict` and `StreamValidator` scrub error secrets."""
+  from bellhop.pipeline.models import ProbeResult
+
+  raw_probe = ProbeResult(
+    stream_id=777,
+    url="http://provider.example/live/alice/s3cr3t_pw/777.ts",
+    ok=False,
+    error=(
+      "ffprobe failed: http://provider.example/live/alice/s3cr3t_pw/777.ts: "
+      "s3cr3t_pw rejected"
+    ),
+  )
+  redacted_dict = raw_probe.to_dict(redact_secret="s3cr3t_pw")
+  assert "s3cr3t_pw" not in str(redacted_dict["url"])
+  assert "s3cr3t_pw" not in str(redacted_dict["error"])
+  assert "***" in str(redacted_dict["error"])
+
+  ch = LineupChannel(chno=1101, name="RDS", group="Sports", language="fr")
+  stream = XtreamStream(stream_id=777, name="CA: RDS")
+  cand = MatchCandidate(
+    stream=stream, score=100.0, reasons=["exact"], quality_tier="hd"
+  )
+  cfg = AppConfig(
+    project_root=tmp_path,
+    xtream=XtreamConfig(
+      server_url="http://provider.example",
+      username="alice",
+      password="s3cr3t_pw",
+      stream_format="ts",
+    ),
+    validation=ValidationConfig(
+      concurrency=1,
+      inter_probe_delay_sec=0.0,
+      min_bytes_to_read=512,
+      use_ffprobe=True,
+      detect_black_screen=False,
+    ),
+  )
+
+  ts_payload = _make_mpegts_payload(20)
+
+  def _ok_stream(_req: web.Request) -> web.Response:
+    return web.Response(
+      status=200, headers={"Content-Type": "video/mp2t"}, body=ts_payload
+    )
+
+  class _FakeProc:
+    returncode = 1
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+      return (
+        b"",
+        b"http://provider.example/live/alice/s3cr3t_pw/777.ts: Server error",
+      )
+
+  async def _fake_exec(*_args: object, **_kwargs: object) -> _FakeProc:
+    return _FakeProc()
+
+  monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
+
+  async with MockHttpServer(_ok_stream) as mock, mock.new_session() as client:
+    validator = StreamValidator(
+      cfg,
+      XtreamAccountInfo(username="alice", max_connections=1),
+      session_factory=mock.session_factory,
+    )
+    validator.ffprobe_path = "/usr/bin/ffprobe"
+    res = await validator.probe_stream(stream, client)
+    assert res.ok is False
+    assert res.error is not None
+    assert "s3cr3t_pw" not in res.error
+
+  mapped = MappedChannel(
+    channel=ch, candidates=[cand], selected=cand, probe=res
+  )
+  report = build_report_dict(
+    CableLineup(
+      lineup_id="TEST",
+      provider="TestTV",
+      market="Test",
+      postal_prefix="",
+      channels=[ch],
+    ),
+    [mapped],
+    cfg,
+  )
+  assert "s3cr3t_pw" not in json.dumps(report)

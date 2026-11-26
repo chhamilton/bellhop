@@ -622,3 +622,128 @@ async def test_session_revocation_on_logout_https_cookie_flag_and_url_redaction(
   finally:
     await runner.cleanup()
     await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_url_redaction_and_ssrf_protection_controls() -> None:
+  """Verify shorthand redaction, URL/DNS SSRF filtering, & redirect blocking."""
+  import socket
+
+  import aiohttp.abc
+  from aiohttp import web
+
+  from bellhop.common.http_utils import (
+    SafeUpstreamResolver,
+    UpstreamTargetBlockedError,
+    extract_explicit_private_origins,
+    open_upstream_url,
+    redact_url_secrets,
+    validate_upstream_url,
+  )
+  from tests.http_mock import MockHttpServer
+
+  # 1. `redact_url_secrets` handles shorthand URLs and explicit secret literals.
+  shorthand = redact_url_secrets(
+    "HTTP error fetching http://panel.example:8080/alice/s3cr3t_pw/410101.ts "
+    "token=tok99 secret=custom_pw"
+  )
+  assert "s3cr3t_pw" not in shorthand
+  assert "tok99" not in shorthand
+  assert "http://panel.example:8080/alice/***/410101.ts" in shorthand
+  literal = redact_url_secrets(
+    "ffmpeg failed: bad key custom_pw on stream", secret="custom_pw"
+  )
+  assert "custom_pw" not in literal
+  assert "***" in literal
+
+  # 2. `extract_explicit_private_origins` & `validate_upstream_url`
+  explicit = extract_explicit_private_origins(
+    [
+      "http://127.0.0.1:54321/live/u/p/1.ts",
+      "http://host.docker.internal:54321/live/u/p/2.ts",
+      "http://169.254.169.254/latest/meta-data",
+      "http://0.0.0.0:8080/x",
+      "http://panel.example:8080/live/u/p/3.ts",
+    ]
+  )
+  assert ("127.0.0.1", 54321) in explicit
+  assert ("host.docker.internal", 54321) in explicit
+  assert ("panel.example", 8080) not in explicit
+  assert all(host not in ("169.254.169.254", "0.0.0.0") for host, _ in explicit)
+
+  assert str(
+    validate_upstream_url(
+      "http://127.0.0.1:54321/live/u/p/1.ts",
+      allowed_private_origins=explicit,
+    )
+  ).startswith("http://127.0.0.1:54321/")
+
+  for blocked in (
+    "http://127.0.0.1:8080/api/config",
+    "http://127.1/secret",
+    "http://2130706433/secret",
+    "http://0x7f000001/secret",
+    "http://[::1]:8080/api/config",
+    "http://[::ffff:127.0.0.1]:8080/api/config",
+    "http://localhost/secret",
+    "http://localhost./secret",
+    "http://169.254.169.254/latest/meta-data",
+    "http://192.168.1.1/admin",
+    "file:///etc/passwd",
+  ):
+    with pytest.raises(UpstreamTargetBlockedError):
+      validate_upstream_url(blocked, allowed_private_origins=explicit)
+
+  # 3. `SafeUpstreamResolver` blocks DNS rebinding to non-public IPs.
+  class _StubResolver(aiohttp.abc.AbstractResolver):
+    def __init__(self, target_ip: str) -> None:
+      self.target_ip = target_ip
+
+    async def resolve(
+      self,
+      host: str,
+      port: int = 0,
+      family: socket.AddressFamily = socket.AF_INET,
+    ) -> list[aiohttp.abc.ResolveResult]:
+      _ = family
+      return [
+        {
+          "hostname": host,
+          "host": self.target_ip,
+          "port": port,
+          "family": socket.AF_INET,
+          "proto": socket.IPPROTO_TCP,
+          "flags": socket.AI_NUMERICHOST | socket.AI_NUMERICSERV,
+        }
+      ]
+
+    async def close(self) -> None:
+      return None
+
+  for rebind_ip in ("127.0.0.1", "169.254.169.254", "10.0.0.8"):
+    resolver = SafeUpstreamResolver(_StubResolver(rebind_ip))
+    with pytest.raises(UpstreamTargetBlockedError):
+      await resolver.resolve("rebind.attacker.example", 80)
+
+  ok_resolver = SafeUpstreamResolver(_StubResolver("93.184.216.34"))
+  res = await ok_resolver.resolve("cdn.example.com", 443)
+  assert res[0]["host"] == "93.184.216.34"
+  await ok_resolver.close()
+
+  # 4. `open_upstream_url` rejects `302` redirects pointing at loopback/IMDS.
+  redirect_target = "http://127.0.0.1:8080/api/config"
+
+  def _mock_redirect(_req: web.Request) -> web.Response:
+    return web.Response(status=302, headers={"Location": redirect_target})
+
+  async with MockHttpServer(_mock_redirect) as mock, mock.new_session() as cli:
+    for target in (
+      "http://127.0.0.1:8080/api/config",
+      "http://169.254.169.254/latest/meta-data",
+    ):
+      redirect_target = target
+      with pytest.raises(UpstreamTargetBlockedError):
+        async with open_upstream_url(
+          cli, "http://upstream.example/live/u/p/1.ts"
+        ) as _resp:
+          pytest.fail("Expected SSRF redirect to be blocked")

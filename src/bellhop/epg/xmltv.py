@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
@@ -11,9 +12,20 @@ from typing import TypedDict
 
 import aiohttp
 
-from bellhop.common.http_utils import UPSTREAM_ERRORS, upstream_url
+from bellhop.common.http_utils import (
+  UPSTREAM_ERRORS,
+  default_session_factory,
+  extract_explicit_private_origins,
+  open_upstream_url,
+  redact_url_secrets,
+)
 from bellhop.config import AppConfig
-from bellhop.epg.constants import EPG_STALE_ENTRY_GRACE_SEC
+from bellhop.epg.constants import (
+  EPG_STALE_ENTRY_GRACE_SEC,
+  MAX_XMLTV_DECOMPRESSED_BYTES,
+  MAX_XMLTV_RAW_ITEMS_PER_CHANNEL,
+  MAX_XMLTV_TEXT_CHARS,
+)
 from bellhop.epg.models import (
   ProgramItem,
   open_xml_stream,
@@ -62,7 +74,9 @@ class EpgVerificationResult:
       "content_type": self.content_type,
       "format_detected": self.format_detected,
       "latency_ms": round(self.latency_ms, 1),
-      "error": self.error,
+      "error": redact_url_secrets(self.error)
+      if self.error is not None
+      else None,
     }
 
 
@@ -93,6 +107,11 @@ def _detect_xmltv_prefix(sample: bytes) -> str:
   return ""
 
 
+def _read_file_prefix(path: Path, limit: int = 4096) -> bytes:
+  with path.open("rb") as fh:
+    return fh.read(limit)
+
+
 async def verify_epg_endpoint(
   config: AppConfig,
   *,
@@ -111,7 +130,7 @@ async def verify_epg_endpoint(
         verified=False,
         error=f"Local XMLTV file not found: {resolved}",
       )
-    sample = resolved.read_bytes()[:4096]
+    sample = await asyncio.to_thread(_read_file_prefix, resolved, 4096)
     fmt = _detect_xmltv_prefix(sample)
     return EpgVerificationResult(
       url=str(resolved),
@@ -132,7 +151,7 @@ async def verify_epg_endpoint(
 
   owns_client = client is None
   if owns_client:
-    client = aiohttp.ClientSession(
+    client = default_session_factory(
       timeout=aiohttp.ClientTimeout(
         total=timeout_sec, connect=min(10.0, timeout_sec)
       ),
@@ -141,8 +160,13 @@ async def verify_epg_endpoint(
 
   assert client is not None
   t0 = time.perf_counter()
+  allowed_origins = extract_explicit_private_origins((full_url,))
   try:
-    async with client.get(upstream_url(full_url)) as resp:
+    async with open_upstream_url(
+      client,
+      full_url,
+      allowed_private_origins=allowed_origins,
+    ) as resp:
       latency_ms = (time.perf_counter() - t0) * 1000.0
       ctype = resp.headers.get("Content-Type", "")
       if resp.status != 200:
@@ -189,11 +213,17 @@ async def verify_epg_endpoint(
       url_redacted=redacted_url,
       verified=False,
       latency_ms=(time.perf_counter() - t0) * 1000.0,
-      error=str(exc),
+      error=redact_url_secrets(str(exc), secret=config.xtream.password),
     )
   finally:
     if owns_client:
       await client.close()
+
+
+def _clip_xmltv_text(el: ET.Element | None) -> str:
+  if el is None or not el.text:
+    return ""
+  return el.text.strip()[:MAX_XMLTV_TEXT_CHARS]
 
 
 def parse_xmltv_for_channels(
@@ -203,6 +233,8 @@ def parse_xmltv_for_channels(
   candidate_chains: Mapping[str, Sequence[str]] | None = None,
   max_per_channel: int = 120,
   now_timestamp: int | None = None,
+  max_decompressed_bytes: int = MAX_XMLTV_DECOMPRESSED_BYTES,
+  max_raw_per_channel: int = MAX_XMLTV_RAW_ITEMS_PER_CHANNEL,
 ) -> dict[str, list[ProgramItem]]:
   """Stream-parse an XMLTV file using priority fallback per channel and
   non-overlapping reconciliation.
@@ -236,48 +268,59 @@ def parse_xmltv_for_channels(
     raw_k for chain in effective_chains.values() for raw_k in chain
   }
   raw_items_by_key: dict[str, list[ProgramItem]] = {}
+  pruned_raw_keys: set[str] = set()
   seq = 0
+  raw_cap = max(max_per_channel, max_raw_per_channel)
 
-  with open_xml_stream(xml_path) as fh:
+  with open_xml_stream(xml_path, max_bytes=max_decompressed_bytes) as fh:
     try:
-      for _event, elem in ET.iterparse(fh, events=("end",)):
-        tag = elem.tag.rsplit("}", 1)[-1]
-        if tag == "programme":
-          raw_key = (elem.attrib.get("channel") or "").strip().lower()
-          if raw_key in wanted_raw_keys:
-            title_el = elem.find("title")
-            title = (
-              (title_el.text or "").strip() if title_el is not None else ""
-            )
-            if title:
-              seq += 1
-              sub_el = elem.find("sub-title")
-              desc_el = elem.find("desc")
-              cat_el = elem.find("category")
-              start_ts = parse_xmltv_ts(elem.attrib.get("start") or "")
-              stop_ts = parse_xmltv_ts(elem.attrib.get("stop") or "")
-              desc_str = (
-                (desc_el.text or "").strip() if desc_el is not None else ""
-              )
-
-              raw_items_by_key.setdefault(raw_key, []).append(
-                ProgramItem(
-                  id=str(seq),
-                  channel_id=raw_key,
-                  title=title,
-                  sub_title=(
-                    (sub_el.text or "").strip() if sub_el is not None else ""
-                  ),
-                  description=desc_str,
-                  category=(
-                    (cat_el.text or "").strip() if cat_el is not None else ""
-                  ),
-                  start_timestamp=start_ts,
-                  stop_timestamp=stop_ts,
-                )
-              )
+      root: ET.Element | None = None
+      depth = 0
+      for event, elem in ET.iterparse(fh, events=("start", "end")):
+        if event == "start":
+          if depth == 0:
+            root = elem
+          depth += 1
+          continue
+        depth -= 1
+        if depth == 1:
+          tag = elem.tag.rsplit("}", 1)[-1]
+          if tag == "programme":
+            raw_key = (elem.attrib.get("channel") or "").strip().lower()
+            if raw_key in wanted_raw_keys:
+              title = _clip_xmltv_text(elem.find("title"))
+              if title:
+                seq += 1
+                start_ts = parse_xmltv_ts(elem.attrib.get("start") or "")
+                stop_ts = parse_xmltv_ts(elem.attrib.get("stop") or "")
+                chan_bucket = raw_items_by_key.setdefault(raw_key, [])
+                if (
+                  len(chan_bucket) >= raw_cap and raw_key not in pruned_raw_keys
+                ):
+                  pruned_raw_keys.add(raw_key)
+                  chan_bucket[:] = [
+                    p
+                    for p in chan_bucket
+                    if p.stop_timestamp == 0
+                    or p.stop_timestamp >= recent_cutoff
+                  ]
+                if len(chan_bucket) < raw_cap:
+                  chan_bucket.append(
+                    ProgramItem(
+                      id=str(seq),
+                      channel_id=raw_key,
+                      title=title,
+                      sub_title=_clip_xmltv_text(elem.find("sub-title")),
+                      description=_clip_xmltv_text(elem.find("desc")),
+                      category=_clip_xmltv_text(elem.find("category")),
+                      start_timestamp=start_ts,
+                      stop_timestamp=stop_ts,
+                    )
+                  )
           elem.clear()
-        elif tag == "channel":
+          if root is not None:
+            root.clear()
+        elif depth == 0:
           elem.clear()
     except ET.ParseError:
       pass

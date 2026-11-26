@@ -83,7 +83,8 @@ def test_dockerfile_compose_and_env_contract(
   assert "ENV TZ=UTC" in dockerfile
   assert "PUID=1000" in dockerfile
   assert "PGID=1000" in dockerfile
-  assert "/api/auth/status" in dockerfile
+  assert "/health" in dockerfile
+  assert "/api/auth/status" not in dockerfile
   assert 'CMD ["bellhop", "serve"]' in dockerfile
   assert "bellhop-web" not in dockerfile
 
@@ -155,6 +156,7 @@ def test_dockerfile_compose_and_env_contract(
     "XTREAM_PASSWORD=",
   ):
     assert key in env_example, f"Missing {key} in .env.example"
+  assert "without cookie login" not in env_example
 
   # Validate docker/config.docker.yaml loads cleanly with env credentials.
   monkeypatch.setenv("BELLHOP_WEB_USERNAME", "docker_admin")

@@ -8,36 +8,54 @@ server), `bellhop.epg`, and `bellhop.pipeline`.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import ipaddress
 import json
 import logging
 import re
 import socket
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import (
+  AsyncIterator,
+  Awaitable,
+  Callable,
+  Collection,
+  Iterable,
+  Mapping,
+  Sequence,
+)
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from math import ceil
 from typing import Any, Protocol
+from urllib.parse import urljoin, urlsplit
 
 import aiohttp
+import aiohttp.abc
+import aiohttp.resolver
 from aiohttp import web
 from yarl import URL
 
 __all__ = [
   "DEFAULT_CLIENT_MAX_SIZE",
   "DEFAULT_TRUSTED_PROXY_IPS",
+  "MAX_UPSTREAM_REDIRECTS",
   "UPSTREAM_ERRORS",
   "WEB_CSP_POLICY",
   "ClientSessionFactory",
   "IpNetwork",
   "LoginRateLimiter",
+  "SafeUpstreamResolver",
+  "UpstreamTargetBlockedError",
   "build_access_urls",
   "bytes_response",
   "create_web_app",
   "default_session_factory",
   "detect_device_ip",
+  "extract_explicit_private_origins",
   "json_response",
+  "open_upstream_url",
   "parse_trusted_proxy_networks",
   "redact_url_secrets",
   "redirect_response",
@@ -46,6 +64,7 @@ __all__ = [
   "resolve_request_client_ip",
   "start_site",
   "upstream_url",
+  "validate_upstream_url",
 ]
 
 logger = logging.getLogger("bellhop.common.http")
@@ -74,6 +93,27 @@ WEB_CSP_POLICY = (
   "frame-ancestors 'self'"
 )
 
+# Bounded HTTP redirect hops followed when opening upstream streams or XMLTV.
+MAX_UPSTREAM_REDIRECTS = 5
+
+# Local intranet / mDNS domain suffixes explicitly allowed when configured.
+_LOCAL_DOMAIN_SUFFIXES: tuple[str, ...] = (
+  ".localhost",
+  ".local",
+  ".lan",
+  ".internal",
+  ".home.arpa",
+)
+_NUMERIC_IPV4_LABEL_RE = re.compile(r"^(?:0[xX][0-9a-fA-F]+|[0-9]+)$")
+_ALLOWED_PRIVATE_ORIGINS: contextvars.ContextVar[frozenset[tuple[str, int]]] = (
+  contextvars.ContextVar("bellhop_allowed_private_origins", default=frozenset())
+)
+
+
+class UpstreamTargetBlockedError(aiohttp.ClientError):
+  """Raised when an upstream URL or DNS result targets a blocked network."""
+
+
 # Exceptions raised by aiohttp client requests for network/HTTP failures.
 UPSTREAM_ERRORS: tuple[type[BaseException], ...] = (
   aiohttp.ClientError,
@@ -95,13 +135,215 @@ class ClientSessionFactory(Protocol):
   ) -> aiohttp.ClientSession: ...
 
 
+def _is_always_blocked_ip(addr: IpAddress) -> bool:
+  return bool(
+    addr.is_unspecified
+    or addr.is_link_local
+    or addr.is_multicast
+    or str(addr) == "255.255.255.255"
+    or (addr.is_reserved and not addr.is_loopback)
+  )
+
+
+def _looks_like_noncanonical_ipv4(host: str) -> bool:
+  labels = host.split(".")
+  if not labels or any(not _NUMERIC_IPV4_LABEL_RE.match(lbl) for lbl in labels):
+    return False
+  try:
+    return str(ipaddress.IPv4Address(host)) != host
+  except ipaddress.AddressValueError:
+    return True
+
+
+def _normalize_upstream_host(raw_host: str) -> str:
+  return raw_host.strip().rstrip(".").lower()
+
+
+def extract_explicit_private_origins(
+  urls: Iterable[str],
+) -> frozenset[tuple[str, int]]:
+  """Collect `(host, port)` pairs explicitly configured for local origins.
+
+  Link-local/metadata, unspecified, multicast, and reserved IPs are never
+  added. Multi-label public domain names (e.g. `panel.example.com`) are never
+  added so DNS-rebinding attacks against public upstreams remain blocked.
+  """
+  origins: set[tuple[str, int]] = set()
+  for raw_url in urls:
+    text = (raw_url or "").strip()
+    if not text:
+      continue
+    try:
+      parsed = urlsplit(text)
+    except ValueError:
+      continue
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https") or not parsed.hostname:
+      continue
+    host_low = _normalize_upstream_host(parsed.hostname)
+    if not host_low:
+      continue
+    try:
+      port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError:
+      continue
+    ip = _parse_ip_addr(host_low)
+    if ip is not None:
+      if not _is_always_blocked_ip(ip) and not ip.is_global:
+        origins.add((host_low, port))
+        origins.add((str(ip), port))
+    elif (
+      host_low in {"localhost", "localhost.localdomain"}
+      or host_low.endswith(_LOCAL_DOMAIN_SUFFIXES)
+      or "." not in host_low
+    ):
+      origins.add((host_low, port))
+  return frozenset(origins)
+
+
+def validate_upstream_url(
+  raw_url: str,
+  *,
+  allowed_private_origins: Collection[tuple[str, int]] = (),
+) -> URL:
+  """Validate an upstream HTTP(S) URL against SSRF targets and schemes."""
+  cleaned = (raw_url or "").strip()
+  if not cleaned:
+    raise UpstreamTargetBlockedError("Empty upstream URL")
+  if any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in cleaned):
+    raise UpstreamTargetBlockedError(
+      "Blocked upstream URL containing control characters"
+    )
+  url = upstream_url(cleaned)
+  if url.scheme not in ("http", "https") or not url.host:
+    raise UpstreamTargetBlockedError(
+      f"Blocked non-HTTP(S) upstream URL scheme: {url.scheme or '(none)'}"
+    )
+  host_low = _normalize_upstream_host(url.host)
+  eff_port = url.port or (443 if url.scheme == "https" else 80)
+  if not host_low:
+    raise UpstreamTargetBlockedError("Blocked empty upstream hostname")
+  if ":" not in host_low and _looks_like_noncanonical_ipv4(host_low):
+    raise UpstreamTargetBlockedError(
+      f"Blocked non-canonical IPv4 upstream host: {host_low}"
+    )
+
+  allowed = {(h.rstrip(".").lower(), p) for h, p in allowed_private_origins}
+  ip = _parse_ip_addr(host_low)
+  if ip is not None:
+    if _is_always_blocked_ip(ip):
+      raise UpstreamTargetBlockedError(
+        f"Blocked restricted IP upstream target: {ip}"
+      )
+    if (
+      not ip.is_global
+      and (host_low, eff_port) not in allowed
+      and (str(ip), eff_port) not in allowed
+    ):
+      raise UpstreamTargetBlockedError(
+        f"Blocked private upstream IP target: {ip}:{eff_port}"
+      )
+  elif (
+    host_low in {"localhost", "localhost.localdomain"}
+    or host_low.endswith(".localhost")
+  ) and (host_low, eff_port) not in allowed:
+    raise UpstreamTargetBlockedError(
+      f"Blocked loopback hostname upstream target: {host_low}:{eff_port}"
+    )
+  return url
+
+
+class SafeUpstreamResolver(aiohttp.abc.AbstractResolver):
+  """DNS resolver blocking loopback, link-local, and RFC1918 rebinding."""
+
+  def __init__(self, inner: aiohttp.abc.AbstractResolver | None = None) -> None:
+    self._resolver: aiohttp.abc.AbstractResolver = (
+      inner or aiohttp.resolver.DefaultResolver()
+    )
+
+  async def resolve(
+    self,
+    host: str,
+    port: int = 0,
+    family: socket.AddressFamily = socket.AF_INET,
+  ) -> list[aiohttp.abc.ResolveResult]:
+    results = await self._resolver.resolve(host, port, family=family)
+    allowed = _ALLOWED_PRIVATE_ORIGINS.get()
+    host_low = _normalize_upstream_host(host)
+    origin_ok = (host_low, port) in allowed
+    for item in results:
+      resolved_host = str(item.get("host") or "")
+      ip = _parse_ip_addr(resolved_host)
+      if ip is None:
+        raise UpstreamTargetBlockedError(
+          f"Blocked unparseable upstream resolution for {host_low}:{port}"
+        )
+      if _is_always_blocked_ip(ip) or (not ip.is_global and not origin_ok):
+        raise UpstreamTargetBlockedError(
+          f"Blocked non-public upstream resolution for {host_low}:{port}"
+        )
+    return results
+
+  async def close(self) -> None:
+    await self._resolver.close()
+
+
 def default_session_factory(
   *,
   timeout: aiohttp.ClientTimeout,
   headers: Mapping[str, str] | None = None,
 ) -> aiohttp.ClientSession:
-  """Create a production `aiohttp.ClientSession`."""
-  return aiohttp.ClientSession(timeout=timeout, headers=headers)
+  """Create a production `aiohttp.ClientSession` with SSRF DNS protection."""
+  connector = aiohttp.TCPConnector(
+    resolver=SafeUpstreamResolver(),
+    use_dns_cache=False,
+  )
+  return aiohttp.ClientSession(
+    connector=connector,
+    timeout=timeout,
+    headers=headers,
+  )
+
+
+@asynccontextmanager
+async def open_upstream_url(
+  client: aiohttp.ClientSession,
+  raw_url: str,
+  *,
+  allowed_private_origins: Collection[tuple[str, int]] = (),
+  max_redirects: int = MAX_UPSTREAM_REDIRECTS,
+) -> AsyncIterator[aiohttp.ClientResponse]:
+  """Open `raw_url` via `client`, validating every redirect hop for SSRF."""
+  normalized_allowed = frozenset(
+    (h.rstrip(".").lower(), p) for h, p in allowed_private_origins
+  )
+  token = _ALLOWED_PRIVATE_ORIGINS.set(normalized_allowed)
+  current_url = raw_url
+  try:
+    for hop in range(max_redirects + 1):
+      target = validate_upstream_url(
+        current_url,
+        allowed_private_origins=normalized_allowed,
+      )
+      resp = await client.get(target, allow_redirects=False)
+      loc = (resp.headers.get("Location") or "").strip()
+      if resp.status in (301, 302, 303, 307, 308) and loc:
+        base_for_join = str(resp.url)
+        resp.release()
+        if hop >= max_redirects:
+          raise UpstreamTargetBlockedError(
+            "Exceeded maximum upstream redirects"
+          )
+        current_url = urljoin(base_for_join, loc)
+        continue
+      try:
+        yield resp
+      finally:
+        resp.release()
+      return
+    raise UpstreamTargetBlockedError("Exceeded maximum upstream redirects")
+  finally:
+    _ALLOWED_PRIVATE_ORIGINS.reset(token)
 
 
 def upstream_url(url: str) -> URL:
@@ -535,6 +777,11 @@ _STREAM_PATH_SECRET_RE = re.compile(
   r"(/(?:live|movie|series|timeshift)/[^/\s'\"\\]+/)([^/\s'\"\\]+)(/)",
   re.IGNORECASE,
 )
+_SHORTHAND_STREAM_SECRET_RE = re.compile(
+  r"(://[^/\s'\"\\]+/)(?!(?:live|movie|series|timeshift)/)"
+  r"([^/\s'\"\\]+/)([^/\s'\"\\]+)(/\d+(?:\.[A-Za-z0-9]+)?\b)",
+  re.IGNORECASE,
+)
 _QUERY_SECRET_RE = re.compile(
   r"((?:password|passwd|pass|token)=)([^&\s'\"\\]+)",
   re.IGNORECASE,
@@ -542,15 +789,20 @@ _QUERY_SECRET_RE = re.compile(
 _AUTH_USERINFO_RE = re.compile(r"(://[^:/@\s'\"\\]+:)([^@\s'\"\\]+)(@)")
 
 
-def redact_url_secrets(text: str) -> str:
+def redact_url_secrets(text: str, *, secret: str = "") -> str:
   """Mask embedded stream/query/userinfo credentials in logged error strings.
 
   Args:
     text: Raw error or URL text that may embed upstream credentials.
+    secret: Explicit literal password/secret to scrub if present anywhere.
 
   Returns:
     Sanitized string with passwords and tokens replaced by `***`.
   """
   masked = _STREAM_PATH_SECRET_RE.sub(r"\1***\3", text)
+  masked = _SHORTHAND_STREAM_SECRET_RE.sub(r"\1\2***\4", masked)
   masked = _AUTH_USERINFO_RE.sub(r"\1***\3", masked)
-  return _QUERY_SECRET_RE.sub(r"\1***", masked)
+  masked = _QUERY_SECRET_RE.sub(r"\1***", masked)
+  if secret:
+    masked = masked.replace(secret, "***")
+  return masked

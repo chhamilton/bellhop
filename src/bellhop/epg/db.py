@@ -53,6 +53,7 @@ DEFAULT_EPG_DB_FILE = Path("cache/epg.sqlite3")
 _SQL_CHUNK = 450
 _XMLTV_PAGE_ROWS = 2000
 _INCREMENTAL_VACUUM_PAGES = 256
+_MAX_POOL_SIZE = 8
 
 _DDL_STATEMENTS: tuple[str, ...] = (
   """
@@ -199,7 +200,22 @@ class EpgDatabase:
     self._initialized = False
     self._init_lock = threading.Lock()
     self._summary_lock = threading.Lock()
+    self._pool_lock = threading.Lock()
+    self._idle_conns: list[tuple[tuple[int, int], sqlite3.Connection]] = []
     self._cached_summary: EpgCoverageSummary | None = None
+
+  def __del__(self) -> None:
+    with contextlib.suppress(Exception):
+      self.close()
+
+  def close(self) -> None:
+    """Close any pooled SQLite connections held by this repository."""
+    with self._pool_lock:
+      conns = list(self._idle_conns)
+      self._idle_conns.clear()
+    for _cid, conn in conns:
+      with contextlib.suppress(sqlite3.Error):
+        conn.close()
 
   def _set_cached_summary(self, summary: EpgCoverageSummary | None) -> None:
     with self._summary_lock:
@@ -257,37 +273,89 @@ class EpgDatabase:
     for suffix in ("", "-wal", "-shm"):
       chmod_private_file(Path(f"{self.db_path}{suffix}"))
 
+  def _borrow_connection(
+    self, cur_id: tuple[int, int]
+  ) -> sqlite3.Connection | None:
+    stale: list[sqlite3.Connection] = []
+    borrowed: sqlite3.Connection | None = None
+    with self._pool_lock:
+      while self._idle_conns:
+        cid, conn = self._idle_conns.pop()
+        if cid == cur_id:
+          borrowed = conn
+          break
+        stale.append(conn)
+    for dead in stale:
+      with contextlib.suppress(sqlite3.Error):
+        dead.close()
+    return borrowed
+
+  def _return_connection(
+    self, cur_id: tuple[int, int], conn: sqlite3.Connection
+  ) -> None:
+    evict: sqlite3.Connection | None = None
+    with self._pool_lock:
+      if len(self._idle_conns) < _MAX_POOL_SIZE:
+        self._idle_conns.append((cur_id, conn))
+      else:
+        evict = conn
+    if evict is not None:
+      with contextlib.suppress(sqlite3.Error):
+        evict.close()
+
   @contextlib.contextmanager
-  def _connect(self) -> Iterator[sqlite3.Connection]:
-    ensure_private_dir(self.db_path.parent)
-    if not self.db_path.exists():
-      with contextlib.suppress(OSError):
-        fd = os.open(
-          str(self.db_path),
-          os.O_WRONLY | os.O_CREAT,
-          PRIVATE_FILE_MODE,
-        )
-        os.close(fd)
-    conn = sqlite3.connect(
-      str(self.db_path),
-      timeout=5.0,
-      isolation_level=None,
-      check_same_thread=False,
-    )
+  def _connect(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
+    if write:
+      ensure_private_dir(self.db_path.parent)
+      if not self.db_path.exists():
+        with contextlib.suppress(OSError):
+          fd = os.open(
+            str(self.db_path),
+            os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            PRIVATE_FILE_MODE,
+          )
+          os.close(fd)
+    st = self.db_path.stat()
+    cur_id = (int(st.st_dev), int(st.st_ino))
+    conn = self._borrow_connection(cur_id)
+    if conn is None:
+      conn = sqlite3.connect(
+        str(self.db_path),
+        timeout=5.0,
+        isolation_level=None,
+        check_same_thread=False,
+      )
+      try:
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA temp_store=MEMORY")
+      except Exception:
+        with contextlib.suppress(sqlite3.Error):
+          conn.close()
+        raise
+
+    healthy = True
     try:
-      conn.execute("PRAGMA synchronous=NORMAL")
-      conn.execute("PRAGMA foreign_keys=ON")
-      conn.execute("PRAGMA busy_timeout=5000")
-      conn.execute("PRAGMA temp_store=MEMORY")
-      self._enforce_private_permissions()
       yield conn
+    except Exception:
+      healthy = False
+      raise
     finally:
-      conn.close()
-      self._enforce_private_permissions()
+      if not healthy or conn.in_transaction:
+        with contextlib.suppress(sqlite3.Error):
+          if conn.in_transaction:
+            conn.execute("ROLLBACK")
+          conn.close()
+      else:
+        self._return_connection(cur_id, conn)
+      if write:
+        self._enforce_private_permissions()
 
   def delete_database(self) -> None:
     """Remove the SQLite database file and any `-wal` / `-shm` sidecars."""
     self._initialized = False
+    self.close()
     self._set_cached_summary(EpgCoverageSummary())
     for suffix in ("", "-wal", "-shm"):
       cand = Path(f"{self.db_path}{suffix}")
@@ -330,7 +398,8 @@ class EpgDatabase:
       self._initialized = True
 
   def _init_schema(self) -> None:
-    with self._connect() as conn:
+    self.close()
+    with self._connect(write=True) as conn:
       auto_vac = int(conn.execute("PRAGMA auto_vacuum").fetchone()[0])
       cur_ver = int(conn.execute("PRAGMA user_version").fetchone()[0])
       if auto_vac != 2:
@@ -397,7 +466,7 @@ class EpgDatabase:
       self._set_cached_summary(EpgCoverageSummary())
       return 0, 0
     self.ensure_initialized()
-    with self._connect() as conn:
+    with self._connect(write=True) as conn:
       conn.execute("BEGIN IMMEDIATE")
       try:
         cur = conn.execute(
@@ -417,7 +486,6 @@ class EpgDatabase:
         raise
       if evicted > 0:
         conn.execute(f"PRAGMA incremental_vacuum({_INCREMENTAL_VACUUM_PAGES})")
-    self._enforce_private_permissions()
     self._set_cached_summary(summary)
     return evicted, remaining
 
@@ -495,7 +563,7 @@ class EpgDatabase:
       or {cid.strip().lower() for cid in programs_by_id if cid.strip()}
     )
 
-    with self._connect() as conn:
+    with self._connect(write=True) as conn:
       conn.execute("BEGIN IMMEDIATE")
       try:
         conn.execute("DELETE FROM guide_airings")
@@ -527,7 +595,6 @@ class EpgDatabase:
         raise
       conn.execute(f"PRAGMA incremental_vacuum({_INCREMENTAL_VACUUM_PAGES})")
 
-    self._enforce_private_permissions()
     self._set_cached_summary(summary)
     return len(rows)
 
@@ -748,16 +815,11 @@ class EpgDatabase:
           SELECT chno, epg_channel_id, start_ts, stop_ts,
                  title, sub_title, description, category
           FROM guide_airings
-          WHERE (chno > ?)
-             OR (chno = ? AND epg_channel_id > ?)
-             OR (chno = ? AND epg_channel_id = ? AND start_ts > ?)
+          WHERE (chno, epg_channel_id, start_ts) > (?, ?, ?)
           ORDER BY chno ASC, epg_channel_id ASC, start_ts ASC
           LIMIT ?
           """,
           (
-            last_chno,
-            last_chno,
-            last_epg_id,
             last_chno,
             last_epg_id,
             last_start_ts,
@@ -854,7 +916,7 @@ class EpgDatabase:
     map.
     """
     self.ensure_initialized()
-    with self._connect() as conn:
+    with self._connect(write=True) as conn:
       conn.execute("BEGIN IMMEDIATE")
       try:
         conn.execute(
@@ -909,7 +971,7 @@ class EpgDatabase:
     `/status`.
     """
     self.ensure_initialized()
-    with self._connect() as conn:
+    with self._connect(write=True) as conn:
       conn.execute(
         "UPDATE sd_lineups SET fetched_at = ? WHERE lineup_id = ?",
         (fetched_at, lineup_id),
@@ -949,7 +1011,7 @@ class EpgDatabase:
     dates.
     """
     self.ensure_initialized()
-    with self._connect() as conn:
+    with self._connect(write=True) as conn:
       conn.execute("BEGIN IMMEDIATE")
       try:
         if rows:
@@ -1030,7 +1092,7 @@ class EpgDatabase:
     if not programs:
       return
     self.ensure_initialized()
-    with self._connect() as conn:
+    with self._connect(write=True) as conn:
       conn.execute("BEGIN IMMEDIATE")
       try:
         conn.executemany(
@@ -1057,7 +1119,6 @@ class EpgDatabase:
       except Exception:
         conn.execute("ROLLBACK")
         raise
-    self._enforce_private_permissions()
 
   def touch_and_prune_sd_programs(
     self,
@@ -1073,7 +1134,7 @@ class EpgDatabase:
       return 0
     self.ensure_initialized()
     cutoff = now_ts - max(0.0, retention_sec)
-    with self._connect() as conn:
+    with self._connect(write=True) as conn:
       conn.execute("BEGIN IMMEDIATE")
       try:
         for idx in range(0, len(active_program_ids), _SQL_CHUNK):
@@ -1094,7 +1155,6 @@ class EpgDatabase:
         raise
       if pruned > 0:
         conn.execute(f"PRAGMA incremental_vacuum({_INCREMENTAL_VACUUM_PAGES})")
-    self._enforce_private_permissions()
     return pruned
 
   def load_sd_programs(

@@ -14,6 +14,7 @@ fi
 
 echo "==> Installing editable package (bellhop) + dev dependencies (mypy, ruff, pytest, nodejs-wheel)..."
 .venv/bin/pip install --upgrade pip setuptools wheel >/dev/null
+.venv/bin/pip install -r requirements.lock
 .venv/bin/pip install -e ".[dev]"
 
 if [[ -f "package.json" && -x ".venv/bin/npm" ]]; then

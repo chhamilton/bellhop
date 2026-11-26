@@ -549,8 +549,7 @@ async def test_candidate_only_validation_and_native_epg_m3u8(
   mapped_list = mapping_document_to_mapped_channels(doc_day2, lineup)
   m3u8 = render_m3u8(lineup, mapped_list, cfg)
   assert (
-    'url-tvg="http://provider.example/xmltv.php?username=u&password=p"'
-    in m3u8
+    'url-tvg="http://provider.example/xmltv.php?username=u&password=p"' in m3u8
   )
   assert 'tvg-id="ICITeleMontreal.ca"' in m3u8
   assert 'tvg-chno="1101"' in m3u8
