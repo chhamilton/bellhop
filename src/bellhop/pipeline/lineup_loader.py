@@ -16,8 +16,6 @@ from bellhop.config.model import (
 )
 from bellhop.pipeline.models import LineupChannel
 
-BELL_FIBE_MTL_TVGUIDE_ID = "TVG-9100000607"
-
 
 def is_bell_fibe_lineup(*, lineup_id: str = "", provider: str = "") -> bool:
   """Return True when the lineup uses Bell Fibe dial numbering for logo
@@ -25,10 +23,7 @@ def is_bell_fibe_lineup(*, lineup_id: str = "", provider: str = "") -> bool:
   """
   lid = lineup_id.strip().upper()
   prov = provider.strip().lower()
-  return (
-    lid in {DEFAULT_BELL_FIBE_MTL_LINEUP_ID, BELL_FIBE_MTL_TVGUIDE_ID}
-    or "bell fibe" in prov
-  )
+  return lid == DEFAULT_BELL_FIBE_MTL_LINEUP_ID or "bell fibe" in prov
 
 
 def _load_official_logo_index(base_dir: Path | None = None) -> dict[int, str]:

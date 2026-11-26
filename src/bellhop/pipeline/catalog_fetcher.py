@@ -10,8 +10,8 @@ Catalog Snapshot Schema (`state/catalogs/iptv_catalog_<sha256_16>.json`)
   "account": { "username": "...", "status": "Active", "max_connections": 1, ...
   },
   "categories": { "1": "CA: Francophone", ... },
-  "stream_count": 16622,
-  "streams_with_native_epg": 1156,
+  "stream_count": 420,
+  "streams_with_native_epg": 310,
   "last_diff": {
     "added_count": 0,
     "removed_count": 0,

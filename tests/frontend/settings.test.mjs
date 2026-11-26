@@ -115,8 +115,8 @@ test("createSettingsController loads config, switches tabs, and submits PUT /api
     pipeline: {
       lineup: {
         backend: "schedules_direct",
-        lineup_id: "CAN-0004980-X",
-        postal_code: "H2Y",
+        lineup_id: "CAN-0000001-X",
+        postal_code: "H3B",
         refresh_days: 30,
         numbering_mode: "both",
         collapse_sd_dupes: true,
@@ -157,8 +157,8 @@ test("createSettingsController loads config, switches tabs, and submits PUT /api
   registerInput("cfg-xt-timeout", { value: "15" });
   registerInput("cfg-xt-refresh", { value: "24" });
   registerInput("cfg-lu-backend", { value: "schedules_direct" });
-  registerInput("cfg-lu-id", { value: "CAN-0004980-X" });
-  registerInput("cfg-lu-postal", { value: "H2Y" });
+  registerInput("cfg-lu-id", { value: "CAN-0000001-X" });
+  registerInput("cfg-lu-postal", { value: "H3B" });
   registerInput("cfg-lu-refresh", { value: "30" });
   registerInput("cfg-lu-numbering", { value: "both" });
   registerInput("cfg-lu-collapse", { checked: true });
@@ -256,7 +256,7 @@ test("createSettingsController loads config, switches tabs, and submits PUT /api
     await ctrl.openSettingsDrawer();
     assert.equal(elSettingsOverlay.hidden, false);
     assert.equal(elSettingsFileBadge.textContent, "config.yaml");
-    assert.ok(elSettingsBody.innerHTML.includes("CAN-0004980-X"));
+    assert.ok(elSettingsBody.innerHTML.includes("CAN-0000001-X"));
     assert.equal(elSettingsStatus.textContent, "Loaded from disk.");
 
     // Switch active tab to "lineup"

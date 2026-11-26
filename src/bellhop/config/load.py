@@ -248,7 +248,7 @@ def load_config(
     lineup_id=str(
       lu_raw.get("lineup_id", DEFAULT_BELL_FIBE_MTL_LINEUP_ID)
     ).strip(),
-    postal_code=str(lu_raw.get("postal_code", "H2Y")).strip(),
+    postal_code=str(lu_raw.get("postal_code", "")).strip(),
     refresh_days=float(lu_raw.get("refresh_days", 30.0)),
     file=Path(
       _first_str(

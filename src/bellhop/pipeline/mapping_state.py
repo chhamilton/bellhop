@@ -6,19 +6,19 @@ Persistent Mapping Schema (`state/channel_mapping.json`, `schema_version = 1`)
 {
   "schema_version": 1,
   "lineup_id": "CAN-BELLFIBE-MTL-X",
-  "provider": "Bell Fibe TV",
-  "market": "Montréal, QC",
+  "provider": "Sample Fiber TV",
+  "market": "Sample Market",
   "created_at": "2026-11-18T00:00:00+00:00",
   "updated_at": "2026-11-19T00:00:00+00:00",
   "last_summary": {
     "was_empty_initial_run": false,
-    "total_lineup_slots": 355,
-    "matched_slots": 349,
-    "unmatched_slots": 6,
-    "slots_with_native_epg": 235,
-    "unique_candidate_streams": 940,
-    "raw_catalog_streams": 16622,
-    "candidate_reduction_percent": 94.34
+    "total_lineup_slots": 120,
+    "matched_slots": 115,
+    "unmatched_slots": 5,
+    "slots_with_native_epg": 90,
+    "unique_candidate_streams": 240,
+    "raw_catalog_streams": 420,
+    "candidate_reduction_percent": 42.86
   },
   "slots": {
     "1108": {
@@ -174,7 +174,7 @@ class CandidateRecord:
 
 @dataclass(slots=True)
 class ChannelMappingSlot:
-  """Stateful mapping record for a single Bell Fibe lineup slot."""
+  """Stateful mapping record for a single lineup slot."""
 
   chno: int
   name: str
@@ -310,8 +310,8 @@ class MappingDocument:
   """
 
   lineup_id: str = DEFAULT_BELL_FIBE_MTL_LINEUP_ID
-  provider: str = "Bell Fibe TV"
-  market: str = "Montréal, QC"
+  provider: str = ""
+  market: str = ""
   created_at: str = ""
   updated_at: str = ""
   slots: dict[int, ChannelMappingSlot] = field(default_factory=dict)
@@ -359,7 +359,7 @@ class MappingDocument:
 
     return cls(
       lineup_id=str(data.get("lineup_id") or DEFAULT_BELL_FIBE_MTL_LINEUP_ID),
-      provider=str(data.get("provider", "Bell Fibe TV")),
+      provider=str(data.get("provider", "")),
       market=str(data.get("market", "")),
       created_at=str(data.get("created_at", "")),
       updated_at=str(data.get("updated_at", "")),
@@ -669,7 +669,7 @@ def _reconcile_single_slot(
       candidates=candidates,
     )
 
-  # First time seeing this Bell Fibe channel slot (or previously unmatched)
+  # First time seeing this lineup channel slot (or previously unmatched)
   if old_slot is None or old_slot.preferred_stream_id is None:
     source = "validated" if top.validation_status == "valid" else "rough_match"
     return ChannelMappingSlot(

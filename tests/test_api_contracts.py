@@ -90,9 +90,9 @@ async def test_live_http_endpoints_conform_to_generated_ts_contracts(
           "lineup_id": "CAN-BELLFIBE-MTL-X",
           "provider": "Bell Fibe TV",
           "market": "Montréal, QC",
-          "postal_prefix": "H2Y",
+          "postal_prefix": "H3B",
         },
-        "server_info": {"timezone": "America/Montreal"},
+        "server_info": {"timezone": "UTC"},
         "live_categories": [
           {"category_id": "2", "category_name": "Sports", "parent_id": 0}
         ],

@@ -10,6 +10,15 @@ import { createPlayerController } from "./player.js";
 import { renderCardsSectionsHtml, renderCategoriesHtml, renderTimelineViewDom, trapFocusInContainer, updateLiveProgressInPlace, } from "./render.js";
 import { createSettingsController } from "./settings.js";
 const PAGE_CLIENT_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const resolveDefaultTimezone = () => {
+    try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    }
+    catch {
+        return "UTC";
+    }
+};
+const DEFAULT_TIMEZONE = resolveDefaultTimezone();
 const state = {
     lineupMeta: null,
     categories: [],
@@ -23,7 +32,7 @@ const state = {
     activeChannel: null,
     pendingChannel: null,
     streamMode: "mpegts",
-    timezone: "America/Montreal",
+    timezone: DEFAULT_TIMEZONE,
     timelineOffsetSec: 0,
     lineupUpdatedAt: null,
     epgStatus: null,
@@ -301,7 +310,7 @@ const loadLineup = async () => {
                 ? state.lineupMeta.lineup_updated_at
                 : null;
         state.epgStatus = data.epg_status || null;
-        state.timezone = state.lineupMeta.timezone || "America/Montreal";
+        state.timezone = state.lineupMeta.timezone || DEFAULT_TIMEZONE;
         state.categories = data.categories || [];
         state.channels = data.channels || [];
         const resolvedCat = resolveSelectedCategory(state.selectedCategory, state.categories);

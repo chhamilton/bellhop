@@ -6,14 +6,14 @@ This document captures the architectural plan for evolving `PipelineRunner` (`sr
 Because `max_connections == 1`, live viewing and Phase (4) stream validation share one upstream tuner:
 - Introduce a shared `TunerCoordinator`:
   - **Interactive Viewer Priority:** When a user opens `/api/stream/<chno>.ts` or `/api/hls/<chno>/index.m3u8`, any in-progress background Phase (4) validation task immediately pauses/cancels its current probe (checkpointing already-probed slots to `state/channel_mapping.json`) and yields the tuner within `<200ms`.
-  - **Idle-Window Validation:** Scheduled `validate` runs execute during configured off-hours (e.g. `04:00 America/Montreal`) and only while `active_viewer == None`.
+  - **Idle-Window Validation:** Scheduled `validate` runs execute during configured off-hours (e.g. `04:00` in configured timezone) and only while `active_viewer == None`.
 
 ## 2. Internal Async Scheduler (`SchedulerService`)
 Add a `schedule:` block to `config.yaml`:
 ```yaml
 schedule:
   enabled: true
-  timezone: "America/Montreal"
+  timezone: "UTC"
   # Daily catalog + match + EPG + export check (respects 30d lineup & 24h catalog TTLs)
   sync_cron_hour: 4
   sync_cron_minute: 0
@@ -34,5 +34,5 @@ Extend `WebGuideApp` with admin endpoints:
 
 ## 4. Web UI Additions (`Admin / Settings` Drawer or Tab)
 Add a clean **Settings & Sync Status** view alongside `Guide` and `Timeline`:
-- **Dashboard:** Last sync timestamp, channel coverage (`349/355`), EPG item count, active tuner badge, and one-click buttons (`Sync Now (Skip Validation)`, `Dry-Run Preview`, `Full Off-Hours Validate`).
+- **Dashboard:** Last sync timestamp, channel coverage metrics, EPG item count, active tuner badge, and one-click buttons (`Sync Now (Skip Validation)`, `Dry-Run Preview`, `Full Off-Hours Validate`).
 - **Lineup Picker:** Search by postal/ZIP code (`tvguide` or `schedules_direct`), pick a provider lineup, toggle `collapse_sd_dupes` / `exclude_audio`, and pin/exclude specific channel slots interactively.

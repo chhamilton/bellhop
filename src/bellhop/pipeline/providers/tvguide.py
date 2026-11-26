@@ -210,8 +210,8 @@ class TvGuideLineupProvider(LineupProvider):
       if city_hint and city_hint in city.lower():
         city_matched_results.append(headend)
 
-    # If user gave an H2Y/M5V postal code without an explicit city query,
-    # prioritize that metro!
+    # If user gave a known Canadian city FSA (e.g. M5V/H3B) without an explicit
+    # city query, prioritize that metro!
     final_list = (
       city_matched_results if (city_matched_results and not q_low) else results
     )
@@ -229,7 +229,7 @@ class TvGuideLineupProvider(LineupProvider):
     if not provider_id:
       raise LineupBackendError(
         f"Invalid TV Guide lineup ID {lineup_id!r}. Expected 'TVG-<providerId>' or numeric ID "
-        f"(e.g. 'TVG-9100000607' for Bell Fibe TV - Montreal)."
+        f"(e.g. 'TVG-9100000001')."
       )
 
     meta_payload = await self._get_json(f"serviceprovider/{provider_id}/web")

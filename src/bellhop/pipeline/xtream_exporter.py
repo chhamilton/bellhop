@@ -30,9 +30,9 @@ Exported Directory Layout (`output/xtream/`)
        "callsign": "RDS",
        "guide": {
          "lineup_id": "CAN-BELLFIBE-MTL-X",
-         "provider": "Bell Fibe TV",
-         "market": "Montréal, QC",
-         "postal_prefix": "H2Y",
+         "provider": "Sample Fiber TV",
+         "market": "Sample Market",
+         "postal_prefix": "",
          "chno": 1108,
          "hd_chno": 1108,
          "sd_chno": 108,
@@ -63,6 +63,7 @@ Exported Directory Layout (`output/xtream/`)
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -330,7 +331,7 @@ def _resolve_canonical_epg_id(mapped: MappedChannel) -> str:
   return (
     ch.tvg_id
     or (mapped.selected.stream.epg_channel_id if mapped.selected else "")
-    or f"bell.{ch.chno}.ca"
+    or f"bellhop.{ch.chno}.tv"
   ).strip()
 
 
@@ -482,6 +483,9 @@ def build_xtream_export_bundle(
     "max_connections": str(acc.max_connections),
     "allowed_output_formats": list(acc.allowed_output_formats),
   }
+  exported_timezone = (
+    acc.timezone or os.environ.get("TZ") or "UTC"
+  ).strip() or "UTC"
   server_info: dict[str, Any] = {
     "url": parsed_url.hostname or "localhost",
     "port": str(
@@ -491,7 +495,7 @@ def build_xtream_export_bundle(
     ),
     "https_port": "443",
     "server_protocol": parsed_url.scheme or acc.server_protocol or "http",
-    "timezone": "America/Montreal",
+    "timezone": exported_timezone,
     "timestamp_now": now_epoch,
     "time_now": now_iso,
     "process": True,

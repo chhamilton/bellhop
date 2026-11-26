@@ -22,8 +22,8 @@ from bellhop.pipeline.providers.base import (
 
 
 class YamlLineupProvider(LineupProvider):
-  """Loads cable lineups from a local curated YAML definition (e.g. Bell Fibe
-  Montréal).
+  """Loads cable lineups from a local curated YAML definition (e.g. bundled
+  sample YAML).
   """
 
   backend_name = "yaml"
@@ -48,9 +48,7 @@ class YamlLineupProvider(LineupProvider):
     cleaned = lineup_id.strip().upper()
     if cleaned.startswith("YAML:"):
       return True
-    if cleaned in self.SUPPORTED_DEFAULT_IDS:
-      return True
-    return self.yaml_path.is_file() and cleaned == "CAN-0005993-X"
+    return cleaned in self.SUPPORTED_DEFAULT_IDS
 
   async def discover_lineups(
     self,

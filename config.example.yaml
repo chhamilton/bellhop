@@ -19,7 +19,7 @@ paths:
   cache_dir: "cache"
   state_dir: "state"
   mapping_path: "state/channel_mapping.json"
-  # Curated YAML definition used when pipeline.lineup.backend="yaml" (or auto with CAN-BELLFIBE-MTL-X)
+  # Bundled sample YAML definition used when pipeline.lineup.backend="yaml" (or auto with CAN-BELLFIBE-MTL-X)
   lineup_file: "data/lineups/bell_fibe_montreal.yaml"
   # Phase (5) M3U8 playlist & diagnostics report paths
   m3u8_playlist_path: "output/bellhop.m3u8"
@@ -91,11 +91,11 @@ pipeline:
     # Phase (1) `lineup` Backend: "auto", "tvguide" (free US/CA JSON), "schedules_direct" (SD-JSON), or "yaml"
     backend: "auto"
     # Examples:
-    #   - "TVG-9100000607"     -> TV Guide: Bell Fibe TV - Montreal (Digital) [free, 700 slots]
-    #   - "CAN-0005993-X"      -> Schedules Direct / Gracenote headend ID
-    #   - "CAN-BELLFIBE-MTL-X" -> Curated Bell Fibe Montréal YAML
+    #   - "TVG-9100000001"     -> TV Guide provider ID (via TV Guide discovery)
+    #   - "USA-NY10001-X"      -> Schedules Direct / Gracenote headend ID
+    #   - "CAN-BELLFIBE-MTL-X" -> Bundled sample lineup YAML
     lineup_id: "CAN-BELLFIBE-MTL-X"
-    postal_code: "H2Y"
+    postal_code: ""
     # Monthly cable lineup retrieval cadence (days)
     refresh_days: 30.0
     # Channel numbering mode: "both" (100s SD + 1000s HD), "hd", or "sd"

@@ -102,7 +102,7 @@ def write_minimal_xtream_export(
       "allowed_output_formats": ["ts", "m3u8"],
     },
     "server_info": {
-      "timezone": "America/Montreal",
+      "timezone": "UTC",
       "xmltv_url": xmltv_url,
     },
     "lineup_info": {

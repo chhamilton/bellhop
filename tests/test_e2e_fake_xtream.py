@@ -33,7 +33,7 @@ def _write_mini_lineup(path: Path) -> None:
 lineup_id: CAN-BELLFIBE-MTL-X
 provider: Bell Fibe TV
 market: Montréal, QC
-postal_prefix: H2Y
+postal_prefix: H3B
 channels:
   - chno: 1101
     sd_chno: 101
@@ -370,7 +370,7 @@ async def test_e2e_reload_channel_deep_link_race_placeholder_failover_and_hls(
         "market": "Montréal, QC",
       },
       "server_info": {
-        "timezone": "America/Montreal",
+        "timezone": "UTC",
         "xmltv_url": fake.xmltv_url,
       },
       "live_categories": categories,

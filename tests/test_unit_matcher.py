@@ -406,10 +406,10 @@ def test_callsign_epg_stem_ota_virtual_channel_tail_and_rare_feed_suffixes() -> 
         country="USA",
       ),
     ],
-    postal_code="H2Y",
+    postal_code="H3B",
     market="Montréal, QC",
     provider_name="Bell Fibe TV",
-    lineup_id="TVG-9100000607",
+    lineup_id="TVG-9100000001",
   )
 
   streams = [

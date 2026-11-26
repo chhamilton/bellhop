@@ -57,7 +57,7 @@ def test_dry_run_writes_nothing_and_selective_phases_compose(
 lineup_id: CAN-BELLFIBE-MTL-X
 provider: Bell Fibe TV
 market: Montréal, QC
-postal_prefix: H2Y
+postal_prefix: H3B
 channels:
   - chno: 1108
     sd_chno: 108
@@ -239,7 +239,7 @@ async def test_expired_account_auto_skips_validate_and_completes_matching_and_ex
 lineup_id: CAN-BELLFIBE-MTL-X
 provider: Bell Fibe TV
 market: Montréal, QC
-postal_prefix: H2Y
+postal_prefix: H3B
 channels:
   - chno: 552
     name: YTV
@@ -357,7 +357,7 @@ def test_cli_non_quiet_panels_dry_run_export_and_empty_phases(
 lineup_id: CAN-BELLFIBE-MTL-X
 provider: Bell Fibe TV
 market: Montréal, QC
-postal_prefix: H2Y
+postal_prefix: H3B
 channels:
   - chno: 1108
     sd_chno: 108

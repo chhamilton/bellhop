@@ -198,10 +198,10 @@ class XtreamExportSnapshot:
   and passthrough URLs.
   """
 
-  lineup_id: str = "CAN-BELLFIBE-MTL-X"
-  provider: str = "Bell Fibe TV"
-  market: str = "Montréal, QC"
-  timezone: str = "America/Montreal"
+  lineup_id: str = ""
+  provider: str = "Bellhop"
+  market: str = ""
+  timezone: str = "UTC"
   max_connections: str = "1"
   allowed_output_formats: list[str] = field(
     default_factory=lambda: ["m3u8", "ts"]

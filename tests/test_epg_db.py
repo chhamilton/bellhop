@@ -42,7 +42,7 @@ class _StubSnapshot:
   lineup_id: str = "CAN-BELLFIBE-MTL-X"
   provider: str = "Bell Fibe TV"
   market: str = "Montréal, QC"
-  postal_prefix: str = "H2Y"
+  postal_prefix: str = "H3B"
   xmltv_url: str = ""
 
   def build_epg_channel_lookup(self) -> dict[str, str]:
@@ -266,7 +266,7 @@ def test_sd_program_retention_pruning_and_stale_airings_eviction(
   now_ts = 1_763_510_400.0
 
   rec = SdLineupRecord(
-    lineup_id="CAN-0004980-X",
+    lineup_id="CAN-0000001-X",
     name="Bell Fibe Montreal",
     location="Montreal",
     modified="2026-11-01T00:00:00Z",
@@ -279,10 +279,10 @@ def test_sd_program_retention_pruning_and_stale_airings_eviction(
     chno_to_station={1108: "10001"},
   )
   db.save_sd_lineup(rec)
-  db.touch_sd_lineup_fetched_at("CAN-0004980-X", now_ts)
+  db.touch_sd_lineup_fetched_at("CAN-0000001-X", now_ts)
   loaded_lu = db.load_sd_lineups()
-  assert loaded_lu["CAN-0004980-X"].fetched_at == now_ts
-  assert loaded_lu["CAN-0004980-X"].chno_to_station == {1108: "10001"}
+  assert loaded_lu["CAN-0000001-X"].fetched_at == now_ts
+  assert loaded_lu["CAN-0000001-X"].chno_to_station == {1108: "10001"}
 
   old_ts = now_ts - SD_PROGRAM_RETENTION_SEC - 7200.0
   db.upsert_sd_programs(

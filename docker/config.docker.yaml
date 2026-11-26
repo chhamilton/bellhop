@@ -68,7 +68,7 @@ pipeline:
   lineup:
     backend: "auto"
     lineup_id: "CAN-BELLFIBE-MTL-X"
-    postal_code: "H2Y"
+    postal_code: ""
     refresh_days: 30.0
     numbering_mode: "both"
     collapse_sd_dupes: true

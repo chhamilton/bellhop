@@ -212,12 +212,12 @@ async def test_iptv_org_etag_conditional_cache_304_revalidation_and_lineup_regro
         headers={"ETag": etag, "Last-Modified": last_mod},
       )
 
-    if path.endswith("/serviceprovider/9100000607/web"):
+    if path.endswith("/serviceprovider/9100000001/web"):
       return web.json_response(
         {
           "data": {
             "item": {
-              "id": 9100000607,
+              "id": 9100000001,
               "name": "Bell Fibe TV - Montreal (Digital)",
               "city": "Montreal",
               "state": "QC",
@@ -227,7 +227,7 @@ async def test_iptv_org_etag_conditional_cache_304_revalidation_and_lineup_regro
         }
       )
 
-    if path.endswith("/serviceprovider/9100000607/sources/web"):
+    if path.endswith("/serviceprovider/9100000001/sources/web"):
       return web.json_response(
         {
           "data": {
@@ -313,8 +313,8 @@ async def test_iptv_org_etag_conditional_cache_304_revalidation_and_lineup_regro
       xtream=XtreamConfig(cache_dir=Path("cache")),
       lineup=LineupConfig(
         backend="tvguide",
-        lineup_id="TVG-9100000607",
-        postal_code="H2Y",
+        lineup_id="TVG-9100000001",
+        postal_code="H3B",
         refresh_days=30.0,
         iptv_org=IptvOrgConfig(
           enabled=True,
@@ -867,10 +867,10 @@ def test_2d_language_genre_mdl_segmentation_across_bilingual_intl_and_french_maj
 
   normalized = normalize_provider_slots(
     raw_slots,
-    postal_code="H2Y",
+    postal_code="H3B",
     market="Montreal, QC",
     provider_name="Bell Fibe TV",
-    lineup_id="TVG-9100000607",
+    lineup_id="TVG-9100000001",
     iptv_org_index=idx,
   )
   ordered_groups = _assert_strictly_dial_contiguous(normalized)
@@ -912,7 +912,7 @@ def test_2d_language_genre_mdl_segmentation_across_bilingual_intl_and_french_maj
     postal_code="G1R",
     market="Quebec City, QC",
     provider_name="Videotron",
-    lineup_id="TVG-9166060733",
+    lineup_id="TVG-9100000002",
     iptv_org_index=idx,
   )
   _assert_strictly_dial_contiguous(fr_norm)
@@ -1043,10 +1043,10 @@ def test_latin_accent_ligature_folding_and_corpus_idf_fuzzy_matching() -> None:
         country="CAN",
       ),
     ],
-    postal_code="H2Y",
+    postal_code="H3B",
     market="Montréal, QC",
     provider_name="Bell Fibe TV",
-    lineup_id="TVG-9100000607",
+    lineup_id="TVG-9100000001",
     iptv_org_index=idx,
   )
   by_no = {c.chno: c for c in slots}

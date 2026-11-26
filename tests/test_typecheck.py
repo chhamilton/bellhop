@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -263,3 +264,82 @@ def test_repository_and_private_permissions_hygiene(tmp_path: Path) -> None:
         assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600
   finally:
     os.umask(prev_umask)
+
+
+def test_no_personal_setup_identifiers_in_tracked_files() -> None:
+  """Verify tracked files remain free of personal hosts, IDs, and metrics."""
+  if not (REPO_ROOT / ".git").exists():
+    pytest.skip("requires git checkout")
+
+  ls = subprocess.run(
+    ["git", "ls-files", "-z"],
+    cwd=REPO_ROOT,
+    capture_output=True,
+    check=False,
+  )
+  assert ls.returncode == 0, f"git ls-files failed: {ls.stderr.decode()}"
+
+  binary_suffixes = {
+    ".png",
+    ".ico",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+    ".woff",
+    ".woff2",
+  }
+  user_handle = "ch" + "hamilton"
+  allowed_github_url = "github.com/" + user_handle + "/bellhop"
+  forbidden_patterns: list[tuple[str, re.Pattern[str]]] = [
+    ("personal host", re.compile("smooth" + "road", re.IGNORECASE)),
+    ("local home path", re.compile("/home/" + user_handle, re.IGNORECASE)),
+    ("personal user token", re.compile(user_handle, re.IGNORECASE)),
+    (
+      "personal tvguide ids",
+      re.compile(r"\b(?:910000" + r"0607|916606" + r"0733)\b"),
+    ),
+    (
+      "personal gracenote ids",
+      re.compile(r"\b(?:000" + r"4980|000" + r"5993|QC" + r"67412)\b"),
+    ),
+    ("personal postal fsa", re.compile(r"\bH" + r"2Y")),
+    (
+      "personal timezone",
+      re.compile(re.escape("America/" + "Mont" + "real")),
+    ),
+    (
+      "assistant brand token",
+      re.compile("Anti" + "gravity", re.IGNORECASE),
+    ),
+    ("legacy synth epg domain", re.compile(r"\bbell\.\d+\.ca\b")),
+    (
+      "personal run metrics",
+      re.compile(r"(?:\b16,?622\b|\b16,?600\b|349\s*/\s*355)"),
+    ),
+  ]
+
+  leaks: list[str] = []
+  for raw_rel in ls.stdout.split(b"\x00"):
+    if not raw_rel:
+      continue
+    rel = raw_rel.decode("utf-8", errors="replace")
+    path = REPO_ROOT / rel
+    if not path.is_file() or path.suffix.lower() in binary_suffixes:
+      continue
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    for label, pattern in forbidden_patterns:
+      for lineno, line in enumerate(text.splitlines(), start=1):
+        if not pattern.search(line):
+          continue
+        if (
+          label == "personal user token"
+          and rel == "src/bellhop/pipeline/iptv_org.py"
+          and not pattern.search(line.replace(allowed_github_url, ""))
+        ):
+          continue
+        leaks.append(f"{rel}:{lineno} [{label}]")
+
+  assert leaks == [], (
+    f"Personal setup identifiers found in tracked files: {leaks}"
+  )

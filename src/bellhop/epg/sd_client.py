@@ -37,7 +37,7 @@ SD_LINEUP_ID_RE = re.compile(
 )
 _CA_FSA_RE = re.compile(r"^[A-Z]\d[A-Z]$")
 _FSA_DEFAULT_SUFFIX: dict[str, str] = {
-  "H2Y": "1C6",
+  "H3B": "1A1",
   "M5V": "2T6",
   "V6B": "1A1",
   "T2P": "1J9",
@@ -71,7 +71,7 @@ def clean_sd_lineup_id(lineup_id: str) -> str | None:
   """Validate and uppercase a Schedules Direct Gracenote lineup ID.
 
   Args:
-    lineup_id: Candidate lineup identifier (e.g., `CAN-0004980-X`).
+    lineup_id: Candidate lineup identifier (e.g., `USA-NY10001-X`).
 
   Returns:
     Canonical uppercase SD lineup ID, or `None` if not an SD lineup ID.

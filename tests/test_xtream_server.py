@@ -32,7 +32,7 @@ def _write_mini_lineup(path: Path) -> None:
 lineup_id: CAN-BELLFIBE-MTL-X
 provider: Bell Fibe TV
 market: Montréal, QC
-postal_prefix: H2Y
+postal_prefix: H3B
 channels:
   - chno: 1101
     sd_chno: 101
@@ -579,7 +579,7 @@ async def test_bellhop_serve_default_bind_config_and_unconfigured_xtream_auth(
       "provider": "Bell Fibe TV",
       "market": "Montréal, QC",
     },
-    "server_info": {"timezone": "America/Montreal"},
+    "server_info": {"timezone": "UTC"},
     "live_categories": [
       {"category_id": "1", "category_name": "Sports", "parent_id": 0}
     ],
@@ -682,7 +682,7 @@ async def test_bellhop_serve_separate_ports_mode(tmp_path: Path) -> None:
       "market": "Montréal, QC",
     },
     "server_info": {
-      "timezone": "America/Montreal",
+      "timezone": "UTC",
       "xmltv_url": "http://upstream.example/xmltv.php?username=u&password=p",
     },
     "live_categories": [
@@ -826,7 +826,7 @@ async def test_unified_serve_distinct_web_login_and_xtream_credentials(
       "market": "Montréal, QC",
     },
     "server_info": {
-      "timezone": "America/Montreal",
+      "timezone": "UTC",
       "xmltv_url": "http://upstream.example/xmltv.php?username=u&password=p",
     },
     "live_categories": [
@@ -1016,7 +1016,7 @@ async def test_settings_api_inspect_update_and_strict_credential_exclusion(
       "provider": "Bell Fibe TV",
       "market": "Montréal, QC",
     },
-    "server_info": {"timezone": "America/Montreal"},
+    "server_info": {"timezone": "UTC"},
     "live_categories": [
       {"category_id": "1", "category_name": "Sports", "parent_id": 0}
     ],

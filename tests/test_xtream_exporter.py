@@ -51,7 +51,7 @@ def _sample_lineup_and_catalog() -> tuple[CableLineup, XtreamCatalog]:
     lineup_id="CAN-BELLFIBE-MTL-X",
     provider="Bell Fibe TV",
     market="Montréal, QC",
-    postal_prefix="H2Y",
+    postal_prefix="H3B",
     channels=[
       LineupChannel(
         chno=1101,
@@ -270,7 +270,7 @@ def test_phase6_both_sd_and_hd_dial_positions_and_cli_commands(
 lineup_id: CAN-BELLFIBE-MTL-X
 provider: Bell Fibe TV
 market: Montréal, QC
-postal_prefix: H2Y
+postal_prefix: H3B
 channels:
   - chno: 1101
     sd_chno: 101

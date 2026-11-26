@@ -53,10 +53,10 @@ def _ts_payload(packets: int = 50) -> bytes:
 async def test_gracenote_lineup_retriever_monthly_cadence_and_diff(
   tmp_path: Path,
 ) -> None:
-  parsed = GracenoteLineupId.parse("can-0005993-x")
-  assert parsed.raw_id == "CAN-0005993-X"
+  parsed = GracenoteLineupId.parse("can-0000002-x")
+  assert parsed.raw_id == "CAN-0000002-X"
   assert parsed.country == "CAN"
-  assert parsed.headend == "0005993"
+  assert parsed.headend == "0000002"
   assert parsed.device == "X"
 
   with pytest.raises(LineupRetrieverError):
@@ -72,7 +72,7 @@ async def test_gracenote_lineup_retriever_monthly_cadence_and_diff(
     project_root=tmp_path,
     lineup=LineupConfig(
       lineup_id="CAN-BELLFIBE-MTL-X",
-      postal_code="H2Y 1C6",
+      postal_code="H3B 1A1",
       refresh_days=30.0,
       file=repo_lineup_yaml,
     ),
@@ -93,7 +93,7 @@ async def test_gracenote_lineup_retriever_monthly_cadence_and_diff(
   lu_a = CableLineup(
     provider="Bell Fibe TV",
     market="Montréal",
-    postal_prefix="H2Y",
+    postal_prefix="H3B",
     channels=[
       LineupChannel(chno=1101, name="ICI Radio-Canada", group="FR"),
       LineupChannel(chno=1102, name="Noovo", group="FR"),
@@ -102,7 +102,7 @@ async def test_gracenote_lineup_retriever_monthly_cadence_and_diff(
   lu_b = CableLineup(
     provider="Bell Fibe TV",
     market="Montréal",
-    postal_prefix="H2Y",
+    postal_prefix="H3B",
     channels=[
       LineupChannel(chno=1101, name="ICI Radio-Canada Télé", group="FR"),
       LineupChannel(chno=1108, name="RDS", group="Sports"),
@@ -295,7 +295,7 @@ def test_incremental_rough_mapping_updates(tmp_path: Path) -> None:
   lineup_v1 = CableLineup(
     provider="Bell Fibe TV",
     market="Montréal, QC",
-    postal_prefix="H2Y",
+    postal_prefix="H3B",
     channels=[
       LineupChannel(
         chno=1108,
@@ -363,7 +363,7 @@ def test_incremental_rough_mapping_updates(tmp_path: Path) -> None:
   lineup_v2 = CableLineup(
     provider="Bell Fibe TV",
     market="Montréal, QC",
-    postal_prefix="H2Y",
+    postal_prefix="H3B",
     channels=[
       LineupChannel(
         chno=1108,
@@ -437,7 +437,7 @@ async def test_candidate_only_validation_and_native_epg_m3u8(
     lineup_id="CAN-BELLFIBE-MTL-X",
     provider="Bell Fibe TV",
     market="Montréal, QC",
-    postal_prefix="H2Y",
+    postal_prefix="H3B",
     channels=[
       LineupChannel(
         chno=1101,

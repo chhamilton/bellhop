@@ -37,10 +37,10 @@ class BundleGuideChannel:
 class BundleGuideSnapshot:
   """Headless lineup snapshot read directly from `ExportBundleReader`."""
 
-  lineup_id: str = "CAN-BELLFIBE-MTL-X"
-  provider: str = "Bell Fibe TV"
-  market: str = "Montréal, QC"
-  postal_prefix: str = "H2Y"
+  lineup_id: str = ""
+  provider: str = "Bellhop"
+  market: str = ""
+  postal_prefix: str = ""
   xmltv_url: str = ""
   channels: list[BundleGuideChannel] = field(default_factory=list)
 

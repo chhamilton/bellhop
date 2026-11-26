@@ -239,7 +239,7 @@ def test_playlist_numbering_modes_and_password_redaction(
   lineup = CableLineup(
     provider="Bell Fibe TV",
     market="Montréal, QC",
-    postal_prefix="H2Y",
+    postal_prefix="H3B",
     channels=[
       LineupChannel(
         chno=1101,
@@ -434,10 +434,10 @@ def test_exported_group_dial_ranges_reflect_surviving_validated_channels(
   from bellhop.pipeline.xtream_exporter import build_xtream_export_bundle
 
   lineup = CableLineup(
-    lineup_id="TVG-9100000607",
+    lineup_id="TVG-9100000001",
     provider="Bell Fibe TV",
     market="Montréal, QC",
-    postal_prefix="H2Y",
+    postal_prefix="H3B",
     channels=[
       # Science & Docs initially had no range, and ch 1520 failed validation ->
       # (1522–1528)

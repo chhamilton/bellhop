@@ -165,10 +165,10 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
     )
 
   lineup = CableLineup(
-    lineup_id="TVG-9100000607",
+    lineup_id="TVG-9100000001",
     provider="Bell Fibe TV",
     market="Montréal, QC",
-    postal_prefix="H2Y",
+    postal_prefix="H3B",
     channels=[
       # 1143: Top candidate #4001 is pure black -> must fail over to #4002!
       LineupChannel(
@@ -258,7 +258,7 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
       password="secret",
       stream_format="ts",
     ),
-    lineup=LineupConfig(lineup_id="TVG-9100000607"),
+    lineup=LineupConfig(lineup_id="TVG-9100000001"),
     state=StateConfig(
       state_dir=Path("state"),
       mapping_path=Path("state/channel_mapping.json"),

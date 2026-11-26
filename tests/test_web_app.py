@@ -96,9 +96,9 @@ def _write_sample_xtream_dir(xt_dir: Path, _now_ts: int = 0) -> None:
       "lineup_id": "CAN-BELLFIBE-MTL-X",
       "provider": "Bell Fibe TV",
       "market": "Montréal, QC",
-      "postal_prefix": "H2Y",
+      "postal_prefix": "H3B",
     },
-    "server_info": {"timezone": "America/Montreal"},
+    "server_info": {"timezone": "UTC"},
     "live_categories": categories,
     "live_streams": streams,
   }
@@ -1035,7 +1035,7 @@ def test_epg_priority_fallback_and_weighted_interval_deoverlapping(
   xt_dir.mkdir(parents=True, exist_ok=True)
 
   bundle = {
-    "meta": {"lineup_id": "TVG-9100000607", "provider": "Bell Fibe TV"},
+    "meta": {"lineup_id": "TVG-9100000001", "provider": "Bell Fibe TV"},
     "categories": [{"category_id": "1", "category_name": "Movies (1306–1307)"}],
     "live_streams": [
       {

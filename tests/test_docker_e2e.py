@@ -299,7 +299,7 @@ async def test_container_entrypoint_end_to_end_pipeline_and_serve(
       """\
 provider: "Bell Fibe TV"
 market: "Montréal, QC"
-postal_prefix: "H2Y"
+postal_prefix: "H3B"
 channels:
   - chno: 1101
     sd_chno: 101
@@ -352,7 +352,7 @@ channels:
     env.update(
       {
         "PATH": f"{venv_bin}:{env.get('PATH', '')}",
-        "TZ": "America/Montreal",
+        "TZ": "America/New_York",
         "BELLHOP_CONFIG_DIR": str(cfg_dir),
         "BELLHOP_STATE_DIR": str(state_dir),
         "BELLHOP_CACHE_DIR": str(cache_dir),
@@ -583,7 +583,7 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
         "-p",
         f"127.0.0.1:{host_port}:8080",
         "-e",
-        "TZ=America/Montreal",
+        "TZ=America/New_York",
         "-e",
         f"PUID={uid}",
         "-e",

@@ -76,11 +76,11 @@ class ExportBundleData:
   """Typed in-memory representation of `output/xtream/` export files."""
 
   initialized: bool
-  lineup_id: str = "CAN-BELLFIBE-MTL-X"
-  provider: str = "Bell Fibe TV"
-  market: str = "Montréal, QC"
-  postal_prefix: str = "H2Y"
-  timezone: str = "America/Montreal"
+  lineup_id: str = "UNINITIALIZED"
+  provider: str = "Bellhop"
+  market: str = ""
+  postal_prefix: str = ""
+  timezone: str = "UTC"
   max_connections: str = "1"
   allowed_output_formats: tuple[str, ...] = ("m3u8", "ts")
   exp_date: str | None = None
@@ -293,7 +293,7 @@ class ExportBundleReader:
         provider=str(lineup_info.get("provider") or "Bellhop"),
         market=str(lineup_info.get("market") or ""),
         postal_prefix=str(lineup_info.get("postal_prefix") or ""),
-        timezone=str(server_info.get("timezone") or "America/Montreal"),
+        timezone=str(server_info.get("timezone") or "UTC"),
         xmltv_url=resolved_xmltv_url,
         loaded_at=now,
       )
@@ -413,11 +413,11 @@ class ExportBundleReader:
 
     return ExportBundleData(
       initialized=True,
-      lineup_id=str(lineup_info.get("lineup_id") or "CAN-BELLFIBE-MTL-X"),
-      provider=str(lineup_info.get("provider") or "Bell Fibe TV"),
-      market=str(lineup_info.get("market") or "Montréal, QC"),
-      postal_prefix=str(lineup_info.get("postal_prefix") or "H2Y"),
-      timezone=str(server_info.get("timezone") or "America/Montreal"),
+      lineup_id=str(lineup_info.get("lineup_id") or "UNINITIALIZED"),
+      provider=str(lineup_info.get("provider") or "Bellhop"),
+      market=str(lineup_info.get("market") or ""),
+      postal_prefix=str(lineup_info.get("postal_prefix") or ""),
+      timezone=str(server_info.get("timezone") or "UTC"),
       max_connections=str(user_info.get("max_connections") or "1"),
       allowed_output_formats=allowed_formats,
       exp_date=str(exp_raw) if exp_raw is not None else None,

@@ -17,9 +17,9 @@ Lineup Snapshot Schema (`state/lineups/<lineup_id>.json`)
   },
   "lineup": {
     "lineup_id": "CAN-BELLFIBE-MTL-X",
-    "provider": "Bell Fibe TV",
-    "market": "Montréal, QC",
-    "postal_prefix": "H2Y",
+    "provider": "Sample Fiber TV",
+    "market": "Sample Market",
+    "postal_prefix": "",
     "retrieved_at": "...",
     "metadata": {},
     "channels": [ /* LineupChannelDict entries */ ]
@@ -63,8 +63,8 @@ from bellhop.pipeline.providers.normalizer import populate_sibling_exclusions
 
 # Gracenote / Schedules Direct SD-JSON lineupId convention:
 # <ISO3_COUNTRY>-<HEADEND_CODE>-<DEVICE_TYPE>
-# Examples: "CAN-0005993-X", "CAN-QC67412-X", "CAN-BELLFIBE-MTL-X",
-# "CAN-OTA-H2Y1C6"
+# Examples: "USA-NY10001-X", "CAN-0000001-X", "CAN-BELLFIBE-MTL-X",
+# "CAN-OTA-H3B1A1"
 GRACENOTE_LINEUP_ID_RE = re.compile(
   r"^(?P<country>[A-Z]{3})-(?P<headend>[A-Z0-9][A-Z0-9_-]*?)(?:-(?P<device>[A-Z0-9]+))?$"
 )
@@ -105,8 +105,8 @@ class GracenoteLineupId:
     if not m:
       raise LineupRetrieverError(
         f"Invalid lineup ID {value!r}. Expected Gracenote format '<ISO3>-<HEADEND>-<DEVICE>' "
-        f"(e.g. 'CAN-0005993-X' or '{DEFAULT_BELL_FIBE_MTL_LINEUP_ID}') or TV Guide ID "
-        f"(e.g. 'TVG-9100000607')."
+        f"(e.g. 'USA-NY10001-X' or '{DEFAULT_BELL_FIBE_MTL_LINEUP_ID}') or TV Guide ID "
+        f"(e.g. 'TVG-9100000001')."
       )
     country = m.group("country")
     headend = m.group("headend")

@@ -115,7 +115,7 @@ test("createPlayerController handles MPEG-TS -> HLS failover, autoplay mute retr
     filteredChannels: [],
     activeChannel: null,
     streamMode: "mpegts",
-    timezone: "America/Montreal",
+    timezone: "UTC",
   };
 
   const elOverlay = makeEl("player-overlay");

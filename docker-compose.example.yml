@@ -18,7 +18,7 @@ services:
       - .env
     environment:
       # Timezone & non-root file ownership (mapped to host user/group IDs)
-      TZ: ${TZ:-America/Montreal}
+      TZ: ${TZ:-UTC}
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
 

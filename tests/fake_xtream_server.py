@@ -359,7 +359,7 @@ class FakeXtreamServer:
           "port": str(self.port),
           "https_port": "443",
           "server_protocol": "http",
-          "timezone": "America/Montreal",
+          "timezone": "UTC",
           "timestamp_now": int(time.time()),
         },
       },

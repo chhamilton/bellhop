@@ -83,8 +83,8 @@ xtream_server:
 pipeline:
   lineup:
     backend: "tvguide"
-    lineup_id: "TVG-9100000607"
-    postal_code: "H2Y1C6"
+    lineup_id: "TVG-9100000001"
+    postal_code: "H3B1A1"
     collapse_sd_dupes: true
     exclude_audio: true
     pinned_streams:
@@ -115,7 +115,7 @@ pipeline:
   assert cfg.xtream.cache_dir == tmp_path / "custom_cache"
 
   assert cfg.lineup.backend == "tvguide"
-  assert cfg.lineup.lineup_id == "TVG-9100000607"
+  assert cfg.lineup.lineup_id == "TVG-9100000001"
   assert cfg.lineup.numbering_mode == "hd"
   assert cfg.lineup.pinned_streams == {1108: 410108}
   assert cfg.lineup.excluded_channels == {1107}

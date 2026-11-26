@@ -81,7 +81,7 @@ class LineupConfig:
 
   backend: str = "auto"
   lineup_id: str = DEFAULT_BELL_FIBE_MTL_LINEUP_ID
-  postal_code: str = "H2Y"
+  postal_code: str = ""
   refresh_days: float = 30.0
   file: Path = Path("data/lineups/bell_fibe_montreal.yaml")
   numbering_mode: str = "both"  # "both", "hd", or "sd"

@@ -180,11 +180,11 @@ class SchedulesDirectLineupProvider(LineupProvider):
       country_iso = "USA"
 
     # Schedules Direct expects Canadian postal codes without spaces (e.g.
-    # "H2Y1C6")
+    # "M5V2T6")
     clean_pc = re.sub(r"\s+", "", postal_code.strip().upper())
     if not clean_pc:
       raise LineupBackendError(
-        "Schedules Direct headend discovery requires `--postal-code` (e.g. 'H2Y1C6' or '10001')."
+        "Schedules Direct headend discovery requires `--postal-code` (e.g. 'M5V2T6' or '10001')."
       )
 
     raw_headends = await self._request(
@@ -235,7 +235,7 @@ class SchedulesDirectLineupProvider(LineupProvider):
     if not canonical_id:
       raise LineupBackendError(
         f"Invalid Schedules Direct Gracenote lineup ID {lineup_id!r} "
-        f"(expected e.g. 'CAN-0005993-X' or 'USA-NY12345-X')."
+        f"(expected e.g. 'CAN-0000001-X' or 'USA-NY10001-X')."
       )
 
     try:

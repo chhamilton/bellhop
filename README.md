@@ -2,7 +2,7 @@
 
 **Bellhop** is a declarative, stateful Python IPTV lineup pipeline (`bellhop`), Web TV Guide & single-tuner live player, and passthrough Xtream Codes server (`bellhop serve`).
 
-It maps a raw **Xtream Codes** catalog (~16,600+ live streams) onto an official cable/fiber TV lineup (such as **Bell Fibe TV — Montréal, QC** or any North American provider via **TV Guide**, **Schedules Direct**, or **YAML**), validates **only** candidate streams, and serves both:
+It maps a raw **Xtream Codes** live stream catalog onto an official cable/fiber TV lineup (using the bundled sample YAML lineup or any North American provider via **TV Guide**, **Schedules Direct**, or **YAML**), validates **only** candidate streams, and serves both:
 
 1. **Bellhop Web TV Guide & Live Browser Player** (`mpegts.js` + `hls.js`) with a single-tuner relay, 2D sticky Timeline EPG, stateful deep-link URLs, cookie-based login, and a live operational Settings drawer.
 2. **Passthrough Xtream Codes & M3U Server** (`player_api.php`, `player.php`, `panel_api.php`, `get.php`, `xmltv.php`, `/live/...`) presenting curated lineup categories, channel numbers, official logos, and `302` stream/EPG passthroughs to any IPTV client (TiviMate, UHF, VLC, Kodi, Channels).
@@ -36,7 +36,7 @@ Executed by `PipelineRunner` (`src/bellhop/pipeline/runner.py`) and driven exclu
 
 1. **`lineup` — Multi-Backend Lineup Retrieval** *(30-day TTL in `state/lineups/`)*
    - Pluggable `LineupProvider` backends (`src/bellhop/pipeline/providers/`):
-     - `tvguide` — Free US/Canadian headend discovery & channel/logo retrieval (`TVG-9100000607`).
+     - `tvguide` — Free US/Canadian headend discovery & channel/logo retrieval (e.g. `TVG-9100000001`).
      - `schedules_direct` — Official SD-JSON `20141201` client with cached SHA-1 token auth (`src/bellhop/epg/sd_client.py`).
      - `yaml` — Curated YAML lineups ([data/lineups/bell_fibe_montreal.yaml](data/lineups/bell_fibe_montreal.yaml) + [data/official_logos.json](data/official_logos.json)).
 2. **`catalog` — Upstream IPTV Catalog Fetch** *(24-hour TTL in `state/catalogs/`)*
@@ -152,7 +152,7 @@ docker compose exec bellhop bellhop run --skip validate
 | `/data/cache` | Embedded WAL SQLite EPG store (`epg.sqlite3`), SD token (`sd_token.json`), `iptv_org/` metadata cache, and persistent session signing key (`session_secret.key`) |
 | `/data/output` | Exported `bellhop.m3u8`, `lineup_report.json`, and `xtream/*.json` bundle |
 
-- **`TZ`** (e.g. `America/Montreal`): Configures container timezone via Alpine `tzdata`.
+- **`TZ`** (default `UTC`, e.g. `America/New_York` or `America/Toronto`): Configures container timezone via Alpine `tzdata`.
 - **`PUID` / `PGID`** (default `1000` / `1000`): Maps non-root process execution and volume ownership via `su-exec` (both at container boot and automatically on `docker compose exec bellhop bellhop ...` commands).
 - **Surfaced Credentials (`.env` or `credentials.yaml`):** `BELLHOP_WEB_USERNAME`, `BELLHOP_WEB_PASSWORD`, `BELLHOP_WEB_SESSION_SECRET`, `BELLHOP_SERVE_USERNAME`, `BELLHOP_SERVE_PASSWORD`, `XTREAM_SERVER_URL`, `XTREAM_USERNAME`, `XTREAM_PASSWORD`, and optional `SD_USERNAME` / `SD_PASSWORD`.
 

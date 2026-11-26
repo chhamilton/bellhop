@@ -134,11 +134,11 @@ class WebChannel:
 class LineupSnapshot:
   """Immutable in-memory snapshot of lineup categories and mapped channels."""
 
-  lineup_id: str = "CAN-BELLFIBE-MTL-X"
-  provider: str = "Bell Fibe TV"
-  market: str = "Montréal, QC"
-  postal_prefix: str = "H2Y"
-  timezone: str = "America/Montreal"
+  lineup_id: str = ""
+  provider: str = "Bellhop"
+  market: str = ""
+  postal_prefix: str = ""
+  timezone: str = "UTC"
   loaded_at: float = 0.0
   xmltv_url: str = ""
   categories: list[GuideCategory] = field(default_factory=list)

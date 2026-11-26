@@ -80,7 +80,7 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
   async def _sd_token(request: web.Request) -> web.Response:
     counts["token"] += 1
     body = await request.json()
-    if body.get("username") != "chhamilton" or body.get(
+    if body.get("username") != "sd_user" or body.get(
       "password"
     ) != hash_sd_password("sd_secret_pw"):
       return web.json_response(
@@ -122,15 +122,15 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
       return bad
     counts["headends"] += 1
     assert request.query.get("country") == "CAN"
-    assert request.query.get("postalcode") == "H2Y1C6"
+    assert request.query.get("postalcode") == "H3B1A1"
     return web.json_response(
       [
         {
-          "headend": "0004980",
+          "headend": "0000001",
           "transport": "Cable",
           "location": "Montréal",
           "lineups": [
-            {"name": "Bell Fibe TV", "lineup": "CAN-0004980-X"},
+            {"name": "Bell Fibe TV", "lineup": "CAN-0000001-X"},
           ],
         }
       ]
@@ -344,10 +344,10 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
 
     bundle = {
       "lineup_info": {
-        "lineup_id": "TVG-9100000607",
+        "lineup_id": "TVG-9100000001",
         "provider": "Bell Fibe TV - Montreal (Digital)",
         "market": "Montreal, QC",
-        "postal_prefix": "H2Y",
+        "postal_prefix": "H3B",
       },
       "server_info": {"xmltv_url": xmltv_url},
       "live_categories": [
@@ -362,7 +362,7 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
           "num": 50,
           "name": "AMI-tele",
           "stream_id": 1050,
-          "epg_channel_id": "bell.50.ca",
+          "epg_channel_id": "bellhop.50.tv",
           "category_id": "1",
           "category_name": "General (50–2621)",
           "direct_source": "http://panel.example/live/u/p/1050.ts",
@@ -440,11 +440,11 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
     store = LineupGuideStore(xt_dir)
     epg_db_file = cache_dir / "epg.sqlite3"
     sd_cfg = SchedulesDirectEpgConfig(
-      username="chhamilton",
+      username="sd_user",
       password="sd_secret_pw",
       base_url=sd_base_url,
       auto_add_lineup=True,
-      postal_code="H2Y",
+      postal_code="H3B",
       days=2,
       token_cache_file=cache_dir / "sd_token.json",
     )
@@ -478,7 +478,7 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
 
     # 1. `50 AMI-télé` (missing from XMLTV) is populated from Schedules Direct
     #    with S02E04 subtitle!
-    ami_progs = refresher.db.query_channel_schedule(50, "bell.50.ca")
+    ami_progs = refresher.db.query_channel_schedule(50, "bellhop.50.tv")
     assert ami_progs[0].title == "Et si c'était toi?"
     assert ami_progs[0].sub_title == "S02E04 · Rencontres d'automne"
 
@@ -529,10 +529,10 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
       ),
       lineup=LineupConfig(
         backend="tvguide",
-        lineup_id="TVG-9100000607",
-        postal_code="H2Y",
+        lineup_id="TVG-9100000001",
+        postal_code="H3B",
         schedules_direct=SchedulesDirectConfig(
-          username="chhamilton",
+          username="sd_user",
           password="sd_secret_pw",
           base_url=sd_base_url,
           auto_add_lineup=True,
@@ -726,12 +726,12 @@ async def test_epg_db_permissions_corrupt_recovery_schema_bump_and_cli_banner(
     json.dumps(
       {
         "lineup_info": {
-          "lineup_id": "CAN-0004980-X",
+          "lineup_id": "CAN-0000001-X",
           "provider": "Bell Fibe TV",
           "market": "Montréal",
         },
         "server_info": {
-          "timezone": "America/Montreal",
+          "timezone": "UTC",
           "xmltv_url": "http://panel.example/xmltv.php?username=u&password=p",
         },
         "live_categories": [

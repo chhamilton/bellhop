@@ -38,7 +38,7 @@ def _write_minimal_bundle(xt_dir: Path) -> None:
     json.dumps(
       {
         "lineup_info": {"lineup_id": "TEST", "provider": "Bellhop"},
-        "server_info": {"timezone": "America/Montreal"},
+        "server_info": {"timezone": "UTC"},
         "live_categories": [{"category_id": "1", "category_name": "General"}],
         "live_streams": [
           {

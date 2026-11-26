@@ -50,6 +50,16 @@ interface AppState {
   epgPollTimer: number | null;
 }
 
+const resolveDefaultTimezone = (): string => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+};
+
+const DEFAULT_TIMEZONE = resolveDefaultTimezone();
+
 const state: AppState = {
   lineupMeta: null,
   categories: [],
@@ -63,7 +73,7 @@ const state: AppState = {
   activeChannel: null,
   pendingChannel: null,
   streamMode: "mpegts",
-  timezone: "America/Montreal",
+  timezone: DEFAULT_TIMEZONE,
   timelineOffsetSec: 0,
   lineupUpdatedAt: null,
   epgStatus: null,
@@ -406,7 +416,7 @@ const loadLineup = async (): Promise<void> => {
         ? state.lineupMeta.lineup_updated_at
         : null;
     state.epgStatus = data.epg_status || null;
-    state.timezone = state.lineupMeta.timezone || "America/Montreal";
+    state.timezone = state.lineupMeta.timezone || DEFAULT_TIMEZONE;
     state.categories = data.categories || [];
     state.channels = data.channels || [];
 

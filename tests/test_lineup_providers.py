@@ -48,14 +48,14 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
             "country": "CAN",
             "items": [
               {
-                "id": 9100000607,
+                "id": 9100000001,
                 "name": "Bell Fibe TV - Montreal (Digital)",
                 "city": "Montreal",
                 "state": "QC",
                 "type": "cable",
               },
               {
-                "id": 9166060733,
+                "id": 9100000002,
                 "name": "Videotron - Montreal (Digital)",
                 "city": "Montreal",
                 "state": "QC",
@@ -89,12 +89,12 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
           }
         }
       )
-    if path.endswith("/serviceprovider/9100000607/web"):
+    if path.endswith("/serviceprovider/9100000001/web"):
       return web.json_response(
         {
           "data": {
             "item": {
-              "id": 9100000607,
+              "id": 9100000001,
               "name": "Bell Fibe TV - Montreal (Digital)",
               "city": "Montreal",
               "state": "QC",
@@ -103,7 +103,7 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
           }
         }
       )
-    if path.endswith("/serviceprovider/9100000607/sources/web"):
+    if path.endswith("/serviceprovider/9100000001/sources/web"):
       return web.json_response(
         {
           "data": {
@@ -163,13 +163,13 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
       client=client,
     )
 
-    # 1. Discover Canadian providers narrowed automatically by H2Y Montreal FSA
+    # 1. Discover Canadian providers narrowed automatically by H3B Montreal FSA
     ca_headends = await tvg.discover_lineups(
-      country="CAN", postal_code="H2Y 1C6"
+      country="CAN", postal_code="H3B 1A1"
     )
     assert [h.lineup_id for h in ca_headends] == [
-      "TVG-9100000607",
-      "TVG-9166060733",
+      "TVG-9100000001",
+      "TVG-9100000002",
     ]
 
     # 2. Discover US providers by 5-digit ZIP code
@@ -182,8 +182,8 @@ async def test_tvguide_provider_discovery_retrieval_pairing_and_matching(
       project_root=tmp_path,
       lineup=LineupConfig(
         backend="tvguide",
-        lineup_id="TVG-9100000607",
-        postal_code="H2Y",
+        lineup_id="TVG-9100000001",
+        postal_code="H3B",
       ),
       state=StateConfig(state_dir=Path("state")),
     )
@@ -270,34 +270,34 @@ async def test_schedules_direct_provider_auth_reauth_auto_add_and_retrieval(
 
     if path.endswith("/headends") and req.method == "GET":
       assert req.query.get("country") == "CAN"
-      assert req.query.get("postalcode") == "H2Y1C6"
+      assert req.query.get("postalcode") == "H3B1A1"
       return web.json_response(
         [
           {
-            "headend": "0005993",
+            "headend": "0000002",
             "transport": "Cable",
             "location": "Montreal, QC",
             "lineups": [
               {
                 "name": "Bell Fibe TV - Montreal",
-                "lineup": "CAN-0005993-X",
-                "uri": "/20141201/lineups/CAN-0005993-X",
+                "lineup": "CAN-0000002-X",
+                "uri": "/20141201/lineups/CAN-0000002-X",
               }
             ],
           }
         ]
       )
 
-    if path.endswith("/lineups/CAN-0005993-X") and req.method == "PUT":
+    if path.endswith("/lineups/CAN-0000002-X") and req.method == "PUT":
       state["added_lineup"] = True
       return web.json_response({"code": 0, "response": "OK"})
 
-    if path.endswith("/lineups/CAN-0005993-X") and req.method == "GET":
+    if path.endswith("/lineups/CAN-0000002-X") and req.method == "GET":
       if not state["added_lineup"]:
         return web.json_response(
           {
             "code": 2100,
-            "message": "Lineup CAN-0005993-X not in user account.",
+            "message": "Lineup CAN-0000002-X not in user account.",
           },
           status=400,
         )
@@ -368,8 +368,8 @@ async def test_schedules_direct_provider_auth_reauth_auto_add_and_retrieval(
       project_root=tmp_path,
       lineup=LineupConfig(
         backend="schedules_direct",
-        lineup_id="CAN-0005993-X",
-        postal_code="H2Y 1C6",
+        lineup_id="CAN-0000002-X",
+        postal_code="H3B 1A1",
         schedules_direct=SchedulesDirectConfig(
           username="sd_user",
           password="my_sd_password",
@@ -379,20 +379,20 @@ async def test_schedules_direct_provider_auth_reauth_auto_add_and_retrieval(
       state=StateConfig(state_dir=Path("state")),
     )
 
-    # 1. Headend discovery strips space from H2Y 1C6 and re-authenticates
+    # 1. Headend discovery strips space from H3B 1A1 and re-authenticates
     #    expired token
     discovered = await discover_provider_lineups(
       cfg,
       backend="schedules_direct",
       country="CAN",
-      postal_code="H2Y 1C6",
+      postal_code="H3B 1A1",
       providers=[sd],
     )
     assert len(discovered) == 1
-    assert discovered[0].lineup_id == "CAN-0005993-X"
+    assert discovered[0].lineup_id == "CAN-0000002-X"
     assert state["token_calls"] == 1
 
-    # 2. Lineup retrieval auto-subscribes (`PUT /lineups/CAN-0005993-X`) and
+    # 2. Lineup retrieval auto-subscribes (`PUT /lineups/CAN-0000002-X`) and
     #    pairs 108 + 1108
     res = await retrieve_cable_lineup(cfg, providers=[sd])
     assert res.backend == "schedules_direct"
@@ -423,7 +423,7 @@ def test_provider_selection_registry_routing(tmp_path: Path) -> None:
 
   assert isinstance(
     select_lineup_provider(
-      "TVG-9100000607", backend_hint="auto", providers=providers
+      "TVG-9100000001", backend_hint="auto", providers=providers
     ),
     TvGuideLineupProvider,
   )
@@ -435,7 +435,7 @@ def test_provider_selection_registry_routing(tmp_path: Path) -> None:
   )
   assert isinstance(
     select_lineup_provider(
-      "CAN-0005993-X", backend_hint="schedules_direct", providers=providers
+      "CAN-0000002-X", backend_hint="schedules_direct", providers=providers
     ),
     SchedulesDirectLineupProvider,
   )
@@ -464,18 +464,18 @@ async def test_schedules_direct_real_world_pairing_and_ota_feed_enrichment(
           "code": 0,
           "lineups": [
             {
-              "lineup": "CAN-0004980-X",
+              "lineup": "CAN-0000001-X",
               "name": "Bell Fibe TV",
               "location": "Montréal",
             }
           ],
         }
       )
-    if req.path.endswith("/lineups/CAN-0004980-X"):
+    if req.path.endswith("/lineups/CAN-0000001-X"):
       return web.json_response(
         {
           "metadata": {
-            "lineup": "CAN-0004980-X",
+            "lineup": "CAN-0000001-X",
             "transport": "Cable",
             "modified": "2026-11-23T21:02:41Z",
           },
@@ -576,7 +576,7 @@ async def test_schedules_direct_real_world_pairing_and_ota_feed_enrichment(
       client=client,
     )
     lu = await sd.retrieve_lineup(
-      "CAN-0004980-X", postal_code="H2Y", iptv_org_index=iptv_idx
+      "CAN-0000001-X", postal_code="H3B", iptv_org_index=iptv_idx
     )
     assert lu.provider == "Bell Fibe TV"
     assert lu.market == "Montréal (Cable)"
