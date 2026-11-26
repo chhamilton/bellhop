@@ -85,8 +85,40 @@ def test_dockerfile_compose_and_env_contract(
   assert "PGID=1000" in dockerfile
   assert "/health" in dockerfile
   assert "/api/auth/status" not in dockerfile
+  assert "c.serve.web_port if c.serve.web.enabled else c.serve.xtream_port" in (
+    dockerfile
+  )
   assert 'CMD ["bellhop", "serve"]' in dockerfile
   assert "bellhop-web" not in dockerfile
+
+  # Validate GitHub Actions CI workflow contracts.
+  ci_workflow: dict[str, Any] = yaml.safe_load(
+    (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+  )
+  jobs = ci_workflow["jobs"]
+  for job in jobs.values():
+    for step in job["steps"]:
+      uses = str(step.get("uses", ""))
+      with_cfg = step.get("with", {})
+      if uses.startswith("actions/setup-python@") and (
+        with_cfg.get("cache") == "pip"
+      ):
+        dep_path = str(with_cfg.get("cache-dependency-path", ""))
+        assert "requirements.lock" in dep_path
+
+  lint_runs = "\n".join(
+    str(step.get("run", "")) for step in jobs["lint-typecheck-test"]["steps"]
+  )
+  assert "chmod -R go-w" in lint_runs
+  assert 'pytest -m "not docker"' in lint_runs
+
+  docker_job_steps = jobs["docker-e2e"]["steps"]
+  docker_runs = "\n".join(str(step.get("run", "")) for step in docker_job_steps)
+  assert "pytest -m docker --no-cov" in docker_runs
+  assert any(
+    step.get("env", {}).get("BELLHOP_REQUIRE_DOCKER") == "1"
+    for step in docker_job_steps
+  )
 
   # Validate POSIX shell syntax and executable bit of docker/entrypoint.sh &
   # bellhop-shim.sh.

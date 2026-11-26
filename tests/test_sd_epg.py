@@ -24,7 +24,7 @@ from bellhop.config import (
   ServeXtreamConfig,
   XtreamConfig,
 )
-from bellhop.epg.db import EpgDatabase
+from bellhop.epg.db import EPG_DB_SCHEMA_VERSION, EpgDatabase
 from bellhop.epg.refresh import EpgRefreshConfig, EpgRefreshService
 from bellhop.epg.sd_epg import SchedulesDirectEpgConfig, hash_sd_password
 from bellhop.serve import UnifiedServeServer
@@ -242,6 +242,7 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
                 "duration": 3600,
                 "md5": p_md5,
                 "liveTapeDelay": "Live" if sid == "10518" else "Tape",
+                "new": sid == "91109",
               }
             ],
           }
@@ -254,13 +255,15 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
       "md5": "md5-prog-ami",
       "titles": [{"title120": "Et si c'était toi?"}],
       "episodeTitle150": "Rencontres d'automne",
+      "originalAirDate": "2024-11-01",
       "metadata": [{"Gracenote": {"season": 2, "episode": 4}}],
+      "contentRating": [{"country": "CAN", "code": "G"}],
       "descriptions": {
         "description1000": [
           {"description": "Émission documentaire sur AMI-télé."}
         ]
       },
-      "genres": ["Reality"],
+      "genres": ["Reality", "Documentary"],
     },
     "MV012345670000": {
       "programID": "MV012345670000",
@@ -471,16 +474,25 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
 
     snap = store.get_snapshot()
     # In-memory snapshot holds ZERO ProgramItem attributes — all airings live in
-    # SQLite!
+    # SQLite! Every channel with a Gracenote station ID uses unique `sd.<id>`!
     assert len(snap.channels) == 5
     assert not hasattr(snap, "programs_by_epg_id")
     assert not hasattr(snap, "programs_by_chno")
+    epg_by_chno = {c.chno: c.epg_channel_id for c in snap.channels}
+    assert epg_by_chno[50] == "sd.9266073169"
+    assert epg_by_chno[220] == "sd.9200002511"
+    assert epg_by_chno[1285] == "sd.9200009999"
 
     # 1. `50 AMI-télé` (missing from XMLTV) is populated from Schedules Direct
-    #    with S02E04 subtitle!
-    ami_progs = refresher.db.query_channel_schedule(50, "bellhop.50.tv")
+    #    with rich episode/rating/genre metadata!
+    ami_progs = refresher.db.query_channel_schedule(50, "sd.9266073169")
     assert ami_progs[0].title == "Et si c'était toi?"
     assert ami_progs[0].sub_title == "S02E04 · Rencontres d'automne"
+    assert ami_progs[0].episode_num == "S02E04"
+    assert ami_progs[0].air_date == "2024-11-01"
+    assert ami_progs[0].rating == "G"
+    assert ami_progs[0].category == "Reality, Documentary"
+    assert ami_progs[0].is_new is True
 
     # 2. `1306 HBO` (present in both) prioritizes Schedules Direct over upstream
     #    XMLTV!
@@ -489,12 +501,13 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
     assert hbo_progs[0].sub_title == "2024"
 
     # 3. `220 NBC (Plattsburgh)` and `1285 NBC (Seattle)` get distinct
-    #    per-station schedules despite sharing `NBC.us`!
-    wptz_progs = refresher.db.query_channel_schedule(220, "NBC.us")
-    king_progs = refresher.db.query_channel_schedule(1285, "NBC.us")
+    #    station schedules AND unique XMLTV IDs despite upstream `NBC.us`!
+    wptz_progs = refresher.db.query_channel_schedule(220, "sd.9200002511")
+    king_progs = refresher.db.query_channel_schedule(1285, "sd.9200009999")
     assert wptz_progs[0].title == "NBC 5 News at Noon"
     assert king_progs[0].title == "Live: Seahawks Pre-Game"
     assert king_progs[0].sub_title == "49ers vs. Seahawks"
+    assert king_progs[0].is_live_airing is True
 
     # 4. `2621 Intl Specialty` (absent from SD) is seamlessly backfilled from
     #    upstream XMLTV!
@@ -629,8 +642,23 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
           xml_body = await r_xml.text()
           assert "Et si c'était toi?" in xml_body
           assert "Dune: Part Two" in xml_body
+          assert "NBC 5 News at Noon" in xml_body
+          assert "Live: Seahawks Pre-Game" in xml_body
           assert "Global World Cinema" in xml_body
           assert "Inferior XMLTV Scraper HBO Listing" not in xml_body
+          assert '<channel id="sd.9200002511">' in xml_body
+          assert '<channel id="sd.9200009999">' in xml_body
+          assert "<sub-title>Rencontres d'automne</sub-title>" in xml_body
+          assert (
+            '<episode-num system="onscreen">S02E04</episode-num>' in xml_body
+          )
+          assert '<episode-num system="xmltv_ns">1.3.</episode-num>' in xml_body
+          assert "<date>2024-11-01</date>" in xml_body
+          assert "<rating><value>G</value></rating>" in xml_body
+          assert "<category>Reality</category>" in xml_body
+          assert "<category>Documentary</category>" in xml_body
+          assert "<new/>" in xml_body
+          assert "<live/>" in xml_body
     finally:
       await unified.stop()
 
@@ -693,7 +721,7 @@ async def test_epg_db_permissions_corrupt_recovery_schema_bump_and_cli_banner(
     auto_vac = int(raw_conn.execute("PRAGMA auto_vacuum").fetchone()[0])
   assert "obsolete_future_table" not in tables
   assert "guide_airings" in tables
-  assert ver == 1
+  assert ver == EPG_DB_SCHEMA_VERSION
   assert auto_vac == 2  # INCREMENTAL auto-vacuum
 
   # 2b. `touch_and_prune_sd_programs` retains active & <14d programs and prunes

@@ -47,8 +47,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from bellhop.common.export_bundle import (
+  assign_unique_slot_epg_ids,
+  resolve_preferred_epg_base_id,
+)
 from bellhop.common.file_utils import write_private_text
 from bellhop.config import AppConfig
+from bellhop.epg.xmltv import build_passthrough_xmltv_url, build_serve_xmltv_url
 from bellhop.pipeline.lineup_loader import CableLineup
 from bellhop.pipeline.models import (
   MappedChannel,
@@ -191,16 +196,14 @@ def render_m3u8(
   """Render an Extended M3U8 playlist emulating the target cable provider
   channel lineup.
   """
-  xt = config.xtream
   header_attrs: list[str] = []
-  if xt.server_url and xt.username and xt.password:
-    base_url = _normalize_base_url(xt.server_url)
-    xmltv_url = (
-      f"{base_url}/xmltv.php"
-      f"?username={_escape_attr(xt.username)}&password={_escape_attr(xt.password)}"
-    )
-    header_attrs.append(f'url-tvg="{xmltv_url}"')
-    header_attrs.append(f'x-tvg-url="{xmltv_url}"')
+  xmltv_url = build_serve_xmltv_url(config) or build_passthrough_xmltv_url(
+    config, redact_secret=False
+  )
+  if xmltv_url:
+    esc_xmltv = _escape_attr(xmltv_url)
+    header_attrs.append(f'url-tvg="{esc_xmltv}"')
+    header_attrs.append(f'x-tvg-url="{esc_xmltv}"')
 
   header_line = "#EXTM3U" + (
     " " + " ".join(header_attrs) if header_attrs else ""
@@ -221,6 +224,23 @@ def render_m3u8(
     collapse_sd_dupes=config.lineup.collapse_sd_dupes,
   )
   include_unmatched = config.output.include_unmatched_comment
+  unique_epg_by_chno = assign_unique_slot_epg_ids(
+    [
+      (
+        chno,
+        mapped.channel.sd_chno,
+        resolve_preferred_epg_base_id(
+          chno=chno,
+          gracenote_station_id=mapped.channel.gracenote_station_id,
+          has_native_epg=mapped.selected.has_native_epg,
+          upstream_epg_channel_id=mapped.selected.stream.epg_channel_id,
+          official_tvg_id=mapped.channel.tvg_id or "",
+        ),
+      )
+      for chno, _name, mapped in entries
+      if mapped.selected is not None
+    ]
+  )
 
   for chno, display_name, mapped in entries:
     ch = mapped.channel
@@ -236,10 +256,16 @@ def render_m3u8(
 
     stream = mapped.selected.stream
     url = resolve_playback_url(mapped, config)
-    if mapped.selected.has_native_epg and stream.epg_channel_id:
-      tvg_id = stream.epg_channel_id
-    else:
-      tvg_id = ch.tvg_id or stream.epg_channel_id or ""
+    tvg_id = unique_epg_by_chno.get(
+      chno,
+      resolve_preferred_epg_base_id(
+        chno=chno,
+        gracenote_station_id=ch.gracenote_station_id,
+        has_native_epg=mapped.selected.has_native_epg,
+        upstream_epg_channel_id=stream.epg_channel_id,
+        official_tvg_id=ch.tvg_id or "",
+      ),
+    )
     logo = ch.logo or stream.stream_icon or ""
 
     attrs = [

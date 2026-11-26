@@ -280,6 +280,10 @@ pipeline:
           assert body["user_info"]["username"] == "client_alice"
           assert body["server_info"]["url"] == "127.0.0.1"
           assert body["server_info"]["port"] == str(unified_srv.bound_port)
+          assert body["server_info"]["xmltv_url"] == (
+            f"http://127.0.0.1:{unified_srv.bound_port}"
+            "/xmltv.php?username=client_alice&password=client_secret_42"
+          )
 
         # Categories reflect lineup retrieval groups (NOT upstream "RAW|
         # UNSORTED")
@@ -373,6 +377,10 @@ pipeline:
         assert panel.status_code == 200
         panel_json = panel.json()
         assert "1101" in panel_json["available_channels"]
+        assert panel_json["server_info"]["xmltv_url"] == (
+          f"http://127.0.0.1:{unified_srv.bound_port}"
+          "/xmltv.php?username=client_alice&password=client_secret_42"
+        )
         assert "upstream_secret_pw" not in panel.text
 
         # Auth-checked non-live routes return 401 on bad creds and 404 on valid
@@ -400,8 +408,8 @@ pipeline:
         )
         assert head_xmltv.status_code == 200
 
-        # When SQLite EPG database is empty, /xmltv.php gracefully falls back to
-        # 302 upstream redirect!
+        # When SQLite EPG database is empty OR holds only expired listings,
+        # /xmltv.php gracefully falls back to 302 upstream redirect!
         assert unified_srv.web_app.epg_refresher is not None
         unified_srv.web_app.epg_refresher.db.delete_database()
         xmltv_redir = await client.get(
@@ -410,6 +418,32 @@ pipeline:
         )
         assert xmltv_redir.status_code == 302
         assert xmltv_redir.headers["location"] == upstream.xmltv_url
+
+        from bellhop.web.store import ProgramItem
+
+        unified_srv.web_app.epg_refresher.db.replace_guide_schedules(
+          snap=unified_srv.web_app.store.get_snapshot(),
+          programs_by_id={
+            "RDS.ca": [
+              ProgramItem(
+                id="expired-1",
+                channel_id="RDS.ca",
+                title="Expired Show",
+                start_timestamp=100,
+                stop_timestamp=200,
+              )
+            ]
+          },
+          fetched_at=100.0,
+        )
+        xmltv_expired_redir = await client.get(
+          "/xmltv.php",
+          params={"username": "client_alice", "password": "client_secret_42"},
+        )
+        assert xmltv_expired_redir.status_code == 302
+        assert xmltv_expired_redir.headers["location"] == upstream.xmltv_url
+
+        unified_srv.web_app.epg_refresher.db.delete_database()
         await unified_srv.web_app.epg_refresher.refresh_now(
           force=True, reason="restore"
         )
@@ -498,6 +532,17 @@ pipeline:
         )
         assert head_m3u.status_code == 200
         assert int(head_m3u.headers["content-length"]) > 0
+
+        m3u_default = await client.get(
+          "/playlist.m3u",
+          params={"username": "client_alice", "password": "client_secret_42"},
+        )
+        assert m3u_default.status_code == 200
+        assert (
+          f'url-tvg="http://127.0.0.1:{unified_srv.bound_port}'
+          '/xmltv.php?username=client_alice&password=client_secret_42"'
+        ) in m3u_default.text
+        assert 'tvg-id="RDS.ca"' in m3u_default.text
 
       # Follow redirects end-to-end: XMLTV and live TS bytes come directly from
       # upstream
@@ -1350,8 +1395,8 @@ pipeline:
 @pytest.mark.parametrize(
   ("action", "raw_limit", "expected_limit"),
   [
-    ("get_short_epg", "", 4),
-    ("get_short_epg", "not_a_number", 4),
+    ("get_short_epg", "", 12),
+    ("get_short_epg", "not_a_number", 12),
     ("get_short_epg", "0", 1),
     ("get_short_epg", "-7", 1),
     ("get_short_epg", "9999", 200),
@@ -1568,3 +1613,37 @@ async def test_xmltv_head_and_small_chunk_streaming_and_xtream_only_health(
       assert health["channel_count"] == 2
   finally:
     await unified.stop()
+
+
+@pytest.mark.asyncio
+async def test_xmltv_fallback_blocks_self_redirect_loop(
+  tmp_path: Path,
+) -> None:
+  """Self-referential fallback XMLTV URLs must return 404 instead of looping."""
+  xt_dir = write_minimal_xtream_export(tmp_path / "output" / "xtream")
+  srv = XtreamPassthroughServer(
+    XtreamExportStore(xt_dir),
+    username="xt_u",
+    password="xt_p",
+    host="127.0.0.1",
+    port=0,
+  )
+  await srv.start()
+  try:
+    bundle_path = xt_dir / "bellhop_xtream_playlist.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    bundle["server_info"]["xmltv_url"] = (
+      f"http://127.0.0.1:{srv.bound_port}/xmltv.php?username=xt_u&password=xt_p"
+    )
+    bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+    async with TestHttpClient(
+      base_url=f"http://127.0.0.1:{srv.bound_port}"
+    ) as client:
+      resp = await client.get(
+        "/xmltv.php",
+        params={"username": "xt_u", "password": "xt_p"},
+      )
+      assert resp.status_code == 404
+  finally:
+    await srv.stop()

@@ -206,7 +206,9 @@ def test_repository_and_private_permissions_hygiene(tmp_path: Path) -> None:
     writable_violations.append(f". ({oct(root_mode)})")
 
   for item in REPO_ROOT.iterdir():
-    if item.is_file() and not item.name.startswith(".git"):
+    if item.is_file() and not item.name.startswith(
+      (".git", ".coverage", ".pytest_cache", ".mypy_cache", ".ruff_cache")
+    ):
       mode = stat.S_IMODE(item.stat().st_mode)
       if mode & 0o022:
         writable_violations.append(
@@ -218,6 +220,11 @@ def test_repository_and_private_permissions_hygiene(tmp_path: Path) -> None:
       if entry.is_symlink():
         continue
       rel = entry.relative_to(REPO_ROOT)
+      if any(
+        part == "__pycache__" or part.endswith(".egg-info")
+        for part in rel.parts
+      ):
+        continue
       mode = stat.S_IMODE(entry.stat().st_mode)
       if mode & 0o022:
         writable_violations.append(f"{rel} ({oct(mode)})")

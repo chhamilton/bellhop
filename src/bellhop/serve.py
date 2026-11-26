@@ -186,11 +186,11 @@ class UnifiedServeServer:
       now_epoch = epg_refresher.current_epoch()
       await asyncio.to_thread(epg_refresher.sync_external_if_needed, now_epoch)
       cov = epg_refresher.db.cached_coverage_stats(now_ts=now_epoch)
-      if cov.total_programs == 0 and epg_refresher.db.db_path.is_file():
+      if cov.active_programs == 0 and epg_refresher.db.db_path.is_file():
         cov = await asyncio.to_thread(
           epg_refresher.db.coverage_stats, now_ts=now_epoch
         )
-      if cov.total_programs > 0:
+      if cov.active_programs > 0:
         return epg_refresher.db.iter_xmltv_chunks(snap)
       return None
 

@@ -21,6 +21,7 @@ from bellhop.epg.db import (
   SdStationRow,
 )
 from bellhop.epg.models import ProgramItem
+from bellhop.epg.xmltv import parse_xmltv_for_channels
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,3 +532,81 @@ def test_epg_db_keyset_query_plan_pooling_and_xmltv_bomb_guards(
     a.stop_timestamp <= b.start_timestamp
     for a, b in zip(reconciled, reconciled[1:], strict=False)
   )
+
+
+def test_unique_slot_epg_ids_and_xmltv_rich_tag_roundtrip(
+  tmp_path: Path,
+) -> None:
+  """Verify Gracenote duplicate disambiguation and rich XMLTV metadata tags."""
+  from bellhop.common.export_bundle import assign_unique_slot_epg_ids
+
+  assigned = assign_unique_slot_epg_ids(
+    [
+      (101, 101, "sd.58592"),
+      (1108, 108, "sd.58592"),
+      (1186, None, "sd.58592"),
+    ]
+  )
+  assert assigned == {
+    1108: "sd.58592",
+    1186: "sd.58592.1186",
+    101: "sd.58592.101",
+  }
+
+  now_ts = 1_763_510_400
+  xml_in = tmp_path / "rich.xml"
+  xml_in.write_text(
+    '<?xml version="1.0" encoding="UTF-8"?><tv>'
+    '<programme start="20990101000000 +0000" stop="20990101010000 +0000" '
+    'channel="sd.58592">'
+    "<title>Championship Finals</title>"
+    "<sub-title>Game 7</sub-title>"
+    "<desc>Decisive finale.</desc>"
+    "<date>2026-05-01</date>"
+    "<category>Sports</category>"
+    "<category>Hockey</category>"
+    '<episode-num system="xmltv_ns">3.6.</episode-num>'
+    "<rating><value>PG</value></rating>"
+    "<new/>"
+    "<live/>"
+    "</programme></tv>",
+    encoding="utf-8",
+  )
+  parsed = parse_xmltv_for_channels(
+    xml_in,
+    {"sd.58592": "sd.58592"},
+    now_timestamp=now_ts,
+  )
+  item = parsed["sd.58592"][0]
+  assert item.episode_num == "S04E07"
+  assert item.air_date == "2026-05-01"
+  assert item.rating == "PG"
+  assert item.category == "Sports, Hockey"
+  assert item.is_new is True
+  assert item.is_live_airing is True
+
+  db = EpgDatabase(tmp_path / "cache" / "epg.sqlite3")
+  snap = _StubSnapshot(
+    channels=(
+      _StubChannel(
+        chno=1108,
+        name="RDS",
+        callsign="RDS",
+        epg_channel_id="sd.58592",
+      ),
+    )
+  )
+  db.replace_guide_schedules(
+    snap=snap,
+    programs_by_id={"sd.58592": [item]},
+    fetched_at=float(now_ts),
+  )
+  xml_out = b"".join(db.iter_xmltv_chunks(snap)).decode("utf-8")
+  assert '<episode-num system="onscreen">S04E07</episode-num>' in xml_out
+  assert '<episode-num system="xmltv_ns">3.6.</episode-num>' in xml_out
+  assert "<date>2026-05-01</date>" in xml_out
+  assert "<rating><value>PG</value></rating>" in xml_out
+  assert "<category>Sports</category>" in xml_out
+  assert "<category>Hockey</category>" in xml_out
+  assert "<new/>" in xml_out
+  assert "<live/>" in xml_out

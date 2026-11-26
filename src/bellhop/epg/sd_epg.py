@@ -561,9 +561,36 @@ class SchedulesDirectEpgClient:
     category = ""
     genres = raw_prog.get("genres")
     if isinstance(genres, list) and genres:
-      category = str(genres[0]).strip()
-    elif raw_prog.get("entityType"):
+      cleaned_genres = [str(g).strip() for g in genres if str(g).strip()]
+      if cleaned_genres:
+        category = ", ".join(cleaned_genres[:3])
+    if not category and raw_prog.get("entityType"):
       category = str(raw_prog["entityType"]).strip()
+
+    air_date = str(raw_prog.get("originalAirDate") or "").strip()[:10]
+    if not air_date:
+      mv_meta = raw_prog.get("movie")
+      if isinstance(mv_meta, Mapping) and mv_meta.get("year"):
+        air_date = str(mv_meta["year"]).strip()[:10]
+
+    rating = ""
+    raw_ratings = raw_prog.get("contentRating")
+    if isinstance(raw_ratings, list):
+      fallback_rating = ""
+      for r_entry in raw_ratings:
+        if not isinstance(r_entry, Mapping):
+          continue
+        code_val = str(r_entry.get("code") or "").strip()[:24]
+        if not code_val:
+          continue
+        country = str(r_entry.get("country") or "").strip().upper()
+        if country in {"CAN", "USA", ""}:
+          rating = code_val
+          break
+        if not fallback_rating:
+          fallback_rating = code_val
+      if not rating:
+        rating = fallback_rating
 
     return {
       "md5": str(raw_prog.get("md5") or raw_prog.get("hash") or ""),
@@ -571,6 +598,9 @@ class SchedulesDirectEpgClient:
       "sub_title": sub_title,
       "description": desc,
       "category": category,
+      "episode_num": season_ep,
+      "air_date": air_date,
+      "rating": rating,
     }
 
   # ---------------------------------------------------------------------------
@@ -691,6 +721,7 @@ class SchedulesDirectEpgClient:
                 "start": air_ts,
                 "dur": dur,
                 "live": str(air.get("liveTapeDelay") or "").lower() == "live",
+                "new": bool(air.get("new")),
               }
             )
           new_sched_rows.append((sid, start_dt, s_md5, compact_airings))
@@ -793,6 +824,11 @@ class SchedulesDirectEpgClient:
               category=str(p_meta.get("category") or ""),
               start_timestamp=start_ts,
               stop_timestamp=stop_ts,
+              episode_num=str(p_meta.get("episode_num") or ""),
+              air_date=str(p_meta.get("air_date") or ""),
+              rating=str(p_meta.get("rating") or ""),
+              is_new=bool(air.get("new")),
+              is_live_airing=bool(air.get("live")),
             )
           )
         reconciled = reconcile_non_overlapping_schedule(raw_items)
@@ -815,6 +851,11 @@ class SchedulesDirectEpgClient:
             category=p.category,
             start_timestamp=p.start_timestamp,
             stop_timestamp=p.stop_timestamp,
+            episode_num=p.episode_num,
+            air_date=p.air_date,
+            rating=p.rating,
+            is_new=p.is_new,
+            is_live_airing=p.is_live_airing,
           )
           for p in station_programs[matched_sid]
         ]

@@ -73,6 +73,10 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from bellhop.common.export_bundle import (
+  assign_unique_slot_epg_ids,
+  resolve_preferred_epg_base_id,
+)
 from bellhop.common.file_utils import write_private_text
 from bellhop.config import AppConfig
 from bellhop.epg.xmltv import (
@@ -324,15 +328,15 @@ def _resolve_canonical_epg_id(mapped: MappedChannel) -> str:
   binding.
   """
   ch = mapped.channel
-  if mapped.selected is not None:
-    stream = mapped.selected.stream
-    if mapped.selected.has_native_epg and stream.epg_channel_id.strip():
-      return stream.epg_channel_id.strip()
-  return (
-    ch.tvg_id
-    or (mapped.selected.stream.epg_channel_id if mapped.selected else "")
-    or f"bellhop.{ch.chno}.tv"
-  ).strip()
+  cand = mapped.selected
+  stream = cand.stream if cand is not None else None
+  return resolve_preferred_epg_base_id(
+    chno=ch.chno,
+    gracenote_station_id=ch.gracenote_station_id,
+    has_native_epg=cand.has_native_epg if cand is not None else False,
+    upstream_epg_channel_id=stream.epg_channel_id if stream is not None else "",
+    official_tvg_id=ch.tvg_id or "",
+  )
 
 
 def build_xtream_export_bundle(
@@ -380,6 +384,24 @@ def build_xtream_export_bundle(
   parsed_url = urlparse(base_url)
   upstream_xmltv_url = build_passthrough_xmltv_url(config, redact_secret=False)
 
+  unique_epg_by_chno = assign_unique_slot_epg_ids(
+    [
+      (
+        chno,
+        mapped.channel.sd_chno,
+        resolve_preferred_epg_base_id(
+          chno=chno,
+          gracenote_station_id=mapped.channel.gracenote_station_id,
+          has_native_epg=mapped.selected.has_native_epg,
+          upstream_epg_channel_id=mapped.selected.stream.epg_channel_id,
+          official_tvg_id=mapped.channel.tvg_id or "",
+        ),
+      )
+      for chno, _name, mapped in entries
+      if mapped.selected is not None
+    ]
+  )
+
   streams: list[ExportedLiveStream] = []
   channel_guides: dict[str, ExportedChannelGuideBinding] = {}
 
@@ -395,7 +417,9 @@ def build_xtream_export_bundle(
     cat_id_int = int(cat_id)
 
     official_logo = ch.logo or stream.stream_icon or ""
-    canonical_epg_id = _resolve_canonical_epg_id(mapped)
+    canonical_epg_id = unique_epg_by_chno.get(
+      chno, _resolve_canonical_epg_id(mapped)
+    )
     playback_url = resolve_playback_url(mapped, config)
 
     fallback_sources: list[str] = []

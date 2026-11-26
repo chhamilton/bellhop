@@ -279,7 +279,37 @@ def test_playlist_numbering_modes_and_password_redaction(
   assert 'tvg-chno="101"' in m3u8
   assert 'tvg-chno="1101"' in m3u8
   assert 'tvg-id="CBFT.ca"' in m3u8
+  assert 'tvg-id="CBFT.ca.101"' in m3u8
   assert "http://panel.example:8080/live/alice/super_secret_pw/777.ts" in m3u8
+
+  # When serve.xtream credentials are configured, render_m3u8 points
+  # url-tvg / x-tvg-url back to Bellhop's own `/xmltv.php` instead of upstream.
+  from bellhop.config import ServeConfig, ServeXtreamConfig
+
+  cfg_serve = AppConfig(
+    project_root=tmp_path,
+    xtream=cfg.xtream,
+    lineup=cfg.lineup,
+    output=cfg.output,
+    serve=ServeConfig(
+      port=8080,
+      xtream=ServeXtreamConfig(
+        enabled=True,
+        username="bell_user",
+        password="bell_pw",
+        public_host="192.0.2.55",
+      ),
+    ),
+  )
+  m3u8_serve = render_m3u8(lineup, [mapped], cfg_serve)
+  assert (
+    'url-tvg="http://192.0.2.55:8080/xmltv.php?username=bell_user&password=bell_pw"'
+    in m3u8_serve
+  )
+  assert (
+    'x-tvg-url="http://192.0.2.55:8080/xmltv.php?username=bell_user&password=bell_pw"'
+    in m3u8_serve
+  )
 
   report = build_report_dict(lineup, [mapped], cfg, total_catalog_streams=1)
   assert report["summary"]["active_channels_emitted"] == 1

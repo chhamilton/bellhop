@@ -30,6 +30,66 @@ def as_str_dict(val: object) -> dict[str, Any]:
   return dict(val) if isinstance(val, Mapping) else {}
 
 
+def resolve_preferred_epg_base_id(
+  *,
+  chno: int,
+  gracenote_station_id: str | None = "",
+  has_native_epg: bool = False,
+  upstream_epg_channel_id: str | None = "",
+  official_tvg_id: str | None = "",
+  raw_epg_channel_id: str | None = "",
+) -> str:
+  """Choose the preferred canonical XMLTV channel ID before collision
+  disambiguation.
+  """
+  gn_id = (gracenote_station_id or "").strip()
+  if gn_id:
+    return f"sd.{gn_id}"
+  raw_id = (raw_epg_channel_id or "").strip()
+  if raw_id:
+    return raw_id
+  up_id = (upstream_epg_channel_id or "").strip()
+  if has_native_epg and up_id:
+    return up_id
+  off_id = (official_tvg_id or "").strip()
+  if off_id:
+    return off_id
+  if up_id:
+    return up_id
+  return f"bellhop.{chno}.tv"
+
+
+def assign_unique_slot_epg_ids(
+  slots: Sequence[tuple[int, int | None, str]],
+) -> dict[int, str]:
+  """Assign unique case-insensitive XMLTV channel IDs across all channel slots.
+
+  Primary/HD slots keep the unsuffixed base ID while secondary or colliding
+  slots receive a `.{chno}` suffix so `/xmltv.php` never drops duplicates.
+  """
+  ordered = sorted(
+    slots,
+    key=lambda item: (
+      1 if (item[1] is not None and item[0] == item[1]) else 0,
+      item[0],
+    ),
+  )
+  claimed_lower: set[str] = set()
+  assigned: dict[int, str] = {}
+  for chno, _sd_chno, base_id in ordered:
+    base = base_id.strip() or f"bellhop.{chno}.tv"
+    cand = base
+    if cand.lower() in claimed_lower:
+      cand = f"{base}.{chno}"
+      suffix = 2
+      while cand.lower() in claimed_lower:
+        cand = f"{base}.{chno}.{suffix}"
+        suffix += 1
+    claimed_lower.add(cand.lower())
+    assigned[chno] = cand
+  return assigned
+
+
 @dataclass(slots=True)
 class ExportCategoryRecord:
   """Normalized category parsed from an Xtream export bundle or M3U8
@@ -145,6 +205,7 @@ def parse_m3u8_fallback(
           "name": pending_name,
           "stream_icon": pending_attrs.get("tvg-logo", ""),
           "epg_channel_id": pending_attrs.get("tvg-id", ""),
+          "gracenote_station_id": pending_attrs.get("tvc-guide-stationid", ""),
           "category_id": cats_by_name[grp],
           "category_name": grp,
           "direct_source": line,
@@ -271,6 +332,7 @@ class ExportBundleReader:
         if isinstance(loaded_streams, list):
           raw_streams = loaded_streams
 
+    m3u_xmltv_url = ""
     if (
       not raw_streams
       and self.m3u8_path is not None
@@ -279,11 +341,12 @@ class ExportBundleReader:
       raw_categories, raw_streams, m3u_xmltv_url = parse_m3u8_fallback(
         self.m3u8_path
       )
-      if m3u_xmltv_url and not bundle_xmltv_url:
-        bundle_xmltv_url = m3u_xmltv_url
 
     resolved_xmltv_url = (
-      bundle_xmltv_url or fallback_xmltv_url.strip() or self.fallback_xmltv_url
+      bundle_xmltv_url
+      or fallback_xmltv_url.strip()
+      or self.fallback_xmltv_url
+      or m3u_xmltv_url
     )
 
     if not raw_streams:
@@ -315,12 +378,54 @@ class ExportBundleReader:
 
     streams: list[ExportStreamRecord] = []
     default_added = str(int(now))
+    parsed_rows: list[
+      tuple[int, dict[str, Any], dict[str, Any], int | None, str, str, bool]
+    ] = []
+    slot_specs: list[tuple[int, int | None, str]] = []
+
     for idx, raw_entry in enumerate(raw_streams):
       entry = as_str_dict(raw_entry)
       if not entry:
         continue
       num = int(entry.get("num") or (idx + 1))
       guide = as_str_dict(entry.get("guide"))
+      sd_raw = guide.get("sd_chno")
+      sd_chno = int(sd_raw) if sd_raw is not None else None
+      raw_epg_id = str(
+        entry.get("epg_channel_id") or guide.get("epg_channel_id") or ""
+      ).strip()
+      gn_sid = str(
+        guide.get("gracenote_station_id")
+        or entry.get("gracenote_station_id")
+        or ""
+      ).strip()
+      has_native_epg = bool(guide.get("has_native_epg", bool(raw_epg_id)))
+      official_tvg_id = str(guide.get("official_tvg_id") or "").strip()
+      upstream_epg_id = str(guide.get("upstream_epg_channel_id") or "").strip()
+      base_epg_id = resolve_preferred_epg_base_id(
+        chno=num,
+        gracenote_station_id=gn_sid,
+        has_native_epg=has_native_epg,
+        upstream_epg_channel_id=upstream_epg_id,
+        official_tvg_id=official_tvg_id,
+        raw_epg_channel_id=raw_epg_id,
+      )
+      slot_specs.append((num, sd_chno, base_epg_id))
+      parsed_rows.append(
+        (num, entry, guide, sd_chno, gn_sid, raw_epg_id, has_native_epg)
+      )
+
+    unique_epg_by_chno = assign_unique_slot_epg_ids(slot_specs)
+
+    for (
+      num,
+      entry,
+      guide,
+      sd_chno,
+      gn_sid,
+      raw_epg_id,
+      has_native_epg,
+    ) in parsed_rows:
       cat_id = str(entry.get("category_id") or "1")
       existing_cat = cat_by_id.get(cat_id)
       cat_name = str(
@@ -338,13 +443,10 @@ class ExportBundleReader:
         categories.append(existing_cat)
       existing_cat.channel_count += 1
 
-      epg_id = str(
-        entry.get("epg_channel_id") or guide.get("epg_channel_id") or ""
-      ).strip()
-      has_native_epg = bool(guide.get("has_native_epg", bool(epg_id)))
-      aliases: list[str] = []
-      if epg_id:
-        aliases.append(epg_id)
+      epg_id = unique_epg_by_chno.get(num, raw_epg_id or f"bellhop.{num}.tv")
+      aliases: list[str] = [epg_id]
+      if raw_epg_id and raw_epg_id not in aliases:
+        aliases.append(raw_epg_id)
       official_tvg_id = str(guide.get("official_tvg_id") or "").strip()
       if official_tvg_id and official_tvg_id not in aliases:
         aliases.append(official_tvg_id)
@@ -352,8 +454,6 @@ class ExportBundleReader:
       if has_native_epg and upstream_epg_id and upstream_epg_id not in aliases:
         aliases.append(upstream_epg_id)
 
-      sd_raw = guide.get("sd_chno")
-      sd_chno = int(sd_raw) if sd_raw is not None else None
       callsign_raw = entry.get("callsign") or guide.get("callsign")
       raw_fallbacks = guide.get("fallback_sources")
       fallbacks = (
@@ -397,7 +497,7 @@ class ExportBundleReader:
           tv_archive_duration=int(entry.get("tv_archive_duration") or 0),
           language=str(guide.get("language") or ""),
           quality_tier=str(guide.get("quality_tier") or "unknown"),
-          gracenote_station_id=str(guide.get("gracenote_station_id") or ""),
+          gracenote_station_id=gn_sid,
           direct_source=str(entry.get("direct_source") or "").strip(),
           fallback_sources=fallbacks,
         )

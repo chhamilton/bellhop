@@ -114,6 +114,11 @@ class ProgramItem:
   category: str = ""
   start_timestamp: int = 0
   stop_timestamp: int = 0
+  episode_num: str = ""
+  air_date: str = ""
+  rating: str = ""
+  is_new: bool = False
+  is_live_airing: bool = False
 
   def to_dict(self, *, now_ts: int | None = None) -> ProgramItemDict:
     d: ProgramItemDict = {

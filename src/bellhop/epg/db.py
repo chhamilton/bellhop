@@ -18,6 +18,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -48,12 +49,13 @@ from bellhop.epg.models import (
 
 logger = logging.getLogger("bellhop.epg.db")
 
-EPG_DB_SCHEMA_VERSION = 1
+EPG_DB_SCHEMA_VERSION = 2
 DEFAULT_EPG_DB_FILE = Path("cache/epg.sqlite3")
 _SQL_CHUNK = 450
 _XMLTV_PAGE_ROWS = 2000
 _INCREMENTAL_VACUUM_PAGES = 256
 _MAX_POOL_SIZE = 8
+_EP_SEASON_EP_RE = re.compile(r"^S(\d+)E(\d+)$", re.IGNORECASE)
 
 _DDL_STATEMENTS: tuple[str, ...] = (
   """
@@ -106,6 +108,9 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     sub_title TEXT NOT NULL,
     description TEXT NOT NULL,
     category TEXT NOT NULL,
+    episode_num TEXT NOT NULL DEFAULT '',
+    air_date TEXT NOT NULL DEFAULT '',
+    rating TEXT NOT NULL DEFAULT '',
     updated_at REAL NOT NULL
   )
   """,
@@ -120,6 +125,11 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     sub_title TEXT NOT NULL,
     description TEXT NOT NULL,
     category TEXT NOT NULL,
+    episode_num TEXT NOT NULL DEFAULT '',
+    air_date TEXT NOT NULL DEFAULT '',
+    rating TEXT NOT NULL DEFAULT '',
+    is_new INTEGER NOT NULL DEFAULT 0,
+    is_live INTEGER NOT NULL DEFAULT 0,
     source TEXT NOT NULL,
     PRIMARY KEY (chno, epg_channel_id, start_ts)
   )
@@ -504,7 +514,25 @@ class EpgDatabase:
     transaction.
     """
     self.ensure_initialized()
-    rows: list[tuple[int, str, int, int, str, str, str, str, str, str]] = []
+    rows: list[
+      tuple[
+        int,
+        str,
+        int,
+        int,
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        str,
+      ]
+    ] = []
     emitted_epg_ids: set[str] = set()
 
     if snap.channels:
@@ -532,6 +560,11 @@ class EpgDatabase:
               p.sub_title,
               p.description,
               p.category,
+              p.episode_num,
+              p.air_date,
+              p.rating,
+              1 if p.is_new else 0,
+              1 if p.is_live_airing else 0,
               src,
             )
           )
@@ -554,6 +587,11 @@ class EpgDatabase:
             p.sub_title,
             p.description,
             p.category,
+            p.episode_num,
+            p.air_date,
+            p.rating,
+            1 if p.is_new else 0,
+            1 if p.is_live_airing else 0,
             src,
           )
         )
@@ -572,8 +610,9 @@ class EpgDatabase:
             """
             INSERT OR REPLACE INTO guide_airings
               (chno, epg_channel_id, start_ts, stop_ts, program_uid,
-               title, sub_title, description, category, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               title, sub_title, description, category, episode_num,
+               air_date, rating, is_new, is_live, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
           )
@@ -634,7 +673,8 @@ class EpgDatabase:
       rows = conn.execute(
         """
         SELECT program_uid, epg_channel_id, title, sub_title, description,
-               category, start_ts, stop_ts
+               category, start_ts, stop_ts, episode_num, air_date, rating,
+               is_new, is_live
         FROM guide_airings
         WHERE chno = ? AND (stop_ts = 0 OR stop_ts > ?)
         ORDER BY start_ts ASC
@@ -646,7 +686,8 @@ class EpgDatabase:
         rows = conn.execute(
           """
           SELECT program_uid, epg_channel_id, title, sub_title, description,
-                 category, start_ts, stop_ts
+                 category, start_ts, stop_ts, episode_num, air_date, rating,
+                 is_new, is_live
           FROM guide_airings
           WHERE chno = 0 AND epg_channel_id = ? AND (stop_ts = 0 OR stop_ts > ?)
           ORDER BY start_ts ASC
@@ -664,6 +705,11 @@ class EpgDatabase:
         category=str(r[5]),
         start_timestamp=int(r[6]),
         stop_timestamp=int(r[7]),
+        episode_num=str(r[8]),
+        air_date=str(r[9]),
+        rating=str(r[10]),
+        is_new=bool(r[11]),
+        is_live_airing=bool(r[12]),
       )
       for r in rows
     ]
@@ -687,7 +733,8 @@ class EpgDatabase:
       cur = conn.execute(
         """
         SELECT chno, epg_channel_id, program_uid, title, sub_title,
-               description, category, start_ts, stop_ts
+               description, category, start_ts, stop_ts, episode_num,
+               air_date, rating, is_new, is_live
         FROM guide_airings
         WHERE (stop_ts = 0 OR stop_ts > ?) AND start_ts <= ?
         ORDER BY chno ASC, start_ts ASC
@@ -706,6 +753,11 @@ class EpgDatabase:
           category=str(r[6]),
           start_timestamp=int(r[7]),
           stop_timestamp=int(r[8]),
+          episode_num=str(r[9]),
+          air_date=str(r[10]),
+          rating=str(r[11]),
+          is_new=bool(r[12]),
+          is_live_airing=bool(r[13]),
         )
         if chno > 0:
           bucket = by_chno.setdefault(chno, [])
@@ -813,7 +865,8 @@ class EpgDatabase:
         rows = conn.execute(
           """
           SELECT chno, epg_channel_id, start_ts, stop_ts,
-                 title, sub_title, description, category
+                 title, sub_title, description, category,
+                 episode_num, air_date, rating, is_new, is_live
           FROM guide_airings
           WHERE (chno, epg_channel_id, start_ts) > (?, ?, ?)
           ORDER BY chno ASC, epg_channel_id ASC, start_ts ASC
@@ -851,12 +904,50 @@ class EpgDatabase:
           f'stop="{_format_xmltv_ts(stop_ts)}" channel="{esc_cid}">\n'
           f"    <title>{xml_escape(str(r[4]))}</title>\n"
         )
-        if r[5]:
-          prog += f"    <sub-title>{xml_escape(str(r[5]))}</sub-title>\n"
+        sub_raw = str(r[5] or "")
+        ep_num = str(r[8] or "").strip()
+        if ep_num and sub_raw == ep_num:
+          sub_clean = ""
+        elif ep_num and sub_raw.startswith(f"{ep_num} · "):
+          sub_clean = sub_raw[len(ep_num) + 3 :]
+        else:
+          sub_clean = sub_raw
+        if sub_clean:
+          prog += f"    <sub-title>{xml_escape(sub_clean)}</sub-title>\n"
         if r[6]:
           prog += f"    <desc>{xml_escape(str(r[6]))}</desc>\n"
-        if r[7]:
-          prog += f"    <category>{xml_escape(str(r[7]))}</category>\n"
+        air_date = str(r[9] or "").strip()
+        if air_date:
+          prog += f"    <date>{xml_escape(air_date)}</date>\n"
+        raw_cat = str(r[7] or "")
+        if raw_cat:
+          for cat_tok in [c.strip() for c in raw_cat.split(",") if c.strip()][
+            :3
+          ]:
+            prog += f"    <category>{xml_escape(cat_tok)}</category>\n"
+        if ep_num:
+          prog += (
+            f'    <episode-num system="onscreen">'
+            f"{xml_escape(ep_num)}</episode-num>\n"
+          )
+          m_ep = _EP_SEASON_EP_RE.match(ep_num)
+          if m_ep:
+            s_idx = int(m_ep.group(1))
+            e_idx = int(m_ep.group(2))
+            if s_idx >= 1 and e_idx >= 1:
+              prog += (
+                f'    <episode-num system="xmltv_ns">'
+                f"{s_idx - 1}.{e_idx - 1}.</episode-num>\n"
+              )
+        rating_val = str(r[10] or "").strip()
+        if rating_val:
+          prog += (
+            f"    <rating><value>{xml_escape(rating_val)}</value></rating>\n"
+          )
+        if int(r[11] or 0):
+          prog += "    <new/>\n"
+        if int(r[12] or 0):
+          prog += "    <live/>\n"
         prog += "  </programme>\n"
         buf.append(prog)
         buf_bytes += len(prog)
@@ -1098,8 +1189,9 @@ class EpgDatabase:
         conn.executemany(
           """
           INSERT OR REPLACE INTO sd_programs
-            (program_id, md5, title, sub_title, description, category, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+            (program_id, md5, title, sub_title, description, category,
+             episode_num, air_date, rating, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           """,
           [
             (
@@ -1109,6 +1201,9 @@ class EpgDatabase:
               str(p.get("sub_title") or ""),
               str(p.get("description") or ""),
               str(p.get("category") or ""),
+              str(p.get("episode_num") or ""),
+              str(p.get("air_date") or ""),
+              str(p.get("rating") or ""),
               updated_at,
             )
             for pid, p in programs.items()
@@ -1170,7 +1265,8 @@ class EpgDatabase:
         chunk = program_ids[idx : idx + _SQL_CHUNK]
         placeholders = ",".join("?" for _ in chunk)
         for r in conn.execute(
-          f"SELECT program_id, title, sub_title, description, category "
+          f"SELECT program_id, title, sub_title, description, category, "
+          f"episode_num, air_date, rating "
           f"FROM sd_programs WHERE program_id IN ({placeholders})",
           list(chunk),
         ):
@@ -1179,5 +1275,8 @@ class EpgDatabase:
             "sub_title": str(r[2]),
             "description": str(r[3]),
             "category": str(r[4]),
+            "episode_num": str(r[5]),
+            "air_date": str(r[6]),
+            "rating": str(r[7]),
           }
     return out

@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TypedDict
+from urllib.parse import quote
 
 import aiohttp
 
 from bellhop.common.http_utils import (
   UPSTREAM_ERRORS,
   default_session_factory,
+  detect_device_ip,
   extract_explicit_private_origins,
   open_upstream_url,
   redact_url_secrets,
@@ -90,8 +93,32 @@ def build_passthrough_xmltv_url(
   base = xt.server_url.strip().rstrip("/")
   if not base.startswith(("http://", "https://")):
     base = f"http://{base}"
-  pw = "***" if redact_secret else xt.password
-  return f"{base}/xmltv.php?username={xt.username}&password={pw}"
+  user_q = quote(xt.username, safe="")
+  pw = "***" if redact_secret else quote(xt.password, safe="")
+  return f"{base}/xmltv.php?username={user_q}&password={pw}"
+
+
+def build_serve_xmltv_url(
+  config: AppConfig, *, redact_secret: bool = False
+) -> str:
+  """Build Bellhop's own `/xmltv.php` URL from `AppConfig.serve.xtream`."""
+  sx = config.serve.xtream
+  user = sx.username.strip()
+  password = sx.password.strip()
+  if not sx.enabled or not user or not password:
+    return ""
+  proto = (sx.server_protocol or "http").strip() or "http"
+  raw_host = (sx.public_host or config.serve.xtream_host or "").strip()
+  if raw_host.lower() in {"", "0.0.0.0", "::", "auto"}:
+    raw_host = detect_device_ip() or "127.0.0.1"
+  host_clean = raw_host.strip("[]")
+  host_fmt = f"[{host_clean}]" if ":" in host_clean else host_clean
+  port = sx.public_port or config.serve.xtream_port
+  user_q = quote(user, safe="")
+  pw_q = "***" if redact_secret else quote(password, safe="")
+  return (
+    f"{proto}://{host_fmt}:{port}/xmltv.php?username={user_q}&password={pw_q}"
+  )
 
 
 def _detect_xmltv_prefix(sample: bytes) -> str:
@@ -220,10 +247,49 @@ async def verify_epg_endpoint(
       await client.close()
 
 
+_XMLTV_NS_EP_RE = re.compile(r"^\s*(\d+)\s*(?:/\d+)?\.\s*(\d+)")
+
+
 def _clip_xmltv_text(el: ET.Element | None) -> str:
   if el is None or not el.text:
     return ""
   return el.text.strip()[:MAX_XMLTV_TEXT_CHARS]
+
+
+def _extract_xmltv_categories(elem: ET.Element) -> str:
+  cats: list[str] = []
+  for cat_el in elem.findall("category"):
+    val = _clip_xmltv_text(cat_el)
+    if val and val not in cats:
+      cats.append(val)
+      if len(cats) >= 3:
+        break
+  return ", ".join(cats)
+
+
+def _extract_xmltv_episode_num(elem: ET.Element) -> str:
+  ns_fallback = ""
+  for ep_el in elem.findall("episode-num"):
+    raw_val = _clip_xmltv_text(ep_el)[:32]
+    if not raw_val:
+      continue
+    system = (ep_el.attrib.get("system") or "").strip().lower()
+    if system in {"onscreen", ""}:
+      return raw_val
+    if system == "xmltv_ns" and not ns_fallback:
+      ns_fallback = raw_val
+  if ns_fallback:
+    m = _XMLTV_NS_EP_RE.match(ns_fallback)
+    if m:
+      return f"S{int(m.group(1)) + 1:02d}E{int(m.group(2)) + 1:02d}"
+  return ""
+
+
+def _extract_xmltv_rating(elem: ET.Element) -> str:
+  rating_el = elem.find("rating")
+  if rating_el is None:
+    return ""
+  return _clip_xmltv_text(rating_el.find("value"))[:24]
 
 
 def parse_xmltv_for_channels(
@@ -312,9 +378,14 @@ def parse_xmltv_for_channels(
                       title=title,
                       sub_title=_clip_xmltv_text(elem.find("sub-title")),
                       description=_clip_xmltv_text(elem.find("desc")),
-                      category=_clip_xmltv_text(elem.find("category")),
+                      category=_extract_xmltv_categories(elem),
                       start_timestamp=start_ts,
                       stop_timestamp=stop_ts,
+                      episode_num=_extract_xmltv_episode_num(elem),
+                      air_date=_clip_xmltv_text(elem.find("date"))[:10],
+                      rating=_extract_xmltv_rating(elem),
+                      is_new=elem.find("new") is not None,
+                      is_live_airing=elem.find("live") is not None,
                     )
                   )
           elem.clear()

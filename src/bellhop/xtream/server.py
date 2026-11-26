@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, TypedDict
+from urllib.parse import quote, urlparse
 
 from aiohttp import web
 
@@ -453,9 +454,10 @@ class XtreamPassthroughServer:
     r.add_post("/panel_api.php", self._handle_panel_api)
     for path in ("/xmltv.php", "/epg.xml"):
       r.add_get(path, self._handle_xmltv_passthrough)
+      r.add_post(path, self._handle_xmltv_passthrough)
     r.add_get("/get.php", self._m3u_handler("m3u_plus"))
     r.add_get("/playlist.m3u8", self._m3u_handler("m3u_plus"))
-    r.add_get("/playlist.m3u", self._m3u_handler("m3u"))
+    r.add_get("/playlist.m3u", self._m3u_handler("m3u_plus"))
     r.add_get(
       r"/{kind:(?:movie|series|timeshift)}/{user}/{passwd}/{tail:.+}",
       self._handle_nonlive,
@@ -562,6 +564,78 @@ class XtreamPassthroughServer:
     )
     return fallback_host, (self.public_port or self.bound_port)
 
+  def _format_base_url(self, headers: Mapping[str, str]) -> str:
+    adv_host, adv_port = self._resolve_advertised_host_port(headers)
+    host_clean = adv_host.strip("[]")
+    host_fmt = f"[{host_clean}]" if ":" in host_clean else host_clean
+    return f"{self.server_protocol}://{host_fmt}:{adv_port}"
+
+  def _build_self_xmltv_url(
+    self,
+    headers: Mapping[str, str],
+    *,
+    username: str | None = None,
+    password: str | None = None,
+  ) -> str:
+    base = self._format_base_url(headers)
+    user_q = quote(self.username if username is None else username, safe="")
+    pw_q = quote(self.password if password is None else password, safe="")
+    return f"{base}/xmltv.php?username={user_q}&password={pw_q}"
+
+  def _resolve_upstream_xmltv_fallback(
+    self, request: web.Request, snap: XtreamExportSnapshot
+  ) -> str:
+    """Return upstream XMLTV fallback URL while blocking self-redirect
+    loops.
+    """
+    adv_host, adv_port = self._resolve_advertised_host_port(request.headers)
+    req_host_hdr = (request.headers.get("host") or "").strip()
+    req_host = (
+      (
+        req_host_hdr.split("]", 1)[0].lstrip("[")
+        if req_host_hdr.startswith("[")
+        else req_host_hdr.rsplit(":", 1)[0]
+      )
+      .strip()
+      .lower()
+    )
+    self_hosts: set[str] = {
+      h
+      for h in (
+        adv_host.lower().strip("[]"),
+        self.bind_host.lower().strip("[]"),
+        req_host,
+        self.public_host.lower().strip("[]") if self.public_host else "",
+      )
+      if h
+    }
+    if self.bind_host in {"0.0.0.0", "::", ""}:
+      self_hosts.update({"127.0.0.1", "localhost", "::1"})
+      detected = detect_device_ip()
+      if detected:
+        self_hosts.add(detected.lower().strip("[]"))
+
+    self_ports: set[int] = {adv_port, self.bound_port}
+    if self.public_port is not None:
+      self_ports.add(self.public_port)
+
+    for cand in (snap.xmltv_url, self.store.fallback_xmltv_url):
+      cleaned = cand.strip()
+      if not cleaned:
+        continue
+      parsed = urlparse(cleaned)
+      path = parsed.path.rstrip("/") or "/"
+      c_host = (parsed.hostname or "").lower().strip("[]")
+      c_port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+      if (
+        path in {"/xmltv.php", "/epg.xml"}
+        and c_host in self_hosts
+        and c_port in self_ports
+      ):
+        continue
+      return cleaned
+    return ""
+
   def _build_user_and_server_info(
     self,
     snap: XtreamExportSnapshot,
@@ -594,6 +668,7 @@ class XtreamPassthroughServer:
       "timestamp_now": now_epoch,
       "time_now": now_iso,
       "process": True,
+      "xmltv_url": self._build_self_xmltv_url(headers),
     }
     return user_info, server_info
 
@@ -665,7 +740,7 @@ class XtreamPassthroughServer:
         sid = int(raw_sid)
         item = snap.stream_by_id.get(sid) or snap.stream_by_num.get(sid)
         if item is not None:
-          default_limit = 4 if action == "get_short_epg" else 50
+          default_limit = 12 if action == "get_short_epg" else 50
           raw_limit = params.get("limit", "").strip()
           try:
             parsed_limit = int(raw_limit)
@@ -751,13 +826,14 @@ class XtreamPassthroughServer:
             await asyncio.to_thread(close_iter)
 
     snap = self.store.get_snapshot()
-    if not snap.xmltv_url:
+    fallback_url = self._resolve_upstream_xmltv_fallback(request, snap)
+    if not fallback_url:
       return json_response(
         {"error": "No upstream XMLTV passthrough URL configured."},
         status=HTTPStatus.NOT_FOUND,
       )
     logger.debug("Passthrough redirect /xmltv.php -> upstream XMLTV")
-    return redirect_response(snap.xmltv_url)
+    return redirect_response(fallback_url)
 
   async def _handle_nonlive(self, request: web.Request) -> web.StreamResponse:
     denied = self._verify_request_auth(
@@ -836,14 +912,12 @@ class XtreamPassthroughServer:
       else set()
     )
 
-    adv_host, adv_port = self._resolve_advertised_host_port(request.headers)
-    host_fmt = (
-      f"[{adv_host}]"
-      if ":" in adv_host and not adv_host.startswith("[")
-      else adv_host
+    base = self._format_base_url(request.headers)
+    epg_url = self._build_self_xmltv_url(
+      request.headers, username=user, password=passwd
     )
-    base = f"{self.server_protocol}://{host_fmt}:{adv_port}"
-    epg_url = f"{base}/xmltv.php?username={user}&password={passwd}"
+    user_q = quote(user, safe="")
+    passwd_q = quote(passwd, safe="")
 
     if is_plus:
       lines = [
@@ -857,7 +931,7 @@ class XtreamPassthroughServer:
       if allowed_cats and s.category_id not in allowed_cats:
         continue
       safe_name = s.name.replace("\n", " ").strip()
-      stream_url = f"{base}/live/{user}/{passwd}/{s.stream_id}.{ext}"
+      stream_url = f"{base}/live/{user_q}/{passwd_q}/{s.stream_id}.{ext}"
       if is_plus:
         attrs = [
           f'tvg-chno="{s.num}"',
