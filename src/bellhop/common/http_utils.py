@@ -1,5 +1,4 @@
-"""Shared aiohttp server/client helpers, rate limiter, and LAN bind-address
-utilities.
+"""Shared aiohttp helpers, rate limiter, and LAN bind-address utilities.
 
 Used across `bellhop.web` (Web Guide), `bellhop.xtream` (Xtream passthrough
 server), `bellhop.epg`, and `bellhop.pipeline`.
@@ -9,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
+import hmac
 import ipaddress
 import json
 import logging
@@ -50,6 +51,7 @@ __all__ = [
   "UpstreamTargetBlockedError",
   "build_access_urls",
   "bytes_response",
+  "constant_time_credential_match",
   "create_web_app",
   "default_session_factory",
   "detect_device_ip",
@@ -91,7 +93,8 @@ WEB_CSP_POLICY = (
   "connect-src 'self'; "
   "object-src 'none'; "
   "base-uri 'self'; "
-  "frame-ancestors 'self'"
+  "frame-ancestors 'self'; "
+  "form-action 'self'"
 )
 
 # Bounded HTTP redirect hops followed when opening upstream streams or XMLTV.
@@ -393,9 +396,7 @@ def resolve_bind_host(
   *,
   ip_detector: Callable[[], str | None] = detect_device_ip,
 ) -> str:
-  """Resolve a configured host (`0.0.0.0`, `auto`/`lan`/`device`, or explicit
-  IP).
-  """
+  """Resolve configured host (`0.0.0.0`, `auto`/`lan`/`device`, or IP)."""
   raw = (configured_host or "").strip()
   if not raw:
     return "0.0.0.0"
@@ -434,9 +435,7 @@ def build_access_urls(
 # Trusted reverse-proxy client IP resolution (`X-Forwarded-For` / `X-Real-IP`)
 # -----------------------------------------------------------------------------
 def _parse_ip_addr(raw: str | None) -> IpAddress | None:
-  """Parse an IPv4/IPv6 address, unwrapping IPv4-mapped IPv6
-  (`::ffff:x.x.x.x`).
-  """
+  """Parse an IPv4/IPv6 address, unwrapping `::ffff:x.x.x.x`."""
   if not raw:
     return None
   cleaned = raw.strip()
@@ -628,9 +627,7 @@ _STREAM_CRED_PATH_RE = re.compile(
 
 
 def _redact_request_path(path: str) -> str:
-  """Mask embedded Xtream stream credentials inside `/live/<user>/<pass>/<id>`
-  paths.
-  """
+  """Mask embedded credentials inside `/live/<user>/<pass>/<id>` paths."""
   return _STREAM_CRED_PATH_RE.sub(r"/live/\1/***/\3", path)
 
 
@@ -709,6 +706,24 @@ async def start_site(
   return runner, bound
 
 
+def constant_time_credential_match(
+  given_user: str,
+  given_pass: str,
+  expected_user: str,
+  expected_pass: str,
+) -> bool:
+  """Compare credentials in constant time using fixed-length SHA-256 digests.
+
+  Avoids both length side-channels and short-circuiting on username mismatches.
+  """
+  g_u = hashlib.sha256(given_user.encode("utf-8")).digest()
+  e_u = hashlib.sha256(expected_user.encode("utf-8")).digest()
+  g_p = hashlib.sha256(given_pass.encode("utf-8")).digest()
+  e_p = hashlib.sha256(expected_pass.encode("utf-8")).digest()
+  matched = hmac.compare_digest(g_u, e_u) & hmac.compare_digest(g_p, e_p)
+  return bool(expected_user and expected_pass and matched)
+
+
 @dataclass(slots=True)
 class LoginRateLimiter:
   """Bounded per-IP sliding-window failed-login rate limiter."""
@@ -719,16 +734,26 @@ class LoginRateLimiter:
   clock: Callable[[], float] = field(default=time.monotonic, repr=False)
   _failures: dict[str, list[float]] = field(default_factory=dict, repr=False)
 
-  def _prune_ip(self, ip: str, cutoff: float) -> list[float]:
-    timestamps = self._failures.get(ip)
+  @staticmethod
+  def _bucket_key(ip: str) -> str:
+    """Normalize client IP strings, bucketing IPv6 peers by `/64` prefix."""
+    addr = _parse_ip_addr(ip)
+    if addr is None:
+      return (ip or "").strip() or "unknown"
+    if isinstance(addr, ipaddress.IPv6Address):
+      return str(ipaddress.IPv6Network((addr, 64), strict=False))
+    return str(addr)
+
+  def _prune_ip(self, key: str, cutoff: float) -> list[float]:
+    timestamps = self._failures.get(key)
     if not timestamps:
-      self._failures.pop(ip, None)
+      self._failures.pop(key, None)
       return []
     fresh = [ts for ts in timestamps if ts > cutoff]
     if fresh:
-      self._failures[ip] = fresh
+      self._failures[key] = fresh
     else:
-      self._failures.pop(ip, None)
+      self._failures.pop(key, None)
     return fresh
 
   def check(self, ip: str, *, now: float | None = None) -> int:
@@ -736,7 +761,8 @@ class LoginRateLimiter:
     if self.max_failures <= 0 or self.window_sec <= 0:
       return 0
     ts_now = self.clock() if now is None else now
-    fresh = self._prune_ip(ip or "unknown", ts_now - self.window_sec)
+    key = self._bucket_key(ip)
+    fresh = self._prune_ip(key, ts_now - self.window_sec)
     if len(fresh) < self.max_failures:
       return 0
     oldest_active = fresh[0]
@@ -747,7 +773,7 @@ class LoginRateLimiter:
     """Record a failed login attempt for `ip`."""
     if self.max_failures <= 0 or self.window_sec <= 0:
       return
-    key = ip or "unknown"
+    key = self._bucket_key(ip)
     ts_now = self.clock() if now is None else now
     cutoff = ts_now - self.window_sec
     if (
@@ -764,7 +790,7 @@ class LoginRateLimiter:
 
   def record_success(self, ip: str) -> None:
     """Clear failed login attempts for `ip` after a successful sign-in."""
-    self._failures.pop(ip or "unknown", None)
+    self._failures.pop(self._bucket_key(ip), None)
 
 
 _STREAM_PATH_SECRET_RE = re.compile(

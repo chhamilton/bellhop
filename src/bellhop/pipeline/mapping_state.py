@@ -94,9 +94,7 @@ def _is_audio_lang_mismatch(cand: CandidateRecord) -> bool:
 
 @dataclass(slots=True)
 class CandidateRecord:
-  """A ranked potential stream candidate stored in the persistent channel
-  mapping.
-  """
+  """Ranked stream candidate stored in the persistent channel mapping."""
 
   stream_id: int
   name: str
@@ -305,9 +303,7 @@ class MappingUpdateSummary:
 
 @dataclass(slots=True)
 class MappingDocument:
-  """Persistent channel mapping file updated across monthly lineup and daily
-  catalog runs.
-  """
+  """Persistent channel mapping updated across lineup and catalog runs."""
 
   lineup_id: str = DEFAULT_BELL_FIBE_MTL_LINEUP_ID
   provider: str = ""
@@ -370,9 +366,7 @@ class MappingDocument:
 def load_mapping_document(
   path: Path, lineup_id: str = DEFAULT_BELL_FIBE_MTL_LINEUP_ID
 ) -> MappingDocument:
-  """Load an existing channel mapping from disk, or return an empty document on
-  first run.
-  """
+  """Load channel mapping from disk, or return empty doc on first run."""
   if not path.is_file():
     return MappingDocument.empty(lineup_id=lineup_id)
   with path.open("r", encoding="utf-8") as fh:
@@ -404,8 +398,9 @@ def reconcile_rough_mapping(
   catalog: XtreamCatalog,
   config: AppConfig,
 ) -> MappingDocument:
-  """Phase (3): Reconcile an existing (or empty) mapping against current lineup
-  & IPTV catalog.
+  """Phase (3): Reconcile channel mapping against lineup and catalog.
+
+  Preserves pinned overrides, healthy incumbents, and failure history.
   """
   now = datetime.now(timezone.utc).isoformat()
   is_initial = existing is None or len(existing.slots) == 0
@@ -645,199 +640,136 @@ def _reconcile_single_slot(
   catalog_ids: set[int],
   hysteresis: float,
 ) -> ChannelMappingSlot:
+  def _slot(
+    *,
+    preferred_stream_id: int | None,
+    preferred_source: str,
+    change_status: str,
+    change_detail: str,
+    slot_pinned_id: int | None = None,
+  ) -> ChannelMappingSlot:
+    return ChannelMappingSlot(
+      chno=ch.chno,
+      sd_chno=ch.sd_chno,
+      name=ch.name,
+      group=ch.group,
+      language=ch.language,
+      callsign=ch.callsign,
+      tvg_id=ch.tvg_id,
+      gracenote_station_id=ch.gracenote_station_id,
+      pinned_stream_id=slot_pinned_id,
+      preferred_stream_id=preferred_stream_id,
+      preferred_source=preferred_source,
+      change_status=change_status,
+      change_detail=change_detail,
+      candidates=candidates,
+    )
+
   viable = [c for c in candidates if c.validation_status != "invalid"]
   top = viable[0] if viable else None
 
   if not candidates or top is None:
-    return ChannelMappingSlot(
-      chno=ch.chno,
-      sd_chno=ch.sd_chno,
-      name=ch.name,
-      group=ch.group,
-      language=ch.language,
-      callsign=ch.callsign,
-      tvg_id=ch.tvg_id,
-      gracenote_station_id=ch.gracenote_station_id,
-      pinned_stream_id=pinned_id,
+    return _slot(
       preferred_stream_id=None,
       preferred_source="none",
       change_status="unmatched",
       change_detail="No viable candidate stream matched",
-      candidates=candidates,
+      slot_pinned_id=pinned_id,
     )
 
   if pinned_id is not None:
-    return ChannelMappingSlot(
-      chno=ch.chno,
-      sd_chno=ch.sd_chno,
-      name=ch.name,
-      group=ch.group,
-      language=ch.language,
-      callsign=ch.callsign,
-      tvg_id=ch.tvg_id,
-      gracenote_station_id=ch.gracenote_station_id,
-      pinned_stream_id=pinned_id,
+    return _slot(
       preferred_stream_id=pinned_id,
       preferred_source="pinned",
       change_status="new" if old_slot is None else "unchanged",
       change_detail=f"Pinned to stream #{pinned_id}",
-      candidates=candidates,
+      slot_pinned_id=pinned_id,
     )
 
-  # First time seeing this lineup channel slot (or previously unmatched)
+  top_source = (
+    "validated" if top.validation_status == "valid" else "rough_match"
+  )
   if old_slot is None or old_slot.preferred_stream_id is None:
-    source = "validated" if top.validation_status == "valid" else "rough_match"
-    return ChannelMappingSlot(
-      chno=ch.chno,
-      sd_chno=ch.sd_chno,
-      name=ch.name,
-      group=ch.group,
-      language=ch.language,
-      callsign=ch.callsign,
-      tvg_id=ch.tvg_id,
-      gracenote_station_id=ch.gracenote_station_id,
+    return _slot(
       preferred_stream_id=top.stream_id,
-      preferred_source=source,
+      preferred_source=top_source,
       change_status="new",
-      change_detail=f"Initial match -> {top.name} (#{top.stream_id}, score={top.score:.1f})",
-      candidates=candidates,
+      change_detail=(
+        f"Initial match -> {top.name} (#{top.stream_id}, score={top.score:.1f})"
+      ),
     )
 
   prev_id = old_slot.preferred_stream_id
   if prev_id not in catalog_ids:
-    source = "validated" if top.validation_status == "valid" else "rough_match"
-    return ChannelMappingSlot(
-      chno=ch.chno,
-      sd_chno=ch.sd_chno,
-      name=ch.name,
-      group=ch.group,
-      language=ch.language,
-      callsign=ch.callsign,
-      tvg_id=ch.tvg_id,
-      gracenote_station_id=ch.gracenote_station_id,
+    return _slot(
       preferred_stream_id=top.stream_id,
-      preferred_source=source,
+      preferred_source=top_source,
       change_status="replaced_missing",
-      change_detail=f"Previous stream #{prev_id} disappeared from catalog; promoted #{top.stream_id}",
-      candidates=candidates,
+      change_detail=(
+        f"Previous stream #{prev_id} disappeared from catalog; promoted #{top.stream_id}"
+      ),
     )
 
   prev_in_cands = next((c for c in candidates if c.stream_id == prev_id), None)
   if prev_in_cands is None:
-    # Renamed away from this channel in today's catalog
-    source = "validated" if top.validation_status == "valid" else "rough_match"
-    return ChannelMappingSlot(
-      chno=ch.chno,
-      sd_chno=ch.sd_chno,
-      name=ch.name,
-      group=ch.group,
-      language=ch.language,
-      callsign=ch.callsign,
-      tvg_id=ch.tvg_id,
-      gracenote_station_id=ch.gracenote_station_id,
+    return _slot(
       preferred_stream_id=top.stream_id,
-      preferred_source=source,
+      preferred_source=top_source,
       change_status="replaced_missing",
-      change_detail=f"Previous stream #{prev_id} no longer matches channel; promoted #{top.stream_id}",
-      candidates=candidates,
+      change_detail=(
+        f"Previous stream #{prev_id} no longer matches channel; promoted #{top.stream_id}"
+      ),
     )
 
   if prev_in_cands.validation_status == "invalid":
-    source = "validated" if top.validation_status == "valid" else "rough_match"
-    return ChannelMappingSlot(
-      chno=ch.chno,
-      sd_chno=ch.sd_chno,
-      name=ch.name,
-      group=ch.group,
-      language=ch.language,
-      callsign=ch.callsign,
-      tvg_id=ch.tvg_id,
-      gracenote_station_id=ch.gracenote_station_id,
+    return _slot(
       preferred_stream_id=top.stream_id,
-      preferred_source=source,
+      preferred_source=top_source,
       change_status="replaced_invalid",
-      change_detail=f"Previous stream #{prev_id} marked invalid; promoted #{top.stream_id}",
-      candidates=candidates,
+      change_detail=(
+        f"Previous stream #{prev_id} marked invalid; promoted #{top.stream_id}"
+      ),
     )
 
   old_cand_ids = [c.stream_id for c in old_slot.candidates]
   new_cand_ids = [c.stream_id for c in candidates]
+  kept_status = (
+    "unchanged" if old_cand_ids == new_cand_ids else "candidates_updated"
+  )
+  kept_source = (
+    "validated"
+    if prev_in_cands.validation_status == "valid"
+    else old_slot.preferred_source
+  )
+  kept_source = kept_source if kept_source != "none" else "rough_match"
 
   if top.stream_id == prev_id:
-    status = (
-      "unchanged" if old_cand_ids == new_cand_ids else "candidates_updated"
-    )
-    source = (
-      "validated"
-      if prev_in_cands.validation_status == "valid"
-      else old_slot.preferred_source
-    )
-    return ChannelMappingSlot(
-      chno=ch.chno,
-      sd_chno=ch.sd_chno,
-      name=ch.name,
-      group=ch.group,
-      language=ch.language,
-      callsign=ch.callsign,
-      tvg_id=ch.tvg_id,
-      gracenote_station_id=ch.gracenote_station_id,
+    return _slot(
       preferred_stream_id=prev_id,
-      preferred_source=source if source != "none" else "rough_match",
-      change_status=status,
+      preferred_source=kept_source,
+      change_status=kept_status,
       change_detail=f"Retained #{prev_id} ({prev_in_cands.name})",
-      candidates=candidates,
     )
 
-  # A new stream outscored (or outranked a language-mismatched fallback) the
-  # previous stream!
   escaping_lang_mismatch = _is_audio_lang_mismatch(
     prev_in_cands
   ) and not _is_audio_lang_mismatch(top)
   score_gain = top.score - prev_in_cands.score
   if not escaping_lang_mismatch and score_gain < hysteresis:
-    # Within hysteresis window: avoid needless daily stream churn
-    status = (
-      "unchanged" if old_cand_ids == new_cand_ids else "candidates_updated"
-    )
-    source = (
-      "validated"
-      if prev_in_cands.validation_status == "valid"
-      else old_slot.preferred_source
-    )
-    return ChannelMappingSlot(
-      chno=ch.chno,
-      sd_chno=ch.sd_chno,
-      name=ch.name,
-      group=ch.group,
-      language=ch.language,
-      callsign=ch.callsign,
-      tvg_id=ch.tvg_id,
-      gracenote_station_id=ch.gracenote_station_id,
+    return _slot(
       preferred_stream_id=prev_id,
-      preferred_source=source if source != "none" else "rough_match",
-      change_status=status,
-      change_detail=f"Kept #{prev_id} within hysteresis (+{score_gain:.1f} < {hysteresis:.1f})",
-      candidates=candidates,
+      preferred_source=kept_source,
+      change_status=kept_status,
+      change_detail=(
+        f"Kept #{prev_id} within hysteresis (+{score_gain:.1f} < {hysteresis:.1f})"
+      ),
     )
 
-  # Significant upgrade (e.g. higher resolution or native EPG added):
-  # If previous stream was already live-validated and new top isn't yet
-  # validated, keep
-  # known-good stream active while queuing the upgrade at candidates[0] for
-  # Phase (4)!
   if (
     prev_in_cands.validation_status == "valid"
     and top.validation_status != "valid"
   ):
-    return ChannelMappingSlot(
-      chno=ch.chno,
-      sd_chno=ch.sd_chno,
-      name=ch.name,
-      group=ch.group,
-      language=ch.language,
-      callsign=ch.callsign,
-      tvg_id=ch.tvg_id,
-      gracenote_station_id=ch.gracenote_station_id,
+    return _slot(
       preferred_stream_id=prev_id,
       preferred_source="validated",
       change_status="upgraded_pending_validation",
@@ -845,27 +777,16 @@ def _reconcile_single_slot(
         f"Queued higher-ranked #{top.stream_id} (+{score_gain:.1f} pts) for validation; "
         f"keeping verified #{prev_id} until validated"
       ),
-      candidates=candidates,
     )
 
-  source = "validated" if top.validation_status == "valid" else "rough_match"
-  return ChannelMappingSlot(
-    chno=ch.chno,
-    sd_chno=ch.sd_chno,
-    name=ch.name,
-    group=ch.group,
-    language=ch.language,
-    callsign=ch.callsign,
-    tvg_id=ch.tvg_id,
-    gracenote_station_id=ch.gracenote_station_id,
+  return _slot(
     preferred_stream_id=top.stream_id,
-    preferred_source=source,
+    preferred_source=top_source,
     change_status="upgraded",
     change_detail=(
       f"Upgraded #{prev_id} ({prev_in_cands.score:.1f}) -> "
       f"#{top.stream_id} {top.name} ({top.score:.1f})"
     ),
-    candidates=candidates,
   )
 
 
@@ -946,8 +867,9 @@ async def validate_mapping_candidates(
   redact_secret: str = "",
   checkpoint_interval: int = 20,
 ) -> int:
-  """Phase (4): Validate ONLY candidate streams in the mapping document (never
-  raw catalog).
+  """Phase (4): Validate ONLY candidate streams in the mapping document.
+
+  Never probes the full raw catalog on disk.
   """
   active_validator = validator or StreamValidator(config, account)
   lineup_by_no = {ch.chno: ch for ch in lineup.channels}
@@ -1034,8 +956,9 @@ def mapping_document_to_mapped_channels(
   doc: MappingDocument,
   lineup: CableLineup,
 ) -> list[MappedChannel]:
-  """Phase (5) bridge: convert MappingDocument slots into MappedChannel entries
-  for M3U8 output.
+  """Phase (5) bridge: convert MappingDocument slots to MappedChannel items.
+
+  Prepares surviving channels for Extended M3U8 export.
   """
   out: list[MappedChannel] = []
   for ch in lineup.channels:

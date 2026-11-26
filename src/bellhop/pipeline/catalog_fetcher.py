@@ -1,5 +1,4 @@
-"""Phase (2): Daily IPTV Playlist JSON Fetcher with snapshot state and stream
-diffing.
+"""Phase (2): Daily IPTV Playlist JSON Fetcher with snapshot state.
 
 Catalog Snapshot Schema (`state/catalogs/iptv_catalog_<sha256_16>.json`)
 ------------------------------------------------------------------------
@@ -40,7 +39,7 @@ from typing import Any
 
 import aiohttp
 
-from bellhop.common.file_utils import write_private_text
+from bellhop.common.file_utils import ensure_private_dir, write_private_text
 from bellhop.config import AppConfig
 from bellhop.xtream.client import (
   XtreamCatalog,
@@ -48,15 +47,14 @@ from bellhop.xtream.client import (
   XtreamStream,
   fetch_xtream_account_info,
   fetch_xtream_catalog,
+  load_catalog_from_data,
   load_catalog_from_json,
 )
 
 
 @dataclass(slots=True)
 class CatalogDiff:
-  """Changes detected between yesterday's IPTV catalog and today's fetched
-  catalog.
-  """
+  """Changes detected between yesterday's and today's IPTV catalog."""
 
   added_stream_ids: list[int] = field(default_factory=list)
   removed_stream_ids: list[int] = field(default_factory=list)
@@ -167,7 +165,7 @@ def _save_catalog_state(
   *,
   saved_ts: float | None = None,
 ) -> None:
-  snap_path.parent.mkdir(parents=True, exist_ok=True)
+  ensure_private_dir(snap_path.parent)
   ts = saved_ts if saved_ts is not None else time.time()
   payload = {
     "saved_timestamp": ts,
@@ -190,9 +188,7 @@ async def fetch_daily_iptv_catalog(
   input_json: Path | None = None,
   client: aiohttp.ClientSession | None = None,
 ) -> CatalogFetchResult:
-  """Fetch IPTV live channels on a daily cadence (default 24h), tracking catalog
-  diffs.
-  """
+  """Fetch IPTV live channels on a daily cadence, tracking catalog diffs."""
   xt = config.xtream
   state_dir = config.resolve_path(config.state.state_dir)
   snap_path = _catalog_snapshot_path(state_dir, xt.server_url, xt.username)
@@ -209,7 +205,9 @@ async def fetch_daily_iptv_catalog(
         raw_meta.get("saved_timestamp", snap_path.stat().st_mtime)
       )
       snap_age_sec = max(0.0, time.time() - saved_ts)
-      previous_catalog = load_catalog_from_json(snap_path)
+      previous_catalog = load_catalog_from_data(
+        raw_meta, source_name=str(snap_path)
+      )
       cached_diff = CatalogDiff.from_dict(raw_meta.get("last_diff"))
     except (OSError, ValueError, KeyError, TypeError):
       previous_catalog = None
@@ -253,12 +251,13 @@ async def fetch_daily_iptv_catalog(
       snapshot_path=snap_path,
     )
 
-  # Fetch from Xtream client (which will also reuse fresh
-  # cache/xtream_catalog_*.json if within 24h!)
+  # Fetch from Xtream client (`persist_cache=False` avoids duplicating the
+  # full catalog JSON into `cache/` when state snapshot already persists it).
   try:
     fresh = await fetch_xtream_catalog(
       config,
       force_refresh=force_refresh,
+      persist_cache=False,
       client=client,
     )
   except XtreamError:

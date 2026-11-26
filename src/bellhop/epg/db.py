@@ -1,5 +1,4 @@
-"""Relational SQLite 3 (WAL mode) backing store for EPG schedules and SD-JSON
-MD5 caches.
+"""Relational SQLite 3 (WAL mode) store for EPG and SD-JSON MD5 caches.
 
 Manages the embedded SQLite database (`cache/epg.sqlite3`):
 - Safe concurrent access (`PRAGMA journal_mode=WAL`, `busy_timeout=5000`) across
@@ -236,9 +235,7 @@ class EpgDatabase:
   def cached_coverage_stats(
     self, *, now_ts: int | None = None
   ) -> EpgCoverageSummary:
-    """Return the latest in-memory `EpgCoverageSummary` without touching
-    SQLite.
-    """
+    """Return cached `EpgCoverageSummary` without querying SQLite."""
     with self._summary_lock:
       summary = self._cached_summary
     if summary is None:
@@ -364,6 +361,20 @@ class EpgDatabase:
       if write:
         self._enforce_private_permissions()
 
+  @contextlib.contextmanager
+  def _write_transaction(self) -> Iterator[sqlite3.Connection]:
+    """Execute SQLite mutations atomically inside `BEGIN IMMEDIATE`."""
+    self.ensure_initialized()
+    with self._connect(write=True) as conn:
+      conn.execute("BEGIN IMMEDIATE")
+      try:
+        yield conn
+        conn.execute("COMMIT")
+      except Exception:
+        with contextlib.suppress(sqlite3.Error):
+          conn.execute("ROLLBACK")
+        raise
+
   def delete_database(self) -> None:
     """Remove the SQLite database file and any `-wal` / `-shm` sidecars."""
     self._initialized = False
@@ -375,9 +386,7 @@ class EpgDatabase:
         cand.unlink(missing_ok=True)
 
   def ensure_initialized(self) -> None:
-    """Create or migrate SQLite tables under a thread-safe initialization
-    lock.
-    """
+    """Create or migrate SQLite tables under a thread-safe lock."""
     if self._initialized and self.db_path.is_file():
       return
     with self._init_lock:
@@ -458,9 +467,7 @@ class EpgDatabase:
       }
 
   def has_sd_cache(self) -> bool:
-    """Return `True` if `sd_programs` or `sd_schedule_days` holds cached SD
-    data.
-    """
+    """Return `True` if SD program or schedule cache tables hold data."""
     if not self.db_path.is_file():
       return False
     self.ensure_initialized()
@@ -471,31 +478,22 @@ class EpgDatabase:
       return bool(row and row[0])
 
   def prune_stale_airings(self, *, stale_cutoff_ts: int) -> tuple[int, int]:
-    """Delete `guide_airings` ending before `stale_cutoff_ts`; return `(evicted,
-    remaining)`.
-    """
+    """Delete airings ending before `stale_cutoff_ts`."""
     if not self.db_path.is_file():
       self._set_cached_summary(EpgCoverageSummary())
       return 0, 0
-    self.ensure_initialized()
-    with self._connect(write=True) as conn:
-      conn.execute("BEGIN IMMEDIATE")
-      try:
-        cur = conn.execute(
-          "DELETE FROM guide_airings WHERE stop_ts > 0 AND stop_ts < ?",
-          (stale_cutoff_ts,),
-        )
-        evicted = max(0, cur.rowcount)
-        summary = self._query_coverage_on_conn(
-          conn, now_ts=stale_cutoff_ts + EPG_RECENT_FLOOR_SEC
-        )
-        remaining = summary.total_programs
-        if remaining == 0:
-          conn.execute("DELETE FROM epg_meta WHERE key = 'fetched_at'")
-        conn.execute("COMMIT")
-      except Exception:
-        conn.execute("ROLLBACK")
-        raise
+    with self._write_transaction() as conn:
+      cur = conn.execute(
+        "DELETE FROM guide_airings WHERE stop_ts > 0 AND stop_ts < ?",
+        (stale_cutoff_ts,),
+      )
+      evicted = max(0, cur.rowcount)
+      summary = self._query_coverage_on_conn(
+        conn, now_ts=stale_cutoff_ts + EPG_RECENT_FLOOR_SEC
+      )
+      remaining = summary.total_programs
+      if remaining == 0:
+        conn.execute("DELETE FROM epg_meta WHERE key = 'fetched_at'")
       if evicted > 0:
         conn.execute(f"PRAGMA incremental_vacuum({_INCREMENTAL_VACUUM_PAGES})")
     self._set_cached_summary(summary)
@@ -512,10 +510,7 @@ class EpgDatabase:
     guide_fingerprint: str = "",
     xmltv_url_redacted: str = "",
   ) -> int:
-    """Atomically replace all `guide_airings` and metadata inside one
-    transaction.
-    """
-    self.ensure_initialized()
+    """Atomically replace all `guide_airings` and metadata inside one tx."""
     row_by_pk: dict[
       tuple[int, str, int],
       tuple[
@@ -570,7 +565,7 @@ class EpgDatabase:
             src,
           )
 
-    # Also store any unattached `programs_by_id` entries (`chno = 0`)
+    # Also store any unattached `programs_by_id` entries (`chno = 0`).
     for cid, plist in programs_by_id.items():
       if cid in emitted_epg_ids or not plist:
         continue
@@ -619,36 +614,30 @@ class EpgDatabase:
       or {cid.strip().lower() for cid in programs_by_id if cid.strip()}
     )
 
-    with self._connect(write=True) as conn:
-      conn.execute("BEGIN IMMEDIATE")
-      try:
-        conn.execute("DELETE FROM guide_airings")
-        if rows:
-          conn.executemany(
-            """
-            INSERT OR REPLACE INTO guide_airings
-              (chno, epg_channel_id, start_ts, stop_ts, program_uid,
-               title, sub_title, description, category, episode_num,
-               air_date, rating, is_new, is_live, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-          )
-        meta_pairs = [
-          ("fetched_at", str(fetched_at)),
-          ("covered_channel_ids", json.dumps(effective_covered)),
-          ("guide_fingerprint", guide_fingerprint),
-        ]
-        if xmltv_url_redacted:
-          meta_pairs.append(("xmltv_url", xmltv_url_redacted))
+    with self._write_transaction() as conn:
+      conn.execute("DELETE FROM guide_airings")
+      if rows:
         conn.executemany(
-          "INSERT OR REPLACE INTO epg_meta (key, value) VALUES (?, ?)",
-          meta_pairs,
+          """
+          INSERT OR REPLACE INTO guide_airings
+            (chno, epg_channel_id, start_ts, stop_ts, program_uid,
+             title, sub_title, description, category, episode_num,
+             air_date, rating, is_new, is_live, source)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          """,
+          rows,
         )
-        conn.execute("COMMIT")
-      except Exception:
-        conn.execute("ROLLBACK")
-        raise
+      meta_pairs = [
+        ("fetched_at", str(fetched_at)),
+        ("covered_channel_ids", json.dumps(effective_covered)),
+        ("guide_fingerprint", guide_fingerprint),
+      ]
+      if xmltv_url_redacted:
+        meta_pairs.append(("xmltv_url", xmltv_url_redacted))
+      conn.executemany(
+        "INSERT OR REPLACE INTO epg_meta (key, value) VALUES (?, ?)",
+        meta_pairs,
+      )
       conn.execute(f"PRAGMA incremental_vacuum({_INCREMENTAL_VACUUM_PAGES})")
 
     self._set_cached_summary(summary)
@@ -658,8 +647,9 @@ class EpgDatabase:
   # Fast Indexed Read Queries (Web Guide, Health, XMLTV, & Xtream API)
   # ---------------------------------------------------------------------------
   def coverage_stats(self, *, now_ts: int | None = None) -> EpgCoverageSummary:
-    """Compute `(total_programs, active_programs, max_stop_ts,
-    channels_with_epg)` in SQL.
+    """Compute EPG program count and horizon metrics in SQL.
+
+    Returns `(total_programs, active_programs, max_stop_ts, channels_with_epg)`.
     """
     if not self.db_path.is_file():
       empty = EpgCoverageSummary()
@@ -680,8 +670,9 @@ class EpgDatabase:
     min_stop_ts: int = 0,
     limit: int = 120,
   ) -> list[ProgramItem]:
-    """Query ordered schedule items for one channel (`chno` primary,
-    `epg_channel_id` fallback).
+    """Query ordered schedule items for one channel.
+
+    Uses `chno` as primary key with `epg_channel_id` fallback.
     """
     if not self.db_path.is_file():
       return []
@@ -738,9 +729,7 @@ class EpgDatabase:
     max_start_ts: int,
     per_channel_limit: int = 24,
   ) -> tuple[dict[int, list[ProgramItem]], dict[str, list[ProgramItem]]]:
-    """Query bounded timeline window across all channels in a single indexed
-    scan.
-    """
+    """Query bounded timeline window across all channels via indexed scan."""
     if not self.db_path.is_file():
       return {}, {}
     self.ensure_initialized()
@@ -799,8 +788,9 @@ class EpgDatabase:
     now_ts: int | None = None,
     limit: int = 4,
   ) -> list[dict[str, Any]]:
-    """Return Xtream `player_api.php` `epg_listings` (`get_short_epg` /
-    `get_simple_data_table`).
+    """Return Xtream `player_api.php` `epg_listings` entries.
+
+    Serves `get_short_epg` and `get_simple_data_table`.
     """
     now = int(time.time()) if now_ts is None else now_ts
     items = self.query_channel_schedule(
@@ -842,9 +832,7 @@ class EpgDatabase:
     chunk_target_bytes: int = 65536,
     page_rows: int = _XMLTV_PAGE_ROWS,
   ) -> Iterator[bytes]:
-    """Stream UTF-8 XMLTV chunks via short-lived keyset-paginated SQLite
-    reads.
-    """
+    """Stream UTF-8 XMLTV chunks via keyset-paginated SQLite reads."""
     self.ensure_initialized()
     buf: list[str] = [
       '<?xml version="1.0" encoding="UTF-8"?>\n',
@@ -984,9 +972,7 @@ class EpgDatabase:
   # Schedules Direct Relational Cache Operations
   # ---------------------------------------------------------------------------
   def load_sd_lineups(self) -> dict[str, SdLineupRecord]:
-    """Load cached Schedules Direct lineups, stations, and dial maps from
-    SQLite.
-    """
+    """Load cached Schedules Direct lineups and dial maps from SQLite."""
     if not self.db_path.is_file():
       return {}
     self.ensure_initialized()
@@ -1024,64 +1010,53 @@ class EpgDatabase:
     return out
 
   def save_sd_lineup(self, entry: SdLineupRecord) -> None:
-    """Persist one Schedules Direct lineup's metadata, stations, and channel
-    map.
-    """
-    self.ensure_initialized()
-    with self._connect(write=True) as conn:
-      conn.execute("BEGIN IMMEDIATE")
-      try:
-        conn.execute(
-          """
-          INSERT OR REPLACE INTO sd_lineups
-            (lineup_id, name, location, modified, fetched_at)
-          VALUES (?, ?, ?, ?, ?)
-          """,
-          (
-            entry.lineup_id,
-            entry.name,
-            entry.location,
-            entry.modified,
-            entry.fetched_at,
-          ),
-        )
-        conn.execute(
-          "DELETE FROM sd_stations WHERE lineup_id = ?", (entry.lineup_id,)
-        )
-        conn.execute(
-          "DELETE FROM sd_channel_map WHERE lineup_id = ?", (entry.lineup_id,)
-        )
-        conn.executemany(
-          """
-          INSERT INTO sd_stations (lineup_id, station_id, name, callsign, language)
-          VALUES (?, ?, ?, ?, ?)
-          """,
-          [
-            (entry.lineup_id, st.station_id, st.name, st.callsign, st.language)
-            for st in entry.stations.values()
-          ],
-        )
-        conn.executemany(
-          """
-          INSERT INTO sd_channel_map (lineup_id, chno, station_id)
-          VALUES (?, ?, ?)
-          """,
-          [
-            (entry.lineup_id, chno, sid)
-            for chno, sid in entry.chno_to_station.items()
-          ],
-        )
-        conn.execute("COMMIT")
-      except Exception:
-        conn.execute("ROLLBACK")
-        raise
+    """Persist one Schedules Direct lineup, station list, and dial map."""
+    with self._write_transaction() as conn:
+      conn.execute(
+        """
+        INSERT OR REPLACE INTO sd_lineups
+          (lineup_id, name, location, modified, fetched_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+          entry.lineup_id,
+          entry.name,
+          entry.location,
+          entry.modified,
+          entry.fetched_at,
+        ),
+      )
+      conn.execute(
+        "DELETE FROM sd_stations WHERE lineup_id = ?", (entry.lineup_id,)
+      )
+      conn.execute(
+        "DELETE FROM sd_channel_map WHERE lineup_id = ?", (entry.lineup_id,)
+      )
+      conn.executemany(
+        """
+        INSERT INTO sd_stations (lineup_id, station_id, name, callsign, language)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+          (entry.lineup_id, st.station_id, st.name, st.callsign, st.language)
+          for st in entry.stations.values()
+        ],
+      )
+      conn.executemany(
+        """
+        INSERT INTO sd_channel_map (lineup_id, chno, station_id)
+        VALUES (?, ?, ?)
+        """,
+        [
+          (entry.lineup_id, chno, sid)
+          for chno, sid in entry.chno_to_station.items()
+        ],
+      )
 
   def touch_sd_lineup_fetched_at(
     self, lineup_id: str, fetched_at: float
   ) -> None:
-    """Update `fetched_at` after verifying `modified` is unchanged on SD
-    `/status`.
-    """
+    """Bump `fetched_at` after verifying SD `/status` `modified` unchanged."""
     self.ensure_initialized()
     with self._connect(write=True) as conn:
       conn.execute(
@@ -1092,9 +1067,7 @@ class EpgDatabase:
   def get_sd_schedule_md5s(
     self, station_ids: Sequence[str], dates: Sequence[str]
   ) -> dict[tuple[str, str], str]:
-    """Return `(station_id, schedule_date) -> md5` for cached SD schedule
-    days.
-    """
+    """Return `(station_id, schedule_date) -> md5` for SD schedule days."""
     if not station_ids or not dates or not self.db_path.is_file():
       return {}
     self.ensure_initialized()
@@ -1119,38 +1092,29 @@ class EpgDatabase:
     *,
     min_keep_date: str,
   ) -> None:
-    """Upsert `(station_id, schedule_date, md5, airings)` rows and prune old
-    dates.
-    """
-    self.ensure_initialized()
-    with self._connect(write=True) as conn:
-      conn.execute("BEGIN IMMEDIATE")
-      try:
-        if rows:
-          conn.executemany(
-            """
-            INSERT OR REPLACE INTO sd_schedule_days
-              (station_id, schedule_date, md5, airings_json)
-            VALUES (?, ?, ?, ?)
-            """,
-            [
-              (
-                sid,
-                dt,
-                md5,
-                json.dumps(airings, ensure_ascii=False, separators=(",", ":")),
-              )
-              for sid, dt, md5, airings in rows
-            ],
-          )
-        conn.execute(
-          "DELETE FROM sd_schedule_days WHERE schedule_date < ?",
-          (min_keep_date,),
+    """Upsert `(station_id, schedule_date, md5, airings)` & prune old days."""
+    with self._write_transaction() as conn:
+      if rows:
+        conn.executemany(
+          """
+          INSERT OR REPLACE INTO sd_schedule_days
+            (station_id, schedule_date, md5, airings_json)
+          VALUES (?, ?, ?, ?)
+          """,
+          [
+            (
+              sid,
+              dt,
+              md5,
+              json.dumps(airings, ensure_ascii=False, separators=(",", ":")),
+            )
+            for sid, dt, md5, airings in rows
+          ],
         )
-        conn.execute("COMMIT")
-      except Exception:
-        conn.execute("ROLLBACK")
-        raise
+      conn.execute(
+        "DELETE FROM sd_schedule_days WHERE schedule_date < ?",
+        (min_keep_date,),
+      )
 
   def load_sd_airings(
     self, station_ids: Sequence[str], dates: Sequence[str]
@@ -1203,38 +1167,31 @@ class EpgDatabase:
     """Upsert Gracenote program metadata rows into `sd_programs`."""
     if not programs:
       return
-    self.ensure_initialized()
-    with self._connect(write=True) as conn:
-      conn.execute("BEGIN IMMEDIATE")
-      try:
-        conn.executemany(
-          """
-          INSERT OR REPLACE INTO sd_programs
-            (program_id, md5, title, sub_title, description, category,
-             episode_num, air_date, rating, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          """,
-          [
-            (
-              pid,
-              str(p.get("md5") or ""),
-              str(p.get("title") or ""),
-              str(p.get("sub_title") or ""),
-              str(p.get("description") or ""),
-              str(p.get("category") or ""),
-              str(p.get("episode_num") or ""),
-              str(p.get("air_date") or ""),
-              str(p.get("rating") or ""),
-              updated_at,
-            )
-            for pid, p in programs.items()
-            if p.get("title")
-          ],
-        )
-        conn.execute("COMMIT")
-      except Exception:
-        conn.execute("ROLLBACK")
-        raise
+    with self._write_transaction() as conn:
+      conn.executemany(
+        """
+        INSERT OR REPLACE INTO sd_programs
+          (program_id, md5, title, sub_title, description, category,
+           episode_num, air_date, rating, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+          (
+            pid,
+            str(p.get("md5") or ""),
+            str(p.get("title") or ""),
+            str(p.get("sub_title") or ""),
+            str(p.get("description") or ""),
+            str(p.get("category") or ""),
+            str(p.get("episode_num") or ""),
+            str(p.get("air_date") or ""),
+            str(p.get("rating") or ""),
+            updated_at,
+          )
+          for pid, p in programs.items()
+          if p.get("title")
+        ],
+      )
 
   def touch_and_prune_sd_programs(
     self,
@@ -1243,32 +1200,23 @@ class EpgDatabase:
     now_ts: float,
     retention_sec: float = SD_PROGRAM_RETENTION_SEC,
   ) -> int:
-    """Refresh `updated_at` for active `program_id`s and prune unreferenced rows
-    older than `retention_sec`.
-    """
+    """Refresh `updated_at` and prune stale unreferenced `sd_programs` rows."""
     if not self.db_path.is_file():
       return 0
-    self.ensure_initialized()
     cutoff = now_ts - max(0.0, retention_sec)
-    with self._connect(write=True) as conn:
-      conn.execute("BEGIN IMMEDIATE")
-      try:
-        for idx in range(0, len(active_program_ids), _SQL_CHUNK):
-          chunk = active_program_ids[idx : idx + _SQL_CHUNK]
-          placeholders = ",".join("?" for _ in chunk)
-          conn.execute(
-            f"UPDATE sd_programs SET updated_at = ? WHERE program_id IN ({placeholders})",
-            [now_ts, *chunk],
-          )
-        cur = conn.execute(
-          "DELETE FROM sd_programs WHERE updated_at < ?",
-          (cutoff,),
+    with self._write_transaction() as conn:
+      for idx in range(0, len(active_program_ids), _SQL_CHUNK):
+        chunk = active_program_ids[idx : idx + _SQL_CHUNK]
+        placeholders = ",".join("?" for _ in chunk)
+        conn.execute(
+          f"UPDATE sd_programs SET updated_at = ? WHERE program_id IN ({placeholders})",
+          [now_ts, *chunk],
         )
-        pruned = max(0, cur.rowcount)
-        conn.execute("COMMIT")
-      except Exception:
-        conn.execute("ROLLBACK")
-        raise
+      cur = conn.execute(
+        "DELETE FROM sd_programs WHERE updated_at < ?",
+        (cutoff,),
+      )
+      pruned = max(0, cur.rowcount)
       if pruned > 0:
         conn.execute(f"PRAGMA incremental_vacuum({_INCREMENTAL_VACUUM_PAGES})")
     return pruned

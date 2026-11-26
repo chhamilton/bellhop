@@ -1,6 +1,4 @@
-"""Schedules Direct SD-JSON (`20141201`) lineup provider backed by Gracenote
-TMS.
-"""
+"""Schedules Direct SD-JSON (`20141201`) lineup provider via TMS."""
 
 from __future__ import annotations
 
@@ -93,8 +91,9 @@ class SdStationInfo:
 
 
 class SchedulesDirectLineupProvider(LineupProvider):
-  """Official Schedules Direct SD-JSON API lineup backend
-  (`json.schedulesdirect.org/20141201`).
+  """Official Schedules Direct SD-JSON API lineup backend.
+
+  Queries Gracenote TMS headends via `json.schedulesdirect.org/20141201`.
   """
 
   backend_name = "schedules_direct"
@@ -184,7 +183,8 @@ class SchedulesDirectLineupProvider(LineupProvider):
     clean_pc = re.sub(r"\s+", "", postal_code.strip().upper())
     if not clean_pc:
       raise LineupBackendError(
-        "Schedules Direct headend discovery requires `--postal-code` (e.g. 'M5V2T6' or '10001')."
+        "Schedules Direct headend discovery requires pipeline.lineup.postal_code "
+        "in config.yaml (e.g. 'M5V2T6' or '10001')."
       )
 
     raw_headends = await self._request(

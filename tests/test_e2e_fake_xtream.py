@@ -1,6 +1,4 @@
-"""End-to-end integration tests driving `PipelineRunner` + `WebGuideApp` against
-`FakeXtreamServer`.
-"""
+"""End-to-end tests driving `PipelineRunner` and `WebGuideApp` mocked."""
 
 from __future__ import annotations
 

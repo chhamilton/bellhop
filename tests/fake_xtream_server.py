@@ -32,9 +32,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 def make_valid_mpegts_chunk(
   packet_count: int = 32, *, marker_byte: int = 0xAA
 ) -> bytes:
-  """Build valid 188-byte MPEG-TS packets with 0x47 sync byte and PAT/PMT-like
-  header.
-  """
+  """Build valid 188-byte MPEG-TS packets with `0x47` sync bytes."""
   pkt = bytes([0x47, 0x40, 0x00, 0x10]) + bytes([marker_byte]) * 184
   return pkt * packet_count
 

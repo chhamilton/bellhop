@@ -1,5 +1,4 @@
-"""End-to-end tests for Bellhop's Alpine Docker packaging, entrypoint, and
-runtime.
+"""End-to-end tests for Bellhop Alpine Docker packaging and runtime.
 
 Covers:
   1. Static contract validation of `Dockerfile`, `docker/entrypoint.sh`,
@@ -216,9 +215,7 @@ def test_dockerfile_compose_and_env_contract(
 
 
 def test_requirements_lock_and_vendored_player_provenance() -> None:
-  """Verify pinned `requirements.lock` and `static/vendor/VERSIONS.md`
-  digests.
-  """
+  """Verify pinned `requirements.lock` and vendor SHA-256 digests."""
   import hashlib
   import importlib.metadata as md
   import re
@@ -288,9 +285,7 @@ def test_requirements_lock_and_vendored_player_provenance() -> None:
 async def test_container_entrypoint_end_to_end_pipeline_and_serve(
   tmp_path: Path,
 ) -> None:
-  """Execute `docker/entrypoint.sh` end-to-end with isolated mount
-  directories.
-  """
+  """Execute `docker/entrypoint.sh` E2E with isolated mount volumes."""
   now_ts = int(time.time())
   fake_xtream = FakeXtreamServer(
     username="up_user",
@@ -520,9 +515,7 @@ channels:
 @pytest.mark.slow
 @pytest.mark.asyncio
 async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
-  """Build the real Alpine Docker image and test it E2E against
-  FakeXtreamServer.
-  """
+  """Build real Alpine Docker image and test against FakeXtreamServer."""
   container_cli = _detect_container_cli()
   if container_cli is None:
     if os.environ.get("BELLHOP_REQUIRE_DOCKER") == "1":

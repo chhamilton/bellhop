@@ -9,6 +9,7 @@ from bellhop.xtream.client import (
   XtreamStream,
   fetch_xtream_account_info,
   fetch_xtream_catalog,
+  load_catalog_from_data,
   load_catalog_from_json,
 )
 from bellhop.xtream.server import (
@@ -35,5 +36,6 @@ __all__ = [
   "XtreamStream",
   "fetch_xtream_account_info",
   "fetch_xtream_catalog",
+  "load_catalog_from_data",
   "load_catalog_from_json",
 ]

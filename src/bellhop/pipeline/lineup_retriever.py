@@ -1,5 +1,4 @@
-"""Phase (1): Multi-backend Cable Lineup Retriever (TV Guide JSON, Schedules
-Direct SD-JSON, and YAML).
+"""Phase (1): Multi-backend Cable Lineup Retriever (TVGuide, SD, YAML).
 
 Lineup Snapshot Schema (`state/lineups/<lineup_id>.json`)
 ---------------------------------------------------------
@@ -76,16 +75,12 @@ GRACENOTE_LINEUP_ID_RE = re.compile(
 
 
 class LineupRetrieverError(LineupBackendError):
-  """Raised when a lineup identifier is invalid or retrieval fails across
-  configured backends.
-  """
+  """Raised when a lineup ID is invalid or retrieval fails on all backends."""
 
 
 @dataclass(frozen=True, slots=True)
 class GracenoteLineupId:
-  """Parsed lineup identifier (Gracenote `<ISO3>-<HEADEND>-<DEVICE>` or TVGuide
-  `TVG-<id>`).
-  """
+  """Parsed lineup ID (Gracenote `<ISO3>-<HEADEND>-<DEV>` or `TVG-<id>`)."""
 
   raw_id: str
   country: str
@@ -128,9 +123,7 @@ class GracenoteLineupId:
 
 @dataclass(slots=True)
 class LineupDiff:
-  """Changes detected between the previous monthly cable lineup and the newly
-  retrieved one.
-  """
+  """Changes detected between previous and newly retrieved lineups."""
 
   added_chnos: list[int] = field(default_factory=list)
   removed_chnos: list[int] = field(default_factory=list)
@@ -197,9 +190,7 @@ def select_lineup_provider(
   backend_hint: str = "auto",
   providers: list[LineupProvider],
 ) -> LineupProvider:
-  """Select the matching `LineupProvider` implementation for `lineup_id` and
-  `backend_hint`.
-  """
+  """Select matching `LineupProvider` for `lineup_id` and `backend_hint`."""
   norm_hint = (backend_hint or "auto").strip().lower().replace("-", "_")
   if norm_hint == "sd":
     norm_hint = "schedules_direct"
@@ -238,9 +229,7 @@ async def discover_provider_lineups(
   query: str = "",
   providers: list[LineupProvider] | None = None,
 ) -> list[ProviderHeadend]:
-  """Query one or all lineup backends for available regional provider
-  headends.
-  """
+  """Query lineup backends for available regional provider headends."""
   active_providers = (
     providers if providers is not None else build_default_providers(config)
   )
@@ -336,8 +325,9 @@ async def retrieve_cable_lineup(
   providers: list[LineupProvider] | None = None,
   iptv_org_client: IptvOrgClient | None = None,
 ) -> LineupRetrievalResult:
-  """Retrieve target cable lineup on a monthly cadence (default 30 days),
-  persisting state & diff.
+  """Retrieve target cable lineup on a monthly cadence (default 30 days).
+
+  Persists updated snapshots and channel diffs across runs.
   """
   raw_id_input = config.lineup.lineup_id
   parsed_id = GracenoteLineupId.parse(raw_id_input)

@@ -1,6 +1,4 @@
-"""Multi-signal channel matcher mapping Xtream streams to cable/OTA lineup
-slots.
-"""
+"""Multi-signal matcher mapping Xtream streams to cable lineup slots."""
 
 from __future__ import annotations
 
@@ -8,7 +6,7 @@ import difflib
 import math
 import re
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
@@ -58,29 +56,90 @@ from bellhop.pipeline.models import (
   XtreamStream,
 )
 
+_ATT_RE = re.compile(r"\bat&t\b", re.IGNORECASE)
+_PLUS_NOT_TIMESHIFT_RE = re.compile(r"\+(?![123]\b)")
+_AND_WORD_RE = re.compile(r"\band\b")
+_PLUS_WORD_RE = re.compile(r"\bplus\b")
+_YEAR_2000S_RE = re.compile(r"\b2000s\b")
+_DECADE_19XX_RE = re.compile(r"\b19([6789]0s)\b")
+_RAW_TOKEN_RE = re.compile(r"[a-z0-9]+|[+&]")
+
+_QUAL_4K_RE = re.compile(r"\b(?:4K|UHD|2160P)\b")
+_QUAL_FHD_RE = re.compile(r"\b(?:FHD|1080P|1080I)\b")
+_QUAL_HD_RE = re.compile(r"\b(?:HD|720P)\b")
+_QUAL_SD_RE = re.compile(r"\b(?:SD|480P|540P|LQ)\b")
+_QUAL_RAW_RE = re.compile(r"\b(?:60FPS|59FPS|RAW)\b")
+_QUAL_CAT_HD_RE = re.compile(r"\b(?:4K|UHD|FHD|HD|RAW|60FPS)\b")
+_QUAL_CAT_FPS_RE = re.compile(r"\b(?:60FPS|59FPS)\b")
+_CODEC_HEVC_RE = re.compile(r"\b(?:HEVC|H\.?265)\b")
+_BACKUP_FEED_RE = re.compile(r"(?:\b(?:BACKUP|BKP|BK|LOW)\b|\(BK\))")
+_NON_ALNUM_COMPACT_RE = re.compile(r"[^a-z0-9]+")
+
+_ALL_METRO_KEYS: tuple[str, ...] = tuple(CA_METRO_MARKERS) + tuple(
+  US_METRO_MARKERS
+)
+_ALL_SUBREGION_KEYS: tuple[str, ...] = tuple(CA_PROVINCE_MARKERS) + tuple(
+  US_STATE_MARKERS
+)
+_PREFIX_LANG_META_TOKENS: frozenset[str] = frozenset(
+  LEADING_COUNTRY_CODES
+  | MONTREAL_MARKERS
+  | QUEBEC_MARKERS
+  | CANADA_MARKERS
+  | US_MARKERS
+  | UK_MARKERS
+  | FOREIGN_PREFIX_MARKERS
+  | {
+    "vip",
+    "en",
+    "english",
+    "french",
+    "francais",
+    "france",
+    "euro",
+    "latam",
+  }
+)
+_NATIVE_EPG_STOPWORDS: frozenset[str] = frozenset(
+  {
+    "the",
+    "and",
+    "plus",
+    "tele",
+    "ici",
+    "radio",
+    "channel",
+    "network",
+    "canada",
+    "montreal",
+    "quebec",
+    "east",
+    "francais",
+    "french",
+    "english",
+  }
+)
+
 
 def strip_accents(text: str) -> str:
-  """Convert accented Latin characters and ligatures (Montréal, Cœur, Écran) to
-  ASCII.
-  """
+  """Convert accented Latin characters and ligatures to ASCII."""
   return fold_latin_accents(text)
 
 
 def _normalize_symbols(text: str) -> str:
   s = strip_accents(text)
-  s = re.sub(r"\bat&t\b", "att", s, flags=re.IGNORECASE)
+  s = _ATT_RE.sub("att", s)
   s = E_EXCLAMATION_RE.sub(" eexclamation ", s)
-  # Spaced infix " + " between words acts as conjunction "&" ("Crime +
-  # Investigation")
+  # Spaced infix " + " acts as conjunction "&" ("Crime + Investigation").
   s = INFIX_PLUS_RE.sub(" & ", s)
-  # Attached/trailing "+" stays "+" unless it is a timeshift like +1 / +2
-  s = re.sub(r"\+(?![123]\b)", " + ", s)
+  # Attached/trailing "+" stays "+" unless it is a timeshift like +1 / +2.
+  s = _PLUS_NOT_TIMESHIFT_RE.sub(" + ", s)
   s = s.replace("&", " & ")
   s = s.lower()
-  s = re.sub(r"\band\b", "&", s)
-  s = re.sub(r"\bplus\b", "+", s)
-  s = re.sub(r"\b2000s\b", "00s", s)
-  s = re.sub(r"\b19([6789]0s)\b", r"\1", s)
+  s = _AND_WORD_RE.sub("&", s)
+  s = _PLUS_WORD_RE.sub("+", s)
+  s = _YEAR_2000S_RE.sub("00s", s)
+  s = _DECADE_19XX_RE.sub(r"\1", s)
   s = CARDINAL_AFTER_BRAND_RE.sub(
     lambda m: f" {CARDINAL_WORD_MAP[m.group(1).lower()]}", s
   )
@@ -89,7 +148,7 @@ def _normalize_symbols(text: str) -> str:
 
 def _tokenize_raw(text: str, *, split_alnum: bool = True) -> list[str]:
   s = _normalize_symbols(text)
-  raw_tokens = re.findall(r"[a-z0-9]+|[+&]", s)
+  raw_tokens = _RAW_TOKEN_RE.findall(s)
   if not split_alnum:
     return raw_tokens
   out: list[str] = []
@@ -126,57 +185,62 @@ def _strip_quality_tokens(tokens: Iterable[str]) -> list[str]:
 def _score_quality_tags(
   raw_name: str, category_name: str = ""
 ) -> tuple[float, str, list[str]]:
-  # Normalize Unicode superscripts (e.g. ᴴᴰ -> HD, ᴿᴬᵂ -> RAW, ⁶⁰ᶠᵖˢ -> 60FPS,
-  # ⁽ᴮᴷ⁾ -> (BK))
+  # Normalize Unicode superscripts (e.g. HD, RAW, 60FPS, (BK)).
   upper = strip_accents(raw_name).upper()
   cat_upper = strip_accents(category_name).upper()
   score = 0.0
   tier = "unknown"
   notes: list[str] = []
 
-  if re.search(r"\b(?:4K|UHD|2160P)\b", upper):
+  if _QUAL_4K_RE.search(upper):
     score += 15.0
     tier = "4k"
     notes.append("quality:4K")
-  elif re.search(r"\b(?:FHD|1080P|1080I)\b", upper):
+  elif _QUAL_FHD_RE.search(upper):
     score += 14.0
     tier = "fhd"
     notes.append("quality:1080p/FHD")
-  elif re.search(r"\b(?:HD|720P)\b", upper):
+  elif _QUAL_HD_RE.search(upper):
     score += 10.0
     tier = "hd"
     notes.append("quality:HD")
-  elif re.search(r"\b(?:SD|480P|540P|LQ)\b", upper):
+  elif _QUAL_SD_RE.search(upper):
     score -= 8.0
     tier = "sd"
     notes.append("quality:SD")
-  elif re.search(r"\b(?:60FPS|59FPS|RAW)\b", upper):
+  elif _QUAL_RAW_RE.search(upper):
     score += 11.0
     tier = "fhd"
     notes.append("quality:RAW")
-  elif re.search(r"\b(?:4K|UHD|FHD|HD|RAW|60FPS)\b", cat_upper):
-    # Category-level HD/RAW indicator when stream name omits explicit SD/HD tag
+  elif _QUAL_CAT_HD_RE.search(cat_upper):
+    # Category-level HD/RAW indicator when stream name omits explicit tag.
     score += 5.5
     tier = "hd"
     notes.append("quality:cat_HD")
 
-  if (
-    re.search(r"\b(?:60FPS|59FPS|RAW)\b", upper) and "quality:RAW" not in notes
-  ):
+  if _QUAL_RAW_RE.search(upper) and "quality:RAW" not in notes:
     score += 4.0
     notes.append("60fps/raw")
-  elif re.search(r"\b(?:60FPS|59FPS)\b", cat_upper):
+  elif _QUAL_CAT_FPS_RE.search(cat_upper):
     score += 2.0
     notes.append("cat:60fps")
 
-  if re.search(r"\b(?:HEVC|H\.?265)\b", upper):
+  if _CODEC_HEVC_RE.search(upper):
     score += 2.0
     notes.append("codec:HEVC")
-  if re.search(r"(?:\b(?:BACKUP|BKP|BK|LOW)\b|\(BK\))", upper):
+  if _BACKUP_FEED_RE.search(upper):
     score -= 10.0
     notes.append("backup_feed")
 
   return score, tier, notes
+
+
+def _compact_epg_stem(epg_id_lower: str) -> str:
+  if not epg_id_lower:
+    return ""
+  return _NON_ALNUM_COMPACT_RE.sub(
+    "", strip_accents(epg_id_lower.rsplit(".", 1)[0])
+  )
 
 
 def _is_plausible_native_epg(
@@ -185,68 +249,50 @@ def _is_plausible_native_epg(
   tvg_id_lower: str | None,
   callsign_tok: str | None,
   alias_specs: list[tuple[int, str, tuple[str, ...]]],
+  epg_compact: str | None = None,
+  tvg_compact: str | None = None,
 ) -> bool:
-  """Verify a provider's epg_channel_id plausibly belongs to this channel
-  (filters panel typos).
-  """
+  """Verify a provider's epg_channel_id plausibly belongs to this channel."""
   if not epg_id_lower:
     return False
   if tvg_id_lower and epg_id_lower == tvg_id_lower:
     return True
-  epg_compact = re.sub(
-    r"[^a-z0-9]+", "", strip_accents(epg_id_lower.rsplit(".", 1)[0])
+  compact_epg = (
+    epg_compact if epg_compact is not None else _compact_epg_stem(epg_id_lower)
   )
-  if not epg_compact:
+  if not compact_epg:
     return False
-  if callsign_tok and len(callsign_tok) >= 3 and callsign_tok in epg_compact:
+  if callsign_tok and len(callsign_tok) >= 3 and callsign_tok in compact_epg:
     return True
   if tvg_id_lower:
-    tvg_compact = re.sub(
-      r"[^a-z0-9]+", "", strip_accents(tvg_id_lower.rsplit(".", 1)[0])
+    compact_tvg = (
+      tvg_compact
+      if tvg_compact is not None
+      else _compact_epg_stem(tvg_id_lower)
     )
-    if len(tvg_compact) >= 3 and (
-      tvg_compact in epg_compact or epg_compact in tvg_compact
+    if len(compact_tvg) >= 3 and (
+      compact_tvg in compact_epg or compact_epg in compact_tvg
     ):
       return True
 
-  stopwords = {
-    "the",
-    "and",
-    "plus",
-    "tele",
-    "ici",
-    "radio",
-    "channel",
-    "network",
-    "canada",
-    "montreal",
-    "quebec",
-    "east",
-    "francais",
-    "french",
-    "english",
-  }
   distinctive_found_in_aliases = False
   for _, _, a_toks in alias_specs:
     joined_alias = "".join(a_toks)
     if len(joined_alias) >= 2 and (
-      joined_alias in epg_compact or epg_compact in joined_alias
+      joined_alias in compact_epg or compact_epg in joined_alias
     ):
       return True
     for tok in a_toks:
-      if tok in stopwords:
+      if tok in _NATIVE_EPG_STOPWORDS:
         continue
       distinctive_found_in_aliases = True
-      if len(tok) >= 3 and tok in epg_compact:
+      if len(tok) >= 3 and tok in compact_epg:
         return True
 
-  # If all tokens of every alias are common network words (e.g. "ICI Montreal" /
-  # "Radio-Canada"),
-  # require all tokens of at least one multi-word alias to appear in
-  # epg_compact.
+  # If every token is a common network word, require full multi-word alias hit.
   if not distinctive_found_in_aliases:
     for _, _, a_toks in alias_specs:
-      if len(a_toks) >= 2 and all(tok in epg_compact for tok in a_toks):
+      if len(a_toks) >= 2 and all(tok in compact_epg for tok in a_toks):
         return True
   return False
 
@@ -266,152 +312,45 @@ class _PreparedStream:
   is_nonlinear: bool
   is_timeshift: bool
   epg_id_lower: str
+  epg_compact: str
 
 
-def _prepare_stream(stream: XtreamStream) -> _PreparedStream | None:
-  raw_name = stream.name.strip()
-  if not raw_name or SEPARATOR_RE.match(raw_name):
-    return None
-
-  is_nonlinear = bool(
-    NON_LINEAR_RE.search(raw_name) or NON_LINEAR_RE.search(stream.category_name)
-  )
-  is_timeshift = bool(TIMESHIFT_RE.search(raw_name))
-
-  prefix_chunks: list[str] = []
-  working = raw_name
-
-  # Extract leading [QC] / (CA-FR) bracket prefixes
-  m_bracket = LEADING_BRACKET_RE.match(working)
-  if m_bracket:
-    prefix_chunks.append(m_bracket.group(0))
-    working = working[m_bracket.end() :].strip()
-
-  # Split on explicit prefix delimiters like "CA | RDS HD" or "VIP | QC | TVA"
-  parts = [p.strip() for p in DELIMITER_SPLIT_RE.split(working) if p.strip()]
-  if len(parts) >= 2:
-    # Treat short leading segments (e.g. "CA", "QC", "VIP", "CA-FR", "CANADA")
-    # as prefix metadata
-    idx = 0
-    while idx < len(parts) - 1:
-      seg_tokens = _tokenize_raw(parts[idx], split_alnum=False)
-      if len(seg_tokens) <= 3 and any(
-        t
-        in (
-          LEADING_COUNTRY_CODES
-          | MONTREAL_MARKERS
-          | QUEBEC_MARKERS
-          | CANADA_MARKERS
-          | US_MARKERS
-          | UK_MARKERS
-          | FOREIGN_PREFIX_MARKERS
-          | {
-            "vip",
-            "en",
-            "english",
-            "french",
-            "francais",
-            "france",
-            "euro",
-            "latam",
-          }
-        )
-        for t in seg_tokens
-      ):
-        prefix_chunks.append(parts[idx])
-        idx += 1
-      else:
-        break
-    core_source = " ".join(parts[idx:])
-  else:
-    core_source = working
-
-  # Remove parenthetical codec/resolution suffixes while preserving
-  # city/callsign hints in full_tokens
-  core_cleaned = CODEC_CLEAN_RE.sub(" ", core_source)
-  raw_core_tokens = _strip_quality_tokens(
-    _tokenize_raw(core_cleaned, split_alnum=True)
-  )
-  if not raw_core_tokens:
-    raw_core_tokens = _tokenize_raw(core_source, split_alnum=True)
-  if not raw_core_tokens:
-    return None
-
-  core_tokens = tuple(raw_core_tokens)
-  if len(core_tokens) >= 2 and core_tokens[0] in LEADING_COUNTRY_CODES:
-    trimmed_core_tokens = core_tokens[1:]
-  elif len(core_tokens) >= 3 and f"{core_tokens[0]}{core_tokens[1]}" in {
-    "cafr",
-    "frca",
-    "enca",
-    "caen",
-  }:
-    trimmed_core_tokens = core_tokens[2:]
-  else:
-    trimmed_core_tokens = core_tokens
-
-  # Build full token set (without codec noise like h264/mpeg2 so "2" won't
-  # false-trigger exclusions)
-  combined_meta = f"{' '.join(prefix_chunks)} {stream.category_name} {CODEC_CLEAN_RE.sub(' ', raw_name)}"
-  full_token_list = _strip_quality_tokens(
-    _tokenize_raw(combined_meta, split_alnum=True)
-  )
-  full_tokens = frozenset(full_token_list)
-  full_str = f" {' '.join(full_token_list)} "
-
-  # Region signal detection
-  prefix_meta_str = f"{' '.join(prefix_chunks)} {stream.category_name}"
-  prefix_toks = frozenset(_tokenize_raw(prefix_meta_str, split_alnum=False))
-  epg_lower = stream.epg_channel_id.strip().lower()
-
+def _infer_stream_regions(
+  full_tokens: frozenset[str],
+  full_str: str,
+  prefix_toks: frozenset[str],
+  epg_lower: str,
+) -> tuple[frozenset[str], frozenset[str]]:
+  """Infer channel and prefix region codes from normalized metadata."""
   regions: set[str] = set()
   prefix_regions: set[str] = set()
 
   if full_tokens & MONTREAL_MARKERS:
-    regions.add("montreal")
-    regions.add("qc")
-    regions.add("ca")
+    regions.update(("montreal", "qc", "ca"))
   for metro, markers in CA_METRO_MARKERS.items():
     if metro != "montreal" and (full_tokens & markers):
-      regions.add(metro)
-      regions.add("ca")
+      regions.update((metro, "ca"))
   for prov, markers in CA_PROVINCE_MARKERS.items():
     if prov != "qc" and (full_tokens & markers):
-      regions.add(prov)
-      regions.add("ca")
+      regions.update((prov, "ca"))
   for metro, markers in US_METRO_MARKERS.items():
     if (
       (full_tokens & markers)
       or (metro == "newyork" and "new york" in full_str)
       or (metro == "losangeles" and "los angeles" in full_str)
     ):
-      regions.add(metro)
-      regions.add("us")
+      regions.update((metro, "us"))
   for st_code, markers in US_STATE_MARKERS.items():
     if full_tokens & markers:
-      regions.add(st_code)
-      regions.add("us")
+      regions.update((st_code, "us"))
+
+  has_fr_prefix = bool(prefix_toks & {"fr", "french", "francais"})
   if (
     (full_tokens & QUEBEC_MARKERS)
-    or (
-      "ca" in prefix_toks
-      and (
-        "fr" in prefix_toks
-        or "french" in prefix_toks
-        or "francais" in prefix_toks
-      )
-    )
-    or (
-      "canada" in prefix_toks
-      and (
-        "fr" in prefix_toks
-        or "french" in prefix_toks
-        or "francais" in prefix_toks
-      )
-    )
+    or ("ca" in prefix_toks and has_fr_prefix)
+    or ("canada" in prefix_toks and has_fr_prefix)
   ):
-    regions.add("qc")
-    regions.add("ca")
+    regions.update(("qc", "ca"))
     prefix_regions.add("qc")
   if (full_tokens & CANADA_MARKERS) or epg_lower.endswith(".ca"):
     regions.add("ca")
@@ -436,7 +375,81 @@ def _prepare_stream(stream: XtreamStream) -> _PreparedStream | None:
   if prefix_toks & FOREIGN_PREFIX_MARKERS:
     regions.add("foreign")
     prefix_regions.add("foreign")
+  return frozenset(regions), frozenset(prefix_regions)
 
+
+def _prepare_stream(stream: XtreamStream) -> _PreparedStream | None:
+  raw_name = stream.name.strip()
+  if not raw_name or SEPARATOR_RE.match(raw_name):
+    return None
+
+  is_nonlinear = bool(
+    NON_LINEAR_RE.search(raw_name) or NON_LINEAR_RE.search(stream.category_name)
+  )
+  is_timeshift = bool(TIMESHIFT_RE.search(raw_name))
+
+  prefix_chunks: list[str] = []
+  working = raw_name
+
+  m_bracket = LEADING_BRACKET_RE.match(working)
+  if m_bracket:
+    prefix_chunks.append(m_bracket.group(0))
+    working = working[m_bracket.end() :].strip()
+
+  parts = [p.strip() for p in DELIMITER_SPLIT_RE.split(working) if p.strip()]
+  if len(parts) >= 2:
+    idx = 0
+    while idx < len(parts) - 1:
+      seg_tokens = _tokenize_raw(parts[idx], split_alnum=False)
+      if len(seg_tokens) <= 3 and any(
+        t in _PREFIX_LANG_META_TOKENS for t in seg_tokens
+      ):
+        prefix_chunks.append(parts[idx])
+        idx += 1
+      else:
+        break
+    core_source = " ".join(parts[idx:])
+  else:
+    core_source = working
+
+  core_cleaned = CODEC_CLEAN_RE.sub(" ", core_source)
+  raw_core_tokens = _strip_quality_tokens(
+    _tokenize_raw(core_cleaned, split_alnum=True)
+  )
+  if not raw_core_tokens:
+    raw_core_tokens = _tokenize_raw(core_source, split_alnum=True)
+  if not raw_core_tokens:
+    return None
+
+  core_tokens = tuple(raw_core_tokens)
+  if len(core_tokens) >= 2 and core_tokens[0] in LEADING_COUNTRY_CODES:
+    trimmed_core_tokens = core_tokens[1:]
+  elif len(core_tokens) >= 3 and f"{core_tokens[0]}{core_tokens[1]}" in {
+    "cafr",
+    "frca",
+    "enca",
+    "caen",
+  }:
+    trimmed_core_tokens = core_tokens[2:]
+  else:
+    trimmed_core_tokens = core_tokens
+
+  combined_meta = (
+    f"{' '.join(prefix_chunks)} {stream.category_name} "
+    f"{CODEC_CLEAN_RE.sub(' ', raw_name)}"
+  )
+  full_token_list = _strip_quality_tokens(
+    _tokenize_raw(combined_meta, split_alnum=True)
+  )
+  full_tokens = frozenset(full_token_list)
+  full_str = f" {' '.join(full_token_list)} "
+
+  prefix_meta_str = f"{' '.join(prefix_chunks)} {stream.category_name}"
+  prefix_toks = frozenset(_tokenize_raw(prefix_meta_str, split_alnum=False))
+  epg_lower = stream.epg_channel_id.strip().lower()
+  regions, prefix_regions = _infer_stream_regions(
+    full_tokens, full_str, prefix_toks, epg_lower
+  )
   q_score, q_tier, q_notes = _score_quality_tags(raw_name, stream.category_name)
 
   return _PreparedStream(
@@ -445,14 +458,15 @@ def _prepare_stream(stream: XtreamStream) -> _PreparedStream | None:
     trimmed_core_tokens=trimmed_core_tokens,
     full_tokens=full_tokens,
     full_str=full_str,
-    regions=frozenset(regions),
-    prefix_regions=frozenset(prefix_regions),
+    regions=regions,
+    prefix_regions=prefix_regions,
     quality_score=q_score,
     quality_tier=q_tier,
     quality_notes=tuple(q_notes),
     is_nonlinear=is_nonlinear,
     is_timeshift=is_timeshift,
     epg_id_lower=epg_lower,
+    epg_compact=_compact_epg_stem(epg_lower),
   )
 
 
@@ -474,9 +488,7 @@ def _weighted_levenshtein(
   t_chars: str,
   t_weights: list[float],
 ) -> float:
-  """Compute weighted Levenshtein distance with cheap separator & `+`↔`&`
-  costs.
-  """
+  """Compute weighted Levenshtein edit distance for channel names."""
   m = len(s_chars)
   n = len(t_chars)
   prev = [0.0] * (n + 1)
@@ -506,9 +518,7 @@ def _weighted_levenshtein(
 
 
 def _station_group_key(ch: LineupChannel) -> str:
-  """Group identical stations placed at multiple dial slots (scoped by
-  language).
-  """
+  """Group identical stations placed at multiple dial slots by language."""
   if ch.gracenote_station_id and ch.gracenote_station_id.strip():
     return f"gn:{ch.language}:{ch.gracenote_station_id.strip()}"
   cs = (ch.callsign or "").strip().upper()
@@ -519,9 +529,7 @@ def _station_group_key(ch: LineupChannel) -> str:
 
 
 def _is_high_confidence_claim(cand: MatchCandidate, ch: LineupChannel) -> bool:
-  """Return True when `cand` matches `ch`'s primary brand strongly enough to
-  claim in Pass 1.
-  """
+  """Return True when `cand` matches `ch` strongly enough for Pass 1."""
   if cand.score >= 1000.0:
     return True
   if cand.score < 76.0:
@@ -561,9 +569,7 @@ def _is_high_confidence_claim(cand: MatchCandidate, ch: LineupChannel) -> bool:
 
 
 class ChannelMatcher:
-  """Indexes an Xtream catalog and ranks candidate streams for each cable lineup
-  channel.
-  """
+  """Indexes an Xtream catalog and ranks candidates for each lineup slot."""
 
   def __init__(
     self,
@@ -579,6 +585,9 @@ class ChannelMatcher:
     self._token_index: dict[str, set[int]] = defaultdict(set)
     self._compound_index: dict[str, set[int]] = defaultdict(set)
     self._epg_index: dict[str, list[int]] = defaultdict(list)
+    self._typo_buckets: dict[tuple[str, int], list[tuple[str, set[int]]]] = (
+      defaultdict(list)
+    )
 
     for stream in streams:
       self._streams_by_id[stream.stream_id] = stream
@@ -602,6 +611,11 @@ class ChannelMatcher:
       tok: math.log(1.0 + total_docs / (1.0 + len(idxs)))
       for tok, idxs in self._token_index.items()
     }
+    for vocab_tok, idxs in self._token_index.items():
+      if len(vocab_tok) >= 3:
+        self._typo_buckets[(vocab_tok[0], len(vocab_tok))].append(
+          (vocab_tok, idxs)
+        )
 
   def match_lineup(
     self,
@@ -610,9 +624,7 @@ class ChannelMatcher:
     max_candidates: int = 10,
     invalid_stream_ids_by_chno: dict[int, set[int]] | None = None,
   ) -> list[MappedChannel]:
-    """Multipass lineup matcher: high-confidence stations claim streams before
-    fuzzy pass.
-    """
+    """Multipass matcher: strong brands claim streams before fuzzy pass."""
     channel_list = list(channels)
     pool_limit = max(max_candidates * 2, 20)
     raw_by_chno: dict[int, list[MatchCandidate]] = {
@@ -739,11 +751,13 @@ class ChannelMatcher:
     # 2. Gather candidate indices via inverted index (avoids scanning 50k+
     #    unrelated streams)
     candidate_indices: set[int] = set()
+    cs_root: str | None = None
     if tvg_id_lower and tvg_id_lower in self._epg_index:
       candidate_indices.update(self._epg_index[tvg_id_lower])
     if callsign_tok:
-      cs_root = CALLSIGN_ROOT_RE.sub("", callsign_tok).strip("-")
-      for cs_variant in {callsign_tok, cs_root}:
+      cs_root_str = CALLSIGN_ROOT_RE.sub("", callsign_tok).strip("-")
+      cs_root = cs_root_str
+      for cs_variant in {callsign_tok, cs_root_str}:
         if not cs_variant:
           continue
         if cs_variant in self._token_index:
@@ -752,10 +766,9 @@ class ChannelMatcher:
           cs_epg = f"{cs_variant}{sfx}"
           if cs_epg in self._epg_index:
             candidate_indices.update(self._epg_index[cs_epg])
-      # US 4-letter OTA callsign on-air branding tail (e.g. WPIX -> "PIX" in "CW
-      # PIX 11")
-      if US_OTA_CALLSIGN_RE.match(cs_root):
-        cs_tail = cs_root[1:]
+      # US 4-letter OTA callsign on-air branding tail (e.g. WPIX -> "PIX").
+      if US_OTA_CALLSIGN_RE.match(cs_root_str):
+        cs_tail = cs_root_str[1:]
         if (
           cs_tail in self._token_index
           and len(self._token_index[cs_tail]) <= 220
@@ -819,23 +832,33 @@ class ChannelMatcher:
             & self._token_index[ranked_anchors[1]]
           )
       elif len(a_toks) == 1 and len(a_toks[0]) >= 5:
-        # Typo-tolerant lookup for single-token brands (e.g. "scifi" <-> "sifi")
+        # Typo-tolerant lookup for single-token brands ("scifi" <-> "sifi").
         needle = a_toks[0]
         first_ch = needle[0]
-        for vocab_tok, idxs in self._token_index.items():
-          if (
-            vocab_tok.startswith(first_ch)
-            and abs(len(vocab_tok) - len(needle)) <= 2
-            and len(idxs) <= selective_cap
-            and difflib.SequenceMatcher(None, needle, vocab_tok).ratio() >= 0.84
+        n_len = len(needle)
+        for cand_len in range(max(3, n_len - 2), n_len + 3):
+          for vocab_tok, idxs in self._typo_buckets.get(
+            (first_ch, cand_len), ()
           ):
-            candidate_indices.update(idxs)
+            if (
+              len(idxs) <= selective_cap
+              and difflib.SequenceMatcher(None, needle, vocab_tok).ratio()
+              >= 0.84
+            ):
+              candidate_indices.update(idxs)
 
     target_regions = set(channel.regions)
-
+    ch_name_toks = tuple(
+      _strip_quality_tokens(_tokenize_raw(channel.name, split_alnum=True))
+    )
+    tvg_compact = _compact_epg_stem(tvg_id_lower) if tvg_id_lower else ""
+    alias_text_low = " ".join(channel.aliases).lower()
     edit_cache: dict[tuple[tuple[str, ...], tuple[str, ...]], float] = {}
+    seq_cache: dict[
+      tuple[tuple[str, ...], frozenset[str]], tuple[str, list[float]]
+    ] = {}
 
-    # 3. Score each candidate stream
+    # 3. Score each candidate stream.
     for idx in candidate_indices:
       prep = self._prepared[idx]
       if prep.stream.stream_id in seen_stream_ids:
@@ -843,7 +866,7 @@ class ChannelMatcher:
       if prep.is_nonlinear:
         continue
 
-      # Hard exclusion check against normalized stream + category phrase
+      # Hard exclusion check against normalized stream + category phrase.
       if any(ex_phrase in prep.full_str for ex_phrase in exclude_phrases):
         continue
 
@@ -855,6 +878,11 @@ class ChannelMatcher:
         tvg_id_lower=tvg_id_lower,
         target_regions=target_regions,
         edit_cache=edit_cache,
+        seq_cache=seq_cache,
+        ch_name_toks=ch_name_toks,
+        cs_root=cs_root,
+        tvg_compact=tvg_compact,
+        alias_text_low=alias_text_low,
       )
       if score >= self.min_score:
         results.append(
@@ -879,9 +907,7 @@ class ChannelMatcher:
     toks: tuple[str, ...],
     allowed_extra: AbstractSet[str],
   ) -> tuple[str, list[float]]:
-    """Build character sequence and corpus-IDF weights for weighted
-    Levenshtein.
-    """
+    """Build character sequence and corpus-IDF weights for Levenshtein."""
     chars: list[str] = []
     weights: list[float] = []
     n_toks = len(toks)
@@ -919,9 +945,7 @@ class ChannelMatcher:
     c_toks: tuple[str, ...],
     allowed_extra: AbstractSet[str],
   ) -> bool:
-    """Return True when `a_toks`/`c_toks` share an ultra-rare non-umbrella brand
-    (`df <= 3`).
-    """
+    """Return True if tokens share an ultra-rare non-umbrella brand."""
     alias_set = set(a_toks)
     cand_set = set(c_toks)
     if (alias_set | cand_set) & MAJOR_SPINOFF_UMBRELLA_BRANDS:
@@ -941,6 +965,30 @@ class ChannelMatcher:
       and c_clean.startswith(a_clean)
     )
 
+  def _get_weighted_edit_seq(
+    self,
+    toks: tuple[str, ...],
+    allowed_extra: AbstractSet[str],
+    seq_cache: dict[
+      tuple[tuple[str, ...], frozenset[str]], tuple[str, list[float]]
+    ]
+    | None,
+  ) -> tuple[str, list[float]]:
+    if seq_cache is None:
+      return self._build_weighted_edit_seq(toks, allowed_extra)
+    frozen_extra = (
+      allowed_extra
+      if isinstance(allowed_extra, frozenset)
+      else frozenset(allowed_extra)
+    )
+    key = (toks, frozen_extra)
+    cached = seq_cache.get(key)
+    if cached is not None:
+      return cached
+    built = self._build_weighted_edit_seq(toks, frozen_extra)
+    seq_cache[key] = built
+    return built
+
   def _weighted_edit_similarity(
     self,
     a_toks: tuple[str, ...],
@@ -948,10 +996,12 @@ class ChannelMatcher:
     *,
     allowed_extra: AbstractSet[str],
     effective_spinoff_tokens: AbstractSet[str],
+    seq_cache: dict[
+      tuple[tuple[str, ...], frozenset[str]], tuple[str, list[float]]
+    ]
+    | None = None,
   ) -> float:
-    """Compute IDF-weighted edit similarity in `[0, 1]` with numeric & spin-off
-    safety.
-    """
+    """Compute IDF-weighted edit similarity in `[0, 1]` with safety guards."""
     if not a_toks or not c_toks:
       return 0.0
     a_nums = {t for t in a_toks if DECADE_OR_NUM_RE.match(t)}
@@ -1051,8 +1101,12 @@ class ChannelMatcher:
     if not (shared_brand or compound_overlap or single_word_pair):
       return 0.0
 
-    s_chars, s_weights = self._build_weighted_edit_seq(a_toks, allowed_extra)
-    t_chars, t_weights = self._build_weighted_edit_seq(c_toks, allowed_extra)
+    s_chars, s_weights = self._get_weighted_edit_seq(
+      a_toks, allowed_extra, seq_cache
+    )
+    t_chars, t_weights = self._get_weighted_edit_seq(
+      c_toks, allowed_extra, seq_cache
+    )
     sum_s = sum(s_weights)
     sum_t = sum(t_weights)
     denom = sum_s + sum_t
@@ -1071,6 +1125,8 @@ class ChannelMatcher:
     channel: LineupChannel,
     callsign_tok: str | None,
     target_regions: set[str],
+    ch_name_toks: Sequence[str] | None = None,
+    cs_root: str | None = None,
   ) -> tuple[
     str | None,
     str,
@@ -1080,61 +1136,65 @@ class ChannelMatcher:
     bool,
     tuple[tuple[str, ...], ...],
   ]:
-    """Derive callsign, qualifier, spinoff, and core-token context for Signal
-    A–C.
-    """
-    cs_root = (
-      CALLSIGN_ROOT_RE.sub("", callsign_tok).strip("-")
-      if callsign_tok
-      else None
-    )
-    epg_stem = (
-      re.sub(
-        r"[^a-z0-9]+",
-        "",
-        strip_accents(prep.epg_id_lower.rsplit(".", 1)[0]),
+    """Derive callsign, qualifier, spinoff, & core context for Signals A-C."""
+    eff_cs_root = (
+      cs_root
+      if cs_root is not None
+      else (
+        CALLSIGN_ROOT_RE.sub("", callsign_tok).strip("-")
+        if callsign_tok
+        else None
       )
-      if prep.epg_id_lower
-      else ""
     )
+    epg_stem = prep.epg_compact
     allowed_extra = set(BENIGN_QUALIFIER_TOKENS)
     for reg_key in target_regions:
       allowed_extra.update(TARGET_REGION_QUALIFIER_TOKENS.get(reg_key, ()))
-    ch_name_toks = _strip_quality_tokens(
-      _tokenize_raw(channel.name, split_alnum=True)
+    eff_ch_name_toks = (
+      ch_name_toks
+      if ch_name_toks is not None
+      else _strip_quality_tokens(_tokenize_raw(channel.name, split_alnum=True))
     )
     has_station_brand_in_stream = any(
       len(t) >= 2 and t not in allowed_extra and t in prep.full_tokens
-      for t in ch_name_toks
+      for t in eff_ch_name_toks
     )
     has_epg_callsign = bool(
-      cs_root and len(cs_root) >= 3 and epg_stem in {callsign_tok, cs_root}
+      eff_cs_root
+      and len(eff_cs_root) >= 3
+      and epg_stem in {callsign_tok, eff_cs_root}
     )
     raw_cs_token_hit = bool(
       callsign_tok
       and (
         callsign_tok in prep.full_tokens
-        or (cs_root and len(cs_root) >= 3 and cs_root in prep.full_tokens)
+        or (
+          eff_cs_root
+          and len(eff_cs_root) >= 3
+          and eff_cs_root in prep.full_tokens
+        )
       )
     )
     is_sole_callsign_core = bool(
-      cs_root
+      eff_cs_root
       and (
-        prep.core_tokens == (cs_root,)
-        or prep.trimmed_core_tokens == (cs_root,)
+        prep.core_tokens == (eff_cs_root,)
+        or prep.trimmed_core_tokens == (eff_cs_root,)
         or (callsign_tok and prep.core_tokens == (callsign_tok,))
       )
     )
     has_direct_callsign = has_epg_callsign or (
       raw_cs_token_hit
       and (
-        not (cs_root and OTA_CALLSIGN_RE.match(cs_root))
+        not (eff_cs_root and OTA_CALLSIGN_RE.match(eff_cs_root))
         or is_sole_callsign_core
         or has_station_brand_in_stream
       )
     )
     cs_tail = (
-      cs_root[1:] if (cs_root and US_OTA_CALLSIGN_RE.match(cs_root)) else None
+      eff_cs_root[1:]
+      if (eff_cs_root and US_OTA_CALLSIGN_RE.match(eff_cs_root))
+      else None
     )
     has_ota_tail_brand = bool(
       cs_tail and cs_tail in prep.full_tokens and has_station_brand_in_stream
@@ -1142,15 +1202,15 @@ class ChannelMatcher:
 
     if callsign_tok and has_direct_callsign:
       allowed_extra.add(callsign_tok)
-    if cs_root and has_direct_callsign:
-      allowed_extra.add(cs_root)
+    if eff_cs_root and has_direct_callsign:
+      allowed_extra.add(eff_cs_root)
     if has_ota_tail_brand and cs_tail:
       allowed_extra.add(cs_tail)
     effective_spinoff_tokens = SPINOFF_MODIFIER_TOKENS - allowed_extra
 
     is_ota_callsign_hit = bool(
-      cs_root
-      and OTA_CALLSIGN_RE.match(cs_root)
+      eff_cs_root
+      and OTA_CALLSIGN_RE.match(eff_cs_root)
       and (has_direct_callsign or has_ota_tail_brand)
     )
     raw_cores = (
@@ -1168,7 +1228,7 @@ class ChannelMatcher:
       else raw_cores
     )
     return (
-      cs_root,
+      eff_cs_root,
       epg_stem,
       allowed_extra,
       effective_spinoff_tokens,
@@ -1190,10 +1250,12 @@ class ChannelMatcher:
     has_direct_callsign: bool,
     edit_cache: dict[tuple[tuple[str, ...], tuple[str, ...]], float]
     | None = None,
+    seq_cache: dict[
+      tuple[tuple[str, ...], frozenset[str]], tuple[str, list[float]]
+    ]
+    | None = None,
   ) -> tuple[float, str]:
-    """Signal A: Score exact, compound, phrase, fuzzy edit, subsequence, &
-    acronym alias hits.
-    """
+    """Signal A: Score exact, phrase, fuzzy edit, and acronym alias hits."""
     best_alias_score = 0.0
     best_alias_reason = ""
 
@@ -1283,6 +1345,7 @@ class ChannelMatcher:
             candidate_core,
             allowed_extra=allowed_extra,
             effective_spinoff_tokens=effective_spinoff_tokens,
+            seq_cache=seq_cache,
           )
           if edit_cache is not None:
             edit_cache[cache_key] = edit_sim
@@ -1353,11 +1416,7 @@ class ChannelMatcher:
           and len(self._token_index.get(candidate_core[0], ()))
           <= max(3, len(self._prepared) // 200)
         ):
-          epg_norm = re.sub(
-            r"[^a-z0-9]+",
-            "",
-            strip_accents(prep.epg_id_lower.rsplit(".", 1)[0]),
-          )
+          epg_norm = prep.epg_compact
           missing_distinctive = (alias_set - cand_set) - allowed_extra
           if missing_distinctive and all(
             len(tok) >= 3 and tok in epg_norm for tok in missing_distinctive
@@ -1375,18 +1434,17 @@ class ChannelMatcher:
     prep: _PreparedStream,
     channel: LineupChannel,
     target_regions: set[str],
+    alias_text_low: str | None = None,
   ) -> tuple[float, list[str]]:
-    """Signal D: Score metro/province/country alignment, foreign penalties,
-    timezone, & language.
-    """
+    """Signal D: Score metro, region, timezone, and language alignment."""
     delta = 0.0
     notes: list[str] = []
 
-    for metro in tuple(CA_METRO_MARKERS) + tuple(US_METRO_MARKERS):
+    for metro in _ALL_METRO_KEYS:
       if metro in target_regions and metro in prep.regions:
         delta += 24.0
         notes.append(f"region:{metro}")
-    for sub in tuple(CA_PROVINCE_MARKERS) + tuple(US_STATE_MARKERS):
+    for sub in _ALL_SUBREGION_KEYS:
       if sub in target_regions and sub in prep.regions:
         delta += 16.0
         notes.append(f"region:{sub}")
@@ -1432,16 +1490,20 @@ class ChannelMatcher:
       delta -= 18.0
       notes.append("penalty:us_feed_for_ca_only")
 
-    alias_text_low = " ".join(channel.aliases).lower()
+    eff_alias_low = (
+      alias_text_low
+      if alias_text_low is not None
+      else " ".join(channel.aliases).lower()
+    )
     prefers_west = "west" in target_regions or any(
-      w in alias_text_low for w in ("west", "pacific")
+      w in eff_alias_low for w in ("west", "pacific")
     )
     if prefers_west:
       if {"west", "pacific"} & prep.full_tokens:
         delta += 8.0
         notes.append("tz:west")
       if {"east", "est", "eastern"} & prep.full_tokens and not any(
-        w in alias_text_low for w in ("east", "eastern")
+        w in eff_alias_low for w in ("east", "eastern")
       ):
         delta -= 12.0
         notes.append("penalty:east_feed")
@@ -1480,12 +1542,20 @@ class ChannelMatcher:
     target_regions: set[str],
     edit_cache: dict[tuple[tuple[str, ...], tuple[str, ...]], float]
     | None = None,
+    seq_cache: dict[
+      tuple[tuple[str, ...], frozenset[str]], tuple[str, list[float]]
+    ]
+    | None = None,
+    ch_name_toks: Sequence[str] | None = None,
+    cs_root: str | None = None,
+    tvg_compact: str | None = None,
+    alias_text_low: str | None = None,
   ) -> tuple[float, list[str], bool]:
     score = 0.0
     reasons: list[str] = []
 
     (
-      cs_root,
+      eff_cs_root,
       epg_stem,
       allowed_extra,
       effective_spinoff_tokens,
@@ -1497,6 +1567,8 @@ class ChannelMatcher:
       channel=channel,
       callsign_tok=callsign_tok,
       target_regions=target_regions,
+      ch_name_toks=ch_name_toks,
+      cs_root=cs_root,
     )
 
     best_alias_score, best_alias_reason = self._score_alias_identity(
@@ -1505,16 +1577,17 @@ class ChannelMatcher:
       cand_cores=cand_cores,
       allowed_extra=allowed_extra,
       effective_spinoff_tokens=effective_spinoff_tokens,
-      cs_root=cs_root,
+      cs_root=eff_cs_root,
       callsign_tok=callsign_tok,
       has_direct_callsign=has_direct_callsign,
       edit_cache=edit_cache,
+      seq_cache=seq_cache,
     )
     if best_alias_score > 0:
       score += best_alias_score
       reasons.append(best_alias_reason)
 
-    # Signal B: Native Guide Data (EPG) preference
+    # Signal B: Native Guide Data (EPG) preference.
     has_name_or_callsign = (
       best_alias_score > 0 or has_direct_callsign or has_ota_tail_brand
     )
@@ -1529,12 +1602,16 @@ class ChannelMatcher:
           tvg_id_lower=tvg_id_lower,
           callsign_tok=callsign_tok,
           alias_specs=alias_specs,
+          epg_compact=prep.epg_compact,
+          tvg_compact=tvg_compact,
         )
       )
     ):
       has_native_epg = True
       if (tvg_id_lower and prep.epg_id_lower == tvg_id_lower) or (
-        cs_root and len(cs_root) >= 3 and epg_stem in {callsign_tok, cs_root}
+        eff_cs_root
+        and len(eff_cs_root) >= 3
+        and epg_stem in {callsign_tok, eff_cs_root}
       ):
         score += 32.0
         reasons.append(f"native_epg_exact:{prep.stream.epg_channel_id}")
@@ -1542,7 +1619,7 @@ class ChannelMatcher:
         score += 22.0
         reasons.append(f"native_epg:{prep.stream.epg_channel_id}")
 
-    # Signal C: Local Station Callsign Match
+    # Signal C: Local Station Callsign Match.
     if has_direct_callsign or has_ota_tail_brand:
       score += 56.0 if best_alias_score == 0 else 18.0
       reasons.append(f"callsign:{channel.callsign}")
@@ -1550,16 +1627,17 @@ class ChannelMatcher:
     if score < 40.0:
       return 0.0, [], False
 
-    # Signal D: Regional, Timezone, & Language Alignment
+    # Signal D: Regional, Timezone, and Language Alignment.
     reg_delta, reg_notes = self._score_regional_and_language_alignment(
       prep=prep,
       channel=channel,
       target_regions=target_regions,
+      alias_text_low=alias_text_low,
     )
     score += reg_delta
     reasons.extend(reg_notes)
 
-    # Signal E: Stream Quality Tier
+    # Signal E: Stream Quality Tier.
     score += prep.quality_score
     reasons.extend(prep.quality_notes)
 

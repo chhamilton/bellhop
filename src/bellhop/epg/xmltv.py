@@ -54,9 +54,7 @@ class EpgVerificationDict(TypedDict):
 
 @dataclass(slots=True)
 class EpgVerificationResult:
-  """Result of a lightweight passthrough probe against the upstream XMLTV
-  endpoint.
-  """
+  """Result of a passthrough probe against the upstream XMLTV endpoint."""
 
   url: str = ""
   url_redacted: str = ""
@@ -145,8 +143,9 @@ async def verify_epg_endpoint(
   timeout_sec: float = 15.0,
   client: aiohttp.ClientSession | None = None,
 ) -> EpgVerificationResult:
-  """Verify the upstream XMLTV endpoint is reachable and returns XMLTV without
-  downloading it.
+  """Verify the upstream XMLTV endpoint returns valid XMLTV headers.
+
+  Probes reachability without downloading the full XMLTV feed.
   """
   if config.epg.xmltv_file is not None:
     resolved = config.resolve_path(config.epg.xmltv_file)
@@ -302,8 +301,9 @@ def parse_xmltv_for_channels(
   max_decompressed_bytes: int = MAX_XMLTV_DECOMPRESSED_BYTES,
   max_raw_per_channel: int = MAX_XMLTV_RAW_ITEMS_PER_CHANNEL,
 ) -> dict[str, list[ProgramItem]]:
-  """Stream-parse an XMLTV file using priority fallback per channel and
-  non-overlapping reconciliation.
+  """Stream-parse an XMLTV file with priority fallback per channel.
+
+  Applies non-overlapping interval reconciliation across matched programs.
   """
   if not xml_path.is_file() or (not channel_id_map and not candidate_chains):
     return {}

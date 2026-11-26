@@ -1,6 +1,4 @@
-"""Tests for `iptv-org` ETag conditional caching, `closed`/`replaced_by`, and 2D
-MDL dial grouping.
-"""
+"""Tests for `iptv-org` ETag caching, closures, and 2D dial grouping."""
 
 from __future__ import annotations
 
@@ -39,9 +37,7 @@ from tests.http_mock import MockHttpServer
 def _assert_strictly_dial_contiguous(
   channels: list[LineupChannel],
 ) -> list[str]:
-  """Assert `channels` are sorted by `chno` and each `group` forms one
-  contiguous slice.
-  """
+  """Assert channels are `chno`-sorted and groups form contiguous slices."""
   chnos = [c.chno for c in channels]
   assert chnos == sorted(chnos)
   seen_groups: list[str] = []

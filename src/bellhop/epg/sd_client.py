@@ -1,5 +1,4 @@
-"""Shared Schedules Direct SD-JSON (`20141201`) authentication and HTTP session
-transport.
+"""Shared Schedules Direct SD-JSON (`20141201`) auth and HTTP transport.
 
 Used by both `bellhop.epg.sd_epg` (multi-day EPG schedules & program metadata)
 and `bellhop.pipeline.providers.schedules_direct` (lineup headend discovery &
@@ -117,8 +116,9 @@ def normalize_sd_postal(
 
 
 class SchedulesDirectSession:
-  """Manages Schedules Direct `/token` caching (`0o600`) and authenticated JSON
-  requests.
+  """Manage Schedules Direct `/token` caching and authenticated requests.
+
+  Persists token caches with `0o600` permissions.
   """
 
   def __init__(
@@ -139,9 +139,7 @@ class SchedulesDirectSession:
 
   @property
   def has_credentials(self) -> bool:
-    """Return `True` when both Schedules Direct username and password are
-    set.
-    """
+    """Return `True` when Schedules Direct credentials are configured."""
     return bool(self.username and self.password)
 
   def load_cached_token(self) -> str | None:
@@ -233,9 +231,7 @@ class SchedulesDirectSession:
     json_body: Any = None,
     allow_error_codes: frozenset[int] = frozenset(),
   ) -> Any:
-    """Execute an authenticated SD-JSON request with 1x automatic token
-    refresh.
-    """
+    """Execute an authenticated SD-JSON request with 1x token refresh."""
     token = self.load_cached_token() or await self.authenticate(client)
     url = f"{self.base_url}/{path.lstrip('/')}"
 

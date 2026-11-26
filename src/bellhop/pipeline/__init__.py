@@ -1,5 +1,6 @@
-"""Declarative 6-phase Bellhop lineup curation, stream matching, validation, and
-export pipeline.
+"""Declarative 6-phase Bellhop pipeline package.
+
+Covers lineup retrieval, matching, validation, and playlist export.
 """
 
 from __future__ import annotations

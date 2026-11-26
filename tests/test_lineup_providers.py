@@ -1,5 +1,6 @@
-"""Tests for the pluggable `LineupProvider` interface, `TvGuideLineupProvider`,
-and `SchedulesDirectLineupProvider`.
+"""Tests for the pluggable `LineupProvider` interface and backends.
+
+Covers `TvGuideLineupProvider` and `SchedulesDirectLineupProvider`.
 """
 
 from __future__ import annotations
@@ -451,8 +452,9 @@ def test_provider_selection_registry_routing(tmp_path: Path) -> None:
 async def test_schedules_direct_real_world_pairing_and_ota_feed_enrichment(
   tmp_path: Path,
 ) -> None:
-  """Verify Gracenote 7-char callsign SD/HD pairing, mid-title HD cleanup, and
-  OTA feed callsign enrichment.
+  """Verify Gracenote SD/HD pairing, mid-title HD cleanup, and OTA calls.
+
+  Also asserts OTA feed callsign enrichment on dynamically retrieved slots.
   """
 
   async def sd_handler(req: web.Request) -> web.Response:

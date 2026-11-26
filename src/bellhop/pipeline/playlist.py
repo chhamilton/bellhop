@@ -1,5 +1,4 @@
-"""Phase (5): Extended M3U8 cable lineup playlist writer and structured
-diagnostics report.
+"""Phase (5): Extended M3U8 lineup writer and structured diagnostics.
 
 Diagnostics Report Schema (`output/lineup_report.json`)
 -------------------------------------------------------
@@ -68,16 +67,12 @@ TRAILING_DIAL_RANGE_RE = re.compile(r"\s*\(\d+(?:[–-]\d+)?\)\s*$")
 
 
 def strip_dial_range_suffix(group_title: str) -> str:
-  """Remove any trailing `(lo–hi)` or `(chno)` dial-range suffix from
-  `group_title`.
-  """
+  """Strip trailing `(lo–hi)` or `(chno)` dial-range suffix from title."""
   return TRAILING_DIAL_RANGE_RE.sub("", group_title).strip()
 
 
 def format_group_with_dial_range(raw_group: str, chnos: Sequence[int]) -> str:
-  """Format `raw_group` with the surviving `(min–max)` or `(chno)` dial
-  range.
-  """
+  """Format `raw_group` with surviving `(min–max)` or `(chno)` range."""
   base = strip_dial_range_suffix(raw_group) or raw_group.strip() or "General"
   if not chnos:
     return raw_group.strip() or base
@@ -135,9 +130,7 @@ def _expand_entries_by_numbering(
   *,
   collapse_sd_dupes: bool = False,
 ) -> list[tuple[int, str, MappedChannel]]:
-  """Expand mapped channels into `(chno, display_name, mapped)` tuples sorted by
-  channel number.
-  """
+  """Expand mapped channels into `(chno, display_name, mapped)` tuples."""
   mode = "hd" if collapse_sd_dupes else numbering_mode.lower().strip()
   entries: list[tuple[int, str, MappedChannel]] = []
 
@@ -163,9 +156,7 @@ def resolve_group_display_map(
   *,
   collapse_sd_dupes: bool = False,
 ) -> dict[str, str]:
-  """Map each `channel.group` key to its surviving-channel `(lo–hi)` display
-  title.
-  """
+  """Map each `channel.group` key to its surviving `(lo–hi)` title."""
   entries = _expand_entries_by_numbering(
     mappings,
     numbering_mode,
@@ -193,9 +184,7 @@ def render_m3u8(
   mappings: list[MappedChannel],
   config: AppConfig,
 ) -> str:
-  """Render an Extended M3U8 playlist emulating the target cable provider
-  channel lineup.
-  """
+  """Render an Extended M3U8 playlist emulating the target cable lineup."""
   header_attrs: list[str] = []
   xmltv_url = build_serve_xmltv_url(config) or build_passthrough_xmltv_url(
     config, redact_secret=False
@@ -615,9 +604,7 @@ def build_report_dict(
   validation_skipped: bool = False,
   mapping_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-  """Build a JSON-serializable diagnostic report dictionary
-  (`output/lineup_report.json`).
-  """
+  """Build JSON-serializable diagnostics for `output/lineup_report.json`."""
   return build_diagnostics_report(
     lineup,
     mappings,

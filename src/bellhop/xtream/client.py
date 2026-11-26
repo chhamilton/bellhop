@@ -1,6 +1,4 @@
-"""Async Xtream Codes player_api.php client, local JSON loader, and catalog
-cache.
-"""
+"""Async Xtream `player_api.php` client, loader, and catalog cache."""
 
 from __future__ import annotations
 
@@ -8,16 +6,16 @@ import asyncio
 import hashlib
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 
-from bellhop.common.file_utils import write_private_text
+from bellhop.common.file_utils import ensure_private_dir, write_private_text
 from bellhop.common.http_utils import redact_url_secrets
-from bellhop.config import AppConfig
+from bellhop.config import AppConfig, XtreamConfig
 
 DEFAULT_USER_AGENT = "Bellhop/0.1 (VLC/3.0.20 LibVLC/3.0.20)"
 
@@ -209,15 +207,18 @@ def _load_cached_catalog(
 
 def _save_cached_catalog(
   cache_file: Path,
-  account_payload: dict[str, Any],
+  account_payload: Mapping[str, Any],
   categories: dict[str, str],
   streams_raw: list[dict[str, Any]],
 ) -> None:
-  cache_file.parent.mkdir(parents=True, exist_ok=True)
-  # Strip password if present in raw user_info before persisting to disk
-  sanitized_account = json.loads(json.dumps(account_payload))
-  if isinstance(sanitized_account.get("user_info"), dict):
-    sanitized_account["user_info"].pop("password", None)
+  ensure_private_dir(cache_file.parent)
+  # Strip password if present in raw user_info before persisting to disk.
+  sanitized_account: dict[str, Any] = dict(account_payload)
+  user_raw = sanitized_account.get("user_info")
+  if isinstance(user_raw, Mapping):
+    user_copy = dict(user_raw)
+    user_copy.pop("password", None)
+    sanitized_account["user_info"] = user_copy
 
   data = {
     "cached_at": time.time(),
@@ -228,14 +229,56 @@ def _save_cached_catalog(
   write_private_text(cache_file, json.dumps(data, ensure_ascii=False))
 
 
+async def _negotiate_xtream_handshake(
+  client: aiohttp.ClientSession,
+  candidates: Sequence[str],
+  base_params: Mapping[str, str],
+  xt: XtreamConfig,
+) -> tuple[str, dict[str, Any]]:
+  """Authenticate with candidate Xtream URLs; return `(base_url, payload)`."""
+  base_url = candidates[0]
+  account_payload: Any = None
+  last_exc: Exception | None = None
+  for cand_base in candidates:
+    try:
+      async with client.get(
+        f"{cand_base}/player_api.php", params=base_params
+      ) as resp:
+        resp.raise_for_status()
+        account_payload = await resp.json(content_type=None)
+        base_url = str(resp.url.origin())
+        xt.server_url = base_url
+        break
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+      last_exc = exc
+
+  if account_payload is None:
+    if isinstance(last_exc, aiohttp.ClientResponseError):
+      raise XtreamError(
+        f"Xtream API HTTP {last_exc.status} error from {base_url}"
+      ) from last_exc
+    raise XtreamError(
+      f"Network error contacting Xtream server {xt.server_url}: "
+      f"{redact_url_secrets(str(last_exc))}"
+    ) from last_exc
+
+  if not isinstance(account_payload, dict):
+    raise XtreamError("Unexpected non-JSON-object response from player_api.php")
+
+  user_info = account_payload.get("user_info") or {}
+  if str(user_info.get("auth", "1")) == "0":
+    raise XtreamError(
+      "Xtream authentication failed (invalid username or password)."
+    )
+  return base_url, account_payload
+
+
 async def fetch_xtream_account_info(
   config: AppConfig,
   *,
   client: aiohttp.ClientSession | None = None,
 ) -> XtreamAccountInfo:
-  """Verify live `player_api.php` account status without consuming a tuner
-  slot.
-  """
+  """Verify live `player_api.php` account status without using a tuner slot."""
   xt = config.xtream
   if not xt.server_url or not xt.username or not xt.password:
     raise XtreamError(
@@ -244,7 +287,6 @@ async def fetch_xtream_account_info(
     )
 
   candidates = _candidate_base_urls(xt.server_url)
-  base_url = candidates[0]
   base_params = {"username": xt.username, "password": xt.password}
 
   owns_client = client is None
@@ -256,42 +298,9 @@ async def fetch_xtream_account_info(
 
   assert client is not None
   try:
-    account_payload: Any = None
-    last_exc: Exception | None = None
-    for cand_base in candidates:
-      try:
-        async with client.get(
-          f"{cand_base}/player_api.php", params=base_params
-        ) as resp:
-          resp.raise_for_status()
-          account_payload = await resp.json(content_type=None)
-          base_url = str(resp.url.origin())
-          xt.server_url = base_url
-          break
-      except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-        last_exc = exc
-
-    if account_payload is None:
-      if isinstance(last_exc, aiohttp.ClientResponseError):
-        raise XtreamError(
-          f"Xtream API HTTP {last_exc.status} error from {base_url}"
-        ) from last_exc
-      raise XtreamError(
-        f"Network error contacting Xtream server {xt.server_url}: "
-        f"{redact_url_secrets(str(last_exc))}"
-      ) from last_exc
-
-    if not isinstance(account_payload, dict):
-      raise XtreamError(
-        "Unexpected non-JSON-object response from player_api.php"
-      )
-
-    user_info = account_payload.get("user_info") or {}
-    if str(user_info.get("auth", "1")) == "0":
-      raise XtreamError(
-        "Xtream authentication failed (invalid username or password)."
-      )
-
+    _base_url, account_payload = await _negotiate_xtream_handshake(
+      client, candidates, base_params, xt
+    )
     return XtreamAccountInfo.from_api_payload(account_payload)
   finally:
     if owns_client:
@@ -302,11 +311,10 @@ async def fetch_xtream_catalog(
   config: AppConfig,
   *,
   force_refresh: bool = False,
+  persist_cache: bool = True,
   client: aiohttp.ClientSession | None = None,
 ) -> XtreamCatalog:
-  """Fetch account metadata, live categories, and live streams from Xtream Codes
-  API.
-  """
+  """Fetch live categories and streams from upstream Xtream Codes API."""
   xt = config.xtream
   if not xt.server_url or not xt.username or not xt.password:
     raise XtreamError(
@@ -317,7 +325,7 @@ async def fetch_xtream_catalog(
   cache_dir = config.resolve_path(xt.cache_dir)
   cache_file = _cache_file_for(cache_dir, xt.server_url, xt.username)
 
-  if not force_refresh:
+  if persist_cache and not force_refresh:
     cached = _load_cached_catalog(cache_file, xt.cache_ttl_hours)
     if cached is not None:
       if not xt.server_url.startswith(("http://", "https://")):
@@ -338,45 +346,10 @@ async def fetch_xtream_catalog(
 
   assert client is not None
   try:
-    # 1. Authenticate & inspect account limits (auto-negotiating http/https if
-    #    scheme omitted)
-    account_payload: Any = None
-    last_exc: Exception | None = None
-    for cand_base in candidates:
-      try:
-        async with client.get(
-          f"{cand_base}/player_api.php", params=base_params
-        ) as resp:
-          resp.raise_for_status()
-          account_payload = await resp.json(content_type=None)
-          # Preserve final scheme+host(:port) if server redirected
-          base_url = str(resp.url.origin())
-          xt.server_url = base_url
-          break
-      except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-        last_exc = exc
-
-    if account_payload is None:
-      if isinstance(last_exc, aiohttp.ClientResponseError):
-        raise XtreamError(
-          f"Xtream API HTTP {last_exc.status} error from {base_url}"
-        ) from last_exc
-      raise XtreamError(
-        f"Network error contacting Xtream server {xt.server_url}: "
-        f"{redact_url_secrets(str(last_exc))}"
-      ) from last_exc
-
+    base_url, account_payload = await _negotiate_xtream_handshake(
+      client, candidates, base_params, xt
+    )
     api_url = f"{base_url}/player_api.php"
-    if not isinstance(account_payload, dict):
-      raise XtreamError(
-        "Unexpected non-JSON-object response from player_api.php"
-      )
-
-    user_info = account_payload.get("user_info") or {}
-    if str(user_info.get("auth", "1")) == "0":
-      raise XtreamError(
-        "Xtream authentication failed (invalid username or password)."
-      )
 
     account = XtreamAccountInfo.from_api_payload(account_payload)
     account_inactive = account.status.strip().lower() not in {
@@ -385,7 +358,7 @@ async def fetch_xtream_catalog(
       "",
     }
 
-    # 2. Fetch live categories
+    # 2. Fetch live categories.
     async with client.get(
       api_url,
       params={**base_params, "action": "get_live_categories"},
@@ -400,7 +373,7 @@ async def fetch_xtream_catalog(
             entry.get("category_name") or ""
           ).strip()
 
-    # 3. Fetch live streams
+    # 3. Fetch live streams.
     async with client.get(
       api_url,
       params={**base_params, "action": "get_live_streams"},
@@ -431,7 +404,7 @@ async def fetch_xtream_catalog(
         f"Xtream account is not active (status={account.status!r}) and returned 0 streams."
       )
 
-    if streams:
+    if persist_cache and streams:
       _save_cached_catalog(
         cache_file, account_payload, categories, valid_raw_items
       )
@@ -460,13 +433,10 @@ async def fetch_xtream_catalog(
       await client.close()
 
 
-def load_catalog_from_json(json_path: Path) -> XtreamCatalog:
-  """Load an Xtream JSON playlist from a local file (list of streams or full
-  catalog dict).
-  """
-  with json_path.open("r", encoding="utf-8") as fh:
-    data = json.load(fh)
-
+def load_catalog_from_data(
+  data: Any, *, source_name: str = "<memory>"
+) -> XtreamCatalog:
+  """Parse an Xtream catalog from an in-memory JSON-decoded object or list."""
   categories: dict[str, str] = {}
   account = XtreamAccountInfo(
     username="local_json", status="Active", max_connections=2
@@ -518,7 +488,7 @@ def load_catalog_from_json(json_path: Path) -> XtreamCatalog:
     if isinstance(raw_streams, dict):
       raw_streams = list(raw_streams.values())
   else:
-    raise XtreamError(f"Unsupported JSON format in {json_path}")
+    raise XtreamError(f"Unsupported JSON format in {source_name}")
 
   streams: list[XtreamStream] = []
   for item in raw_streams:
@@ -533,3 +503,10 @@ def load_catalog_from_json(json_path: Path) -> XtreamCatalog:
     streams=streams,
     from_cache=True,
   )
+
+
+def load_catalog_from_json(json_path: Path) -> XtreamCatalog:
+  """Load an Xtream JSON playlist from a local file."""
+  with json_path.open("r", encoding="utf-8") as fh:
+    data = json.load(fh)
+  return load_catalog_from_data(data, source_name=str(json_path))

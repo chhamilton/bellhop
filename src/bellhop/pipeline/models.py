@@ -1,5 +1,4 @@
-"""Core typed domain models for Xtream streams, cable lineup slots, matching,
-and stream probes.
+"""Core typed domain models for streams, lineups, matching, and probes.
 
 Serialized JSON Layouts
 -----------------------
@@ -131,9 +130,7 @@ def _opt_float(val: object) -> float | None:
 
 @dataclass(slots=True)
 class LineupChannel:
-  """A target slot in the emulated cable provider lineup (e.g. Bell Fibe
-  Montréal).
-  """
+  """Target slot in the emulated cable lineup (e.g., Bell Fibe Montréal)."""
 
   chno: int
   name: str

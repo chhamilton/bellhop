@@ -83,9 +83,7 @@ class BundleGuideSnapshot:
 
 
 class ExportBundleGuideStore:
-  """Headless `GuideStoreProto` adapter over `ExportBundleReader` for `bellhop
-  run`.
-  """
+  """Headless `GuideStoreProto` adapter over `ExportBundleReader`."""
 
   def __init__(
     self,
@@ -151,9 +149,7 @@ class ExportBundleGuideStore:
   async def async_get_snapshot(
     self, *, force_reload: bool = False
   ) -> GuideSnapshotProto:
-    """Async-safe snapshot retrieval offloading disk reloads off event
-    loop.
-    """
+    """Async-safe snapshot retrieval offloading disk reloads."""
     sig = self._reader.compute_signature()
     if (
       not force_reload and self._snapshot is not None and sig == self._last_sig

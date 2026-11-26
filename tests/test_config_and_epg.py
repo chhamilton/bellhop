@@ -1,6 +1,4 @@
-"""Unit tests for two-tier config loading, public config updates, and EPG
-verification.
-"""
+"""Tests for two-tier config loading, public updates, and EPG probes."""
 
 from __future__ import annotations
 
@@ -415,8 +413,10 @@ def test_config_manager_cache_invalidation_and_constant_provider_urls(
   tmp_path: Path,
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  """Verify `ConfigManager` caches parses, provider URLs stay constant, &
-  `${ENV}` placeholders survive Tier-2 updates.
+  """Verify `ConfigManager` caching, constant URLs, and `${ENV}` survival.
+
+  Ensures provider URLs remain unconfigurable and placeholders survive
+  Tier-2 config updates.
   """
   from bellhop.config import (
     DEFAULT_IPTV_ORG_API_URL,

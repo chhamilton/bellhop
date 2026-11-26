@@ -1,5 +1,6 @@
-"""Shared normalization, SD/HD pairing, category/language inference, and alias
-builder for dynamic lineups.
+"""Shared lineup normalization, SD/HD pairing, and alias derivation.
+
+Also infers genres and languages for dynamic cable and OTA lineups.
 """
 
 from __future__ import annotations
@@ -398,9 +399,7 @@ def _clean_station_title(
   callsign: str | None,
   network_name: str | None,
 ) -> tuple[str, list[str], bool]:
-  """Return (clean_display_name, candidate_aliases, is_hd) from raw provider
-  strings.
-  """
+  """Return `(clean_name, aliases, is_hd)` from raw provider strings."""
   text = raw_name.strip()
   aliases: list[str] = []
 
@@ -521,8 +520,9 @@ def _clean_station_title(
 
 
 def _extract_initialisms(title: str) -> list[str]:
-  """Derive 3–5 letter multi-word initialisms (`APTN`, `YTV`) and
-  `<Word><Digit>` (`H2`) aliases.
+  """Derive multi-word initialisms and `<Word><Digit>` channel aliases.
+
+  Extracts 3–5 letter acronyms (`APTN`, `YTV`) and tokens like `H2`.
   """
   folded = _strip_accents(title)
   words = [
@@ -787,9 +787,7 @@ def normalize_provider_slots(
   pair_sd_hd: bool = True,
   iptv_org_index: IptvOrgIndex | None = None,
 ) -> list[LineupChannel]:
-  """Convert raw provider slots into deduplicated/paired `LineupChannel`
-  objects.
-  """
+  """Convert raw provider slots into paired `LineupChannel` objects."""
   excluded = excluded_channels or set()
   official_logos_by_chno = (
     _load_official_logo_index()

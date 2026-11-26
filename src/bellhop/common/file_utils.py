@@ -1,6 +1,4 @@
-"""Owner-only (`0o600` / `0o700`) atomic file and directory persistence
-helpers.
-"""
+"""Owner-only (`0o600` / `0o700`) atomic file and directory helpers."""
 
 from __future__ import annotations
 
@@ -24,17 +22,25 @@ def ensure_private_dir(path: Path) -> Path:
 
   Returns:
     The created/verified directory `Path`.
+
+  Raises:
+    OSError: If `path` is a symlink rather than a real directory.
   """
+  if path.is_symlink():
+    raise OSError(f"Refusing to use symlink as private directory: {path}")
   missing: list[Path] = []
   cur = path
   while not cur.exists() and cur != cur.parent:
+    if cur.is_symlink():
+      raise OSError(f"Refusing to traverse broken symlink directory: {cur}")
     missing.append(cur)
     cur = cur.parent
   for directory in reversed(missing):
     directory.mkdir(exist_ok=True, mode=PRIVATE_DIR_MODE)
     with contextlib.suppress(OSError):
-      os.chmod(directory, PRIVATE_DIR_MODE)
-  if path.is_dir():
+      if not directory.is_symlink():
+        os.chmod(directory, PRIVATE_DIR_MODE)
+  if path.is_dir() and not path.is_symlink():
     with contextlib.suppress(OSError):
       os.chmod(path, PRIVATE_DIR_MODE)
   return path
@@ -46,14 +52,13 @@ def chmod_private_file(path: Path) -> None:
   Args:
     path: Target file path.
   """
-  if path.is_file():
+  if not path.is_symlink() and path.is_file():
     with contextlib.suppress(OSError):
       os.chmod(path, PRIVATE_FILE_MODE)
 
 
 def write_private_bytes(path: Path, data: bytes) -> None:
-  """Atomically write `data` to `path` with strict `0o600` owner-only
-  permissions.
+  """Atomically write `data` to `path` with strict `0o600` owner permissions.
 
   Creates the temporary sibling file with mode `0o600` at `os.open()` time so
   sensitive bytes are never readable by group or world users.
@@ -61,14 +66,16 @@ def write_private_bytes(path: Path, data: bytes) -> None:
   Args:
     path: Destination file path.
     data: Raw byte content to write.
+
+  Raises:
+    OSError: If `path` is a symlink or cannot be written safely.
   """
+  if path.is_symlink():
+    raise OSError(f"Refusing to overwrite symlink at private path: {path}")
   ensure_private_dir(path.parent)
   tmp_path = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
-  fd = os.open(
-    str(tmp_path),
-    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-    PRIVATE_FILE_MODE,
-  )
+  flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+  fd = os.open(str(tmp_path), flags, PRIVATE_FILE_MODE)
   try:
     with os.fdopen(fd, "wb") as fh:
       fh.write(data)

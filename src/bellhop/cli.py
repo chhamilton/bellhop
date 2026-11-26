@@ -1,6 +1,4 @@
-"""Streamlined CLI runner (`bellhop run`) driven declaratively by
-`config.yaml`.
-"""
+"""Streamlined CLI runner (`bellhop run`) configured via `config.yaml`."""
 
 from __future__ import annotations
 

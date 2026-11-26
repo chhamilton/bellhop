@@ -1,6 +1,4 @@
-"""Focused unit & HTTP hardening tests for auth cookies, rate limits, and
-XFF.
-"""
+"""Unit and HTTP hardening tests for auth cookies, rate limits, & XFF."""
 
 from __future__ import annotations
 
@@ -57,9 +55,7 @@ def _write_minimal_bundle(xt_dir: Path) -> None:
 
 
 def test_sanitize_next_url_and_login_html_escaping() -> None:
-  """Verify strict internal-only redirects and HTML single-quote escaping on
-  `/login`.
-  """
+  """Verify internal-only redirects and quote escaping on `/login`."""
   assert sanitize_next_url(None) == "/"
   assert sanitize_next_url("/?cat=2&ch=1108") == "/?cat=2&ch=1108"
   assert sanitize_next_url("//evil.example/phish") == "/"
@@ -85,9 +81,7 @@ def test_sanitize_next_url_and_login_html_escaping() -> None:
 def test_web_auth_token_signing_persistence_and_rotation_with_fake_clock(
   tmp_path: Path, fake_clock: FakeClock
 ) -> None:
-  """Verify HMAC session tokens, 0600 secret persistence, Unicode passwords, and
-  mandatory login.
-  """
+  """Verify HMAC sessions, `0600` secrets, Unicode passwords, & auth."""
   import stat
 
   # Unconfigured credentials MUST fail verification and MUST be rejected by
@@ -314,9 +308,7 @@ def test_resolve_client_ip_and_bind_host_helpers(tmp_path: Path) -> None:
 async def test_http_hardening_413_403_cors_and_reverse_proxy_throttling(
   tmp_path: Path, fake_clock: FakeClock
 ) -> None:
-  """Verify HTTP middleware limits (413/403/204/404) & XFF rate-limit
-  isolation.
-  """
+  """Verify HTTP middleware limits (413/403/204/404) & XFF isolation."""
   xt_dir = tmp_path / "output" / "xtream"
   _write_minimal_bundle(xt_dir)
   auth = WebAuthManager(
@@ -441,9 +433,7 @@ async def test_http_hardening_413_403_cors_and_reverse_proxy_throttling(
 async def test_csrf_cors_and_hls_ssrf_protection(
   tmp_path: Path, fake_clock: FakeClock
 ) -> None:
-  """Verify Web Guide omits wildcard CORS, blocks CSRF/GET mutations, and
-  rejects forged HLS tokens.
-  """
+  """Verify Web Guide CSRF blocks, forged HLS tokens, and CORS omission."""
   import base64
 
   xt_dir = tmp_path / "output" / "xtream"
@@ -541,9 +531,7 @@ async def test_csrf_cors_and_hls_ssrf_protection(
 async def test_session_revocation_on_logout_https_cookie_flag_and_url_redaction(
   tmp_path: Path,
 ) -> None:
-  """Verify logout revokes session replay, `X-Forwarded-Proto` sets `Secure`,
-  and URLs redact.
-  """
+  """Verify logout revocation, HTTPS `Secure` flag, & URL redaction."""
   from bellhop.common.http_utils import redact_url_secrets
   from tests.conftest import write_minimal_xtream_export
 

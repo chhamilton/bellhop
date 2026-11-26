@@ -30,7 +30,7 @@ Xtream Codes HTTP Contract & Wire Layouts
 from __future__ import annotations
 
 import asyncio
-import hmac
+import ipaddress
 import json
 import logging
 import re
@@ -52,6 +52,7 @@ from bellhop.common.http_utils import (
   LoginRateLimiter,
   build_access_urls,
   bytes_response,
+  constant_time_credential_match,
   create_web_app,
   detect_device_ip,
   json_response,
@@ -114,9 +115,7 @@ def _as_dict(val: object) -> dict[str, Any]:
 
 
 def _rewrite_stream_extension(upstream_url: str, requested_ext: str) -> str:
-  """Adapt `.ts` / `.m3u8` extension on an upstream stream URL when requested by
-  a client.
-  """
+  """Adapt `.ts` or `.m3u8` extension on an upstream stream URL."""
   ext = requested_ext.strip().lstrip(".").lower()
   if not ext or ext not in {"ts", "m3u8"}:
     return upstream_url
@@ -173,9 +172,7 @@ class PassthroughStream:
   gracenote_station_id: str = ""
 
   def to_player_api_dict(self) -> PlayerApiStreamDict:
-    """Serialize public Xtream `player_api.php` stream item (never exposing
-    `upstream_url`).
-    """
+    """Serialize public `player_api.php` stream without `upstream_url`."""
     return {
       "num": self.num,
       "name": self.name,
@@ -196,8 +193,9 @@ class PassthroughStream:
 
 @dataclass(slots=True)
 class XtreamExportSnapshot:
-  """Hot-reloadable snapshot of Phase (6) exported lineup categories, streams,
-  and passthrough URLs.
+  """Hot-reloadable snapshot of Phase (6) exported lineup artifacts.
+
+  Holds categories, live streams, and passthrough upstream URLs.
   """
 
   lineup_id: str = ""
@@ -236,9 +234,7 @@ class XtreamExportSnapshot:
 
 
 class XtreamExportStore:
-  """Reads Phase (6) `output/xtream/` artifacts with automatic mtime-based hot
-  reload.
-  """
+  """Reads Phase (6) `output/xtream/` outputs with mtime hot reload."""
 
   def __init__(
     self,
@@ -288,9 +284,7 @@ class XtreamExportStore:
   async def async_get_snapshot(
     self, *, force_reload: bool = False
   ) -> XtreamExportSnapshot:
-    """Async-safe snapshot retrieval offloading disk reloads off event
-    loop.
-    """
+    """Async-safe snapshot retrieval offloading disk reloads."""
     sig = self._signature()
     prev_snap = self._snapshot
     if not force_reload and prev_snap is not None and sig == self._last_sig:
@@ -519,12 +513,8 @@ class XtreamPassthroughServer:
     return params
 
   def _is_authorized(self, user: str, passwd: str) -> bool:
-    if not self.username or not self.password:
-      return False
-    return hmac.compare_digest(
-      user.encode("utf-8"), self.username.encode("utf-8")
-    ) and hmac.compare_digest(
-      passwd.encode("utf-8"), self.password.encode("utf-8")
+    return constant_time_credential_match(
+      user, passwd, self.username, self.password
     )
 
   def _verify_request_auth(
@@ -535,7 +525,7 @@ class XtreamPassthroughServer:
     *,
     json_fail: bool = False,
   ) -> web.Response | None:
-    """Return `None` when authorized, or a `401`/`200 auth:0`/`429` response."""
+    """Return `None` when authorized, or `401`/`200 auth:0`/`429`."""
     client_ip = resolve_request_client_ip(
       request,
       trust_proxy_headers=self.trust_proxy_headers,
@@ -562,8 +552,47 @@ class XtreamPassthroughServer:
       if json_fail:
         return json_response({"user_info": {"auth": 0}})
       return self._unauthorized()
-    self.login_limiter.record_success(client_ip)
     return None
+
+  @staticmethod
+  def _parse_validated_host_header(
+    raw_host: str,
+  ) -> tuple[str, int | None] | None:
+    host_hdr = raw_host.strip()
+    if not host_hdr or any(ord(c) <= 0x20 or c in "/\\@?#*" for c in host_hdr):
+      return None
+    if host_hdr.startswith("["):
+      m_v6 = re.match(r"^\[([^\]]+)\](?::(\d+))?$", host_hdr)
+      if not m_v6 or "%" in m_v6.group(1):
+        return None
+      try:
+        ipaddress.IPv6Address(m_v6.group(1))
+      except ipaddress.AddressValueError:
+        return None
+      if m_v6.group(2) is None:
+        return m_v6.group(1), None
+      v6_port = int(m_v6.group(2))
+      return (m_v6.group(1), v6_port) if 1 <= v6_port <= 65535 else None
+
+    host_part = host_hdr
+    port_num: int | None = None
+    if ":" in host_hdr:
+      h, p_str = host_hdr.rsplit(":", 1)
+      if not p_str.isdigit():
+        return None
+      port_num = int(p_str)
+      if not (1 <= port_num <= 65535):
+        return None
+      host_part = h
+    if (
+      not host_part
+      or ".." in host_part
+      or not re.fullmatch(
+        r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host_part
+      )
+    ):
+      return None
+    return host_part, port_num
 
   def _resolve_advertised_host_port(
     self, headers: Mapping[str, str]
@@ -571,25 +600,11 @@ class XtreamPassthroughServer:
     if self.public_host:
       return self.public_host, (self.public_port or self.bound_port)
 
-    host_hdr = (headers.get("host") or "").strip()
-    if host_hdr:
-      if host_hdr.startswith("["):
-        m_v6 = re.match(r"^\[([^\]]+)\](?::(\d+))?$", host_hdr)
-        if m_v6:
-          h = m_v6.group(1)
-          p = (
-            int(m_v6.group(2))
-            if m_v6.group(2)
-            else (443 if self.server_protocol == "https" else 80)
-          )
-          return h, (self.public_port or p)
-      elif ":" in host_hdr:
-        h, p_str = host_hdr.rsplit(":", 1)
-        if p_str.isdigit():
-          return h, (self.public_port or int(p_str))
-      return host_hdr, (
-        self.public_port or (443 if self.server_protocol == "https" else 80)
-      )
+    parsed_host = self._parse_validated_host_header(headers.get("host") or "")
+    if parsed_host is not None:
+      h, p = parsed_host
+      default_port = 443 if self.server_protocol == "https" else 80
+      return h, (self.public_port or p or default_port)
 
     fallback_host = (
       detect_device_ip() or "127.0.0.1"
@@ -619,9 +634,7 @@ class XtreamPassthroughServer:
   def _resolve_upstream_xmltv_fallback(
     self, request: web.Request, snap: XtreamExportSnapshot
   ) -> str:
-    """Return upstream XMLTV fallback URL while blocking self-redirect
-    loops.
-    """
+    """Return upstream XMLTV fallback URL, blocking self-redirect loops."""
     adv_host, adv_port = self._resolve_advertised_host_port(request.headers)
     req_host_hdr = (request.headers.get("host") or "").strip()
     req_host = (

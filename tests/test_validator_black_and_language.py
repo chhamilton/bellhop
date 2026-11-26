@@ -1,6 +1,4 @@
-"""Tests for Stage 2/3 black-screen detection, audio-language track checking,
-and stateful feedback.
-"""
+"""Tests for Stage 2/3 blackdetect, audio language, and stateful state."""
 
 from __future__ import annotations
 
@@ -46,9 +44,7 @@ def _make_mpegts_payload(packets: int = 55) -> bytes:
 
 
 def _write_fake_ffprobe_and_ffmpeg(bin_dir: Path) -> tuple[str, str]:
-  """Create executable Python stand-ins for `ffprobe` and `ffmpeg` driven by URL
-  stream ID.
-  """
+  """Create executable `ffprobe` and `ffmpeg` test stubs keyed by URL."""
   bin_dir.mkdir(parents=True, exist_ok=True)
   py = sys.executable
 

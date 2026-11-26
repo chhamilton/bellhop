@@ -1,6 +1,4 @@
-"""Two-tier YAML configuration loader (`config.yaml` + `credentials.yaml` +
-`.env`).
-"""
+"""Two-tier YAML loader for `config.yaml`, `credentials.yaml`, and `.env`."""
 
 from __future__ import annotations
 
@@ -47,7 +45,7 @@ def interpolate_env(value: Any) -> Any:
   return value
 
 
-def _subdict(mapping: dict[str, Any], *keys: str) -> dict[str, Any]:
+def _subdict(mapping: Mapping[str, Any], *keys: str) -> dict[str, Any]:
   for key in keys:
     val = mapping.get(key)
     if isinstance(val, dict):
@@ -177,60 +175,12 @@ def resolve_dependency_paths(
   return dotenv_target, creds_target
 
 
-def build_config_from_raw_dict(
-  pre_raw: Mapping[str, Any],
-  *,
-  root: Path,
-  base_dir: Path,
-  config_file: Path | None,
-  is_explicit: bool = False,
-  env_path: Path | str | None = None,
-  credentials_path: Path | str | None = None,
-) -> AppConfig:
-  """Validate and construct an `AppConfig` from an already-parsed raw YAML
-  dict.
-  """
-  pre_dict = dict(pre_raw)
-  cfg_env_file = pre_dict.get("env_file")
-  dotenv_target = (
-    Path(env_path)
-    if env_path
-    else ((base_dir / str(cfg_env_file)) if cfg_env_file else (root / ".env"))
-  )
-  if dotenv_target.is_file():
-    load_dotenv(dotenv_target, override=False)
-  else:
-    load_dotenv(override=False)
-
-  raw = interpolate_env(pre_dict)
-  _dotenv_resolved, creds_target = resolve_dependency_paths(
-    pre_dict,
-    root=root,
-    base_dir=base_dir,
-    env_path=env_path,
-    credentials_path=credentials_path,
-  )
-
-  loaded_creds = _load_yaml_dict(creds_target, interpolate=True)
-  sd_creds = _subdict(loaded_creds, "schedules_direct")
-  web_srv_creds = _subdict(loaded_creds, "web_server")
-  xt_srv_creds = _subdict(loaded_creds, "xtream_server")
-  xt_creds = _subdict(loaded_creds, "upstream_xtream", "xtream") or loaded_creds
-
-  # Canonical two-tier `config.yaml` sections:
-  # Tier 1: `paths`, `web_server`, `xtream_server`
-  # Tier 2: `upstream_xtream`, `pipeline`
-  paths_raw = _subdict(raw, "paths")
-  web_srv_raw = _subdict(raw, "web_server")
-  xt_raw = _subdict(raw, "upstream_xtream")
-  xt_srv_raw = _subdict(raw, "xtream_server")
-  pipe_raw = _subdict(raw, "pipeline")
-  lu_raw = _subdict(pipe_raw, "lineup")
-  match_raw = _subdict(pipe_raw, "matching")
-  val_raw = _subdict(pipe_raw, "validation")
-  epg_raw = _subdict(pipe_raw, "epg")
-  out_raw = _subdict(pipe_raw, "output")
-
+def _build_xtream_and_validation_cfg(
+  paths_raw: Mapping[str, Any],
+  xt_raw: Mapping[str, Any],
+  xt_creds: Mapping[str, Any],
+  val_raw: Mapping[str, Any],
+) -> tuple[Path, XtreamConfig, ValidationConfig]:
   cache_dir_path = Path(_first_str(paths_raw.get("cache_dir"), default="cache"))
   seed_json_raw = paths_raw.get("seed_json")
   xtream = XtreamConfig(
@@ -261,7 +211,6 @@ def build_config_from_raw_dict(
     cache_ttl_hours=float(xt_raw.get("refresh_hours", 24.0)),
     seed_json=Path(str(seed_json_raw)) if seed_json_raw else None,
   )
-
   validation = ValidationConfig(
     enabled=bool(val_raw.get("enabled", True)),
     only_changed=bool(val_raw.get("only_changed", True)),
@@ -281,15 +230,21 @@ def build_config_from_raw_dict(
       1, int(val_raw.get("max_candidates_per_channel", 5))
     ),
   )
+  return cache_dir_path, xtream, validation
 
+
+def _build_lineup_cfg(
+  paths_raw: Mapping[str, Any],
+  lu_raw: Mapping[str, Any],
+  sd_creds: Mapping[str, Any],
+) -> LineupConfig:
   sd_cfg_raw = _subdict(lu_raw, "schedules_direct")
   iptv_org_raw = _subdict(lu_raw, "iptv_org")
   collapse_sd = bool(lu_raw.get("collapse_sd_dupes", False))
   raw_num_mode = str(
     lu_raw.get("numbering_mode") or ("hd" if collapse_sd else "both")
   ).lower()
-
-  lineup = LineupConfig(
+  return LineupConfig(
     backend=str(lu_raw.get("backend", "auto"))
     .strip()
     .lower()
@@ -338,53 +293,13 @@ def build_config_from_raw_dict(
     ),
   )
 
-  state_dir_path = Path(_first_str(paths_raw.get("state_dir"), default="state"))
-  state = StateConfig(
-    state_dir=state_dir_path,
-    mapping_path=Path(
-      _first_str(
-        paths_raw.get("mapping_path"),
-        default=str(state_dir_path / "channel_mapping.json"),
-      )
-    ),
-    upgrade_hysteresis_score=float(
-      match_raw.get("upgrade_hysteresis_score", 5.0)
-    ),
-  )
 
-  epg_xml_raw = paths_raw.get("xmltv_file")
-  epg = EpgConfig(
-    verify=bool(epg_raw.get("verify", True)),
-    refresh_hours=float(epg_raw.get("refresh_hours", 6.0)),
-    xmltv_file=Path(str(epg_xml_raw)) if epg_xml_raw else None,
-  )
-
-  output = OutputConfig(
-    m3u8_enabled=bool(out_raw.get("m3u8_enabled", True)),
-    playlist_path=Path(
-      _first_str(
-        paths_raw.get("m3u8_playlist_path"),
-        default="output/bellhop.m3u8",
-      )
-    ),
-    report_path=Path(
-      _first_str(
-        paths_raw.get("m3u8_report_path"),
-        default="output/lineup_report.json",
-      )
-    ),
-    xtream_enabled=bool(out_raw.get("xtream_enabled", True)),
-    xtream_dir=Path(
-      _first_str(
-        paths_raw.get("xtream_output_dir"),
-        default="output/xtream",
-      )
-    ),
-    include_unmatched_comment=bool(
-      out_raw.get("include_unmatched_comment", False)
-    ),
-  )
-
+def _build_serve_cfg(
+  web_srv_raw: Mapping[str, Any],
+  web_srv_creds: Mapping[str, Any],
+  xt_srv_raw: Mapping[str, Any],
+  xt_srv_creds: Mapping[str, Any],
+) -> ServeConfig:
   web_host_raw = _opt_str(web_srv_raw.get("host"))
   web_port_raw = web_srv_raw.get("port")
   default_serve_host = web_host_raw or "0.0.0.0"
@@ -410,8 +325,7 @@ def build_config_from_raw_dict(
 
   xt_port_raw = xt_srv_raw.get("port")
   pub_port_raw = xt_srv_raw.get("public_port")
-
-  serve = ServeConfig(
+  return ServeConfig(
     host=default_serve_host,
     port=default_serve_port,
     web=ServeWebConfig(
@@ -461,6 +375,100 @@ def build_config_from_raw_dict(
     ),
   )
 
+
+def build_config_from_raw_dict(
+  pre_raw: Mapping[str, Any],
+  *,
+  root: Path,
+  base_dir: Path,
+  config_file: Path | None,
+  is_explicit: bool = False,
+  env_path: Path | str | None = None,
+  credentials_path: Path | str | None = None,
+) -> AppConfig:
+  """Validate and construct an `AppConfig` from a pre-parsed YAML dict."""
+  pre_dict = dict(pre_raw)
+  dotenv_target, creds_target = resolve_dependency_paths(
+    pre_dict,
+    root=root,
+    base_dir=base_dir,
+    env_path=env_path,
+    credentials_path=credentials_path,
+  )
+  if dotenv_target.is_file():
+    load_dotenv(dotenv_target, override=False)
+
+  raw = interpolate_env(pre_dict)
+  loaded_creds = _load_yaml_dict(creds_target, interpolate=True)
+  sd_creds = _subdict(loaded_creds, "schedules_direct")
+  web_srv_creds = _subdict(loaded_creds, "web_server")
+  xt_srv_creds = _subdict(loaded_creds, "xtream_server")
+  xt_creds = _subdict(loaded_creds, "upstream_xtream", "xtream") or loaded_creds
+
+  paths_raw = _subdict(raw, "paths")
+  web_srv_raw = _subdict(raw, "web_server")
+  xt_raw = _subdict(raw, "upstream_xtream")
+  xt_srv_raw = _subdict(raw, "xtream_server")
+  pipe_raw = _subdict(raw, "pipeline")
+  lu_raw = _subdict(pipe_raw, "lineup")
+  match_raw = _subdict(pipe_raw, "matching")
+  val_raw = _subdict(pipe_raw, "validation")
+  epg_raw = _subdict(pipe_raw, "epg")
+  out_raw = _subdict(pipe_raw, "output")
+
+  cache_dir_path, xtream, validation = _build_xtream_and_validation_cfg(
+    paths_raw, xt_raw, xt_creds, val_raw
+  )
+  lineup = _build_lineup_cfg(paths_raw, lu_raw, sd_creds)
+  serve = _build_serve_cfg(web_srv_raw, web_srv_creds, xt_srv_raw, xt_srv_creds)
+
+  state_dir_path = Path(_first_str(paths_raw.get("state_dir"), default="state"))
+  state = StateConfig(
+    state_dir=state_dir_path,
+    mapping_path=Path(
+      _first_str(
+        paths_raw.get("mapping_path"),
+        default=str(state_dir_path / "channel_mapping.json"),
+      )
+    ),
+    upgrade_hysteresis_score=float(
+      match_raw.get("upgrade_hysteresis_score", 5.0)
+    ),
+  )
+
+  epg_xml_raw = paths_raw.get("xmltv_file")
+  epg = EpgConfig(
+    verify=bool(epg_raw.get("verify", True)),
+    refresh_hours=float(epg_raw.get("refresh_hours", 6.0)),
+    xmltv_file=Path(str(epg_xml_raw)) if epg_xml_raw else None,
+  )
+
+  output = OutputConfig(
+    m3u8_enabled=bool(out_raw.get("m3u8_enabled", True)),
+    playlist_path=Path(
+      _first_str(
+        paths_raw.get("m3u8_playlist_path"),
+        default="output/bellhop.m3u8",
+      )
+    ),
+    report_path=Path(
+      _first_str(
+        paths_raw.get("m3u8_report_path"),
+        default="output/lineup_report.json",
+      )
+    ),
+    xtream_enabled=bool(out_raw.get("xtream_enabled", True)),
+    xtream_dir=Path(
+      _first_str(
+        paths_raw.get("xtream_output_dir"),
+        default="output/xtream",
+      )
+    ),
+    include_unmatched_comment=bool(
+      out_raw.get("include_unmatched_comment", False)
+    ),
+  )
+
   pkg_root = Path(__file__).resolve().parents[3]
   effective_root = (
     base_dir if (is_explicit and not (base_dir / "src").is_dir()) else root
@@ -494,8 +502,7 @@ def load_config(
   env_path: Path | str | None = None,
   credentials_path: Path | str | None = None,
 ) -> AppConfig:
-  """Load declarative two-tier settings from `config.yaml` (+ `credentials.yaml`
-  & `.env`).
+  """Load two-tier settings from `config.yaml`, `credentials.yaml`, & `.env`.
 
   Args:
     config_path: Explicit `config.yaml` path (defaults to `$BELLHOP_CONFIG` or

@@ -1,6 +1,4 @@
-"""Tests for Xtream API client, two-stage stream validator, M3U8 output, and
-CLI.
-"""
+"""Tests for Xtream client, two-stage validator, M3U8 export, and CLI."""
 
 from __future__ import annotations
 
@@ -458,9 +456,7 @@ pipeline:
 def test_exported_group_dial_ranges_reflect_surviving_validated_channels(
   tmp_path: Path,
 ) -> None:
-  """Verify every exported group carries `(lo–hi)` computed from surviving
-  channels only.
-  """
+  """Verify every exported group shows `(lo–hi)` of surviving channels."""
   from bellhop.pipeline.xtream_exporter import build_xtream_export_bundle
 
   lineup = CableLineup(

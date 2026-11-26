@@ -1,6 +1,4 @@
-"""Reusable 6-phase pipeline runner engine for CLI execution and persistent
-scheduling.
-"""
+"""Reusable 6-phase pipeline runner for CLI and scheduling."""
 
 from __future__ import annotations
 
@@ -92,9 +90,7 @@ class PipelineConfigError(ValueError):
 def parse_phase_tokens(
   raw_values: list[str] | tuple[str, ...] | None,
 ) -> list[str]:
-  """Expand comma-separated phase names/aliases into canonical ordered phase
-  names.
-  """
+  """Expand comma-separated phase names/aliases into canonical order."""
   if not raw_values:
     return []
 
@@ -144,9 +140,7 @@ def resolve_active_phases(
   include_phases: list[str] | None = None,
   skip_phases: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
-  """Return `(active_phases, skipped_phases)` in canonical pipeline execution
-  order.
-  """
+  """Return `(active_phases, skipped_phases)` in canonical pipeline order."""
   skipped_req = set(parse_phase_tokens(skip_phases))
 
   if include_phases:

@@ -1,6 +1,4 @@
-"""Focused unit and failure-mode tests for `EpgDatabase`
-(`src/bellhop/epg/db.py`).
-"""
+"""Unit and failure-mode tests for `EpgDatabase` (`bellhop.epg.db`)."""
 
 from __future__ import annotations
 
@@ -350,9 +348,7 @@ def test_sd_program_retention_pruning_and_stale_airings_eviction(
 async def test_xmltv_download_size_cap_aborts_and_unlinks_temp_file(
   tmp_path: Path,
 ) -> None:
-  """Verify `max_xmltv_bytes` aborts oversized XMLTV responses and removes temp
-  files.
-  """
+  """Verify `max_xmltv_bytes` aborts oversized feeds and removes temp."""
   from aiohttp import web
 
   from bellhop.epg.refresh import EpgRefreshConfig, EpgRefreshService

@@ -1,12 +1,7 @@
-"""Public Tier-2 operational config serializer and comment-preserving
-updater.
-"""
+"""Tier-2 operational config serializer and comment-preserving updater."""
 
 from __future__ import annotations
 
-import contextlib
-import os
-import secrets
 from collections.abc import Mapping, MutableMapping
 from io import StringIO
 from pathlib import Path
@@ -32,7 +27,7 @@ from bellhop.common.api_contracts import (
   PublicUpstreamXtreamDict,
   PublicValidationDict,
 )
-from bellhop.common.file_utils import PRIVATE_FILE_MODE, ensure_private_dir
+from bellhop.common.file_utils import write_private_text
 from bellhop.config.load import (
   build_config_from_raw_dict,
   find_project_root,
@@ -284,14 +279,345 @@ def _set_rt_value(
   parent[key] = value
 
 
+def _apply_upstream_xtream_updates(
+  raw: MutableMapping[str, Any],
+  u_xt: object,
+  before_cfg: AppConfig,
+) -> None:
+  if not isinstance(u_xt, dict):
+    return
+  xt = _ensure_dict(raw, "upstream_xtream")
+  if "server_url" in u_xt:
+    _set_rt_value(
+      xt,
+      "server_url",
+      _validate_xtream_server_url(u_xt["server_url"]),
+      current_resolved=before_cfg.xtream.server_url,
+    )
+  if "stream_format" in u_xt:
+    fmt = str(u_xt["stream_format"] or "").strip().lower().lstrip(".")
+    if fmt not in {"ts", "m3u8"}:
+      raise ValueError("upstream_xtream.stream_format must be 'ts' or 'm3u8'.")
+    _set_rt_value(
+      xt,
+      "stream_format",
+      fmt,
+      current_resolved=before_cfg.xtream.stream_format,
+    )
+  if "request_timeout_sec" in u_xt:
+    _set_rt_value(
+      xt,
+      "request_timeout_sec",
+      _pos_float(
+        u_xt["request_timeout_sec"], "upstream_xtream.request_timeout_sec"
+      ),
+      current_resolved=before_cfg.xtream.request_timeout_sec,
+    )
+  if "refresh_hours" in u_xt:
+    _set_rt_value(
+      xt,
+      "refresh_hours",
+      _pos_float(
+        u_xt["refresh_hours"],
+        "upstream_xtream.refresh_hours",
+        allow_zero=True,
+      ),
+      current_resolved=before_cfg.xtream.cache_ttl_hours,
+    )
+
+
+def _apply_lineup_updates(
+  pipe: MutableMapping[str, Any],
+  u_lu: object,
+  before_cfg: AppConfig,
+) -> None:
+  if not isinstance(u_lu, dict):
+    return
+  lu = _ensure_dict(pipe, "lineup")
+  if "backend" in u_lu:
+    bk = str(u_lu["backend"] or "").strip().lower()
+    if bk not in {"auto", "yaml", "tvguide", "schedules_direct"}:
+      raise ValueError(
+        "pipeline.lineup.backend must be one of: auto, yaml, tvguide, schedules_direct."
+      )
+    _set_rt_value(lu, "backend", bk, current_resolved=before_cfg.lineup.backend)
+  if "lineup_id" in u_lu:
+    lid = str(u_lu["lineup_id"] or "").strip()
+    if not lid:
+      raise ValueError("pipeline.lineup.lineup_id cannot be empty.")
+    _set_rt_value(
+      lu, "lineup_id", lid, current_resolved=before_cfg.lineup.lineup_id
+    )
+  if "postal_code" in u_lu:
+    _set_rt_value(
+      lu,
+      "postal_code",
+      str(u_lu["postal_code"] or "").strip(),
+      current_resolved=before_cfg.lineup.postal_code,
+    )
+  if "refresh_days" in u_lu:
+    _set_rt_value(
+      lu,
+      "refresh_days",
+      _pos_float(
+        u_lu["refresh_days"],
+        "pipeline.lineup.refresh_days",
+        allow_zero=True,
+      ),
+      current_resolved=before_cfg.lineup.refresh_days,
+    )
+  if "numbering_mode" in u_lu:
+    nm = str(u_lu["numbering_mode"] or "").strip().lower()
+    if nm not in {"both", "hd", "sd"}:
+      raise ValueError(
+        "pipeline.lineup.numbering_mode must be 'both', 'hd', or 'sd'."
+      )
+    _set_rt_value(
+      lu,
+      "numbering_mode",
+      nm,
+      current_resolved=before_cfg.lineup.numbering_mode,
+    )
+  if "collapse_sd_dupes" in u_lu:
+    _set_rt_value(
+      lu,
+      "collapse_sd_dupes",
+      bool(u_lu["collapse_sd_dupes"]),
+      current_resolved=before_cfg.lineup.collapse_sd_dupes,
+    )
+  if "exclude_audio" in u_lu:
+    _set_rt_value(
+      lu,
+      "exclude_audio",
+      bool(u_lu["exclude_audio"]),
+      current_resolved=before_cfg.lineup.exclude_audio,
+    )
+  if "pinned_streams" in u_lu:
+    raw_pins = u_lu["pinned_streams"]
+    if not isinstance(raw_pins, dict):
+      raise ValueError(
+        "pipeline.lineup.pinned_streams must be a mapping of channel number to stream ID."
+      )
+    _set_rt_value(
+      lu,
+      "pinned_streams",
+      {
+        _pos_int(k, "pipeline.lineup.pinned_streams key"): _pos_int(
+          v, "pipeline.lineup.pinned_streams value"
+        )
+        for k, v in raw_pins.items()
+      },
+      current_resolved=dict(before_cfg.lineup.pinned_streams),
+    )
+  if "excluded_channels" in u_lu:
+    raw_excl = u_lu["excluded_channels"]
+    if not isinstance(raw_excl, list):
+      raise ValueError(
+        "pipeline.lineup.excluded_channels must be a list of channel numbers."
+      )
+    _set_rt_value(
+      lu,
+      "excluded_channels",
+      sorted(
+        {
+          _pos_int(c, "pipeline.lineup.excluded_channels item")
+          for c in raw_excl
+        }
+      ),
+      current_resolved=sorted(before_cfg.lineup.excluded_channels),
+    )
+  if isinstance(u_lu.get("schedules_direct"), dict):
+    sd = _ensure_dict(lu, "schedules_direct")
+    if "auto_add_lineup" in u_lu["schedules_direct"]:
+      _set_rt_value(
+        sd,
+        "auto_add_lineup",
+        bool(u_lu["schedules_direct"]["auto_add_lineup"]),
+        current_resolved=before_cfg.lineup.schedules_direct.auto_add_lineup,
+      )
+  if isinstance(u_lu.get("iptv_org"), dict):
+    u_io = u_lu["iptv_org"]
+    io_d = _ensure_dict(lu, "iptv_org")
+    if "enabled" in u_io:
+      _set_rt_value(
+        io_d,
+        "enabled",
+        bool(u_io["enabled"]),
+        current_resolved=before_cfg.lineup.iptv_org.enabled,
+      )
+    if "recheck_hours" in u_io:
+      _set_rt_value(
+        io_d,
+        "recheck_hours",
+        _pos_float(
+          u_io["recheck_hours"],
+          "pipeline.lineup.iptv_org.recheck_hours",
+          allow_zero=True,
+        ),
+        current_resolved=before_cfg.lineup.iptv_org.recheck_hours,
+      )
+
+
+def _apply_validation_updates(
+  pipe: MutableMapping[str, Any],
+  u_val: object,
+  before_cfg: AppConfig,
+) -> None:
+  if not isinstance(u_val, dict):
+    return
+  val = _ensure_dict(pipe, "validation")
+  for bkey in (
+    "enabled",
+    "only_changed",
+    "ignore_account_limit",
+    "use_ffprobe",
+    "detect_black_screen",
+    "check_audio_language",
+  ):
+    if bkey in u_val:
+      _set_rt_value(
+        val,
+        bkey,
+        bool(u_val[bkey]),
+        current_resolved=getattr(before_cfg.validation, bkey),
+      )
+  if "concurrency" in u_val:
+    _set_rt_value(
+      val,
+      "concurrency",
+      _pos_int(
+        u_val["concurrency"], "pipeline.validation.concurrency", minimum=1
+      ),
+      current_resolved=before_cfg.validation.concurrency,
+    )
+  if "inter_probe_delay_sec" in u_val:
+    _set_rt_value(
+      val,
+      "inter_probe_delay_sec",
+      _pos_float(
+        u_val["inter_probe_delay_sec"],
+        "pipeline.validation.inter_probe_delay_sec",
+        allow_zero=True,
+      ),
+      current_resolved=before_cfg.validation.inter_probe_delay_sec,
+    )
+  if "http_timeout_sec" in u_val:
+    _set_rt_value(
+      val,
+      "http_timeout_sec",
+      _pos_float(
+        u_val["http_timeout_sec"], "pipeline.validation.http_timeout_sec"
+      ),
+      current_resolved=before_cfg.validation.http_timeout_sec,
+    )
+  if "min_bytes_to_read" in u_val:
+    _set_rt_value(
+      val,
+      "min_bytes_to_read",
+      _pos_int(
+        u_val["min_bytes_to_read"],
+        "pipeline.validation.min_bytes_to_read",
+        minimum=512,
+      ),
+      current_resolved=before_cfg.validation.min_bytes_to_read,
+    )
+  if "ffprobe_timeout_sec" in u_val:
+    _set_rt_value(
+      val,
+      "ffprobe_timeout_sec",
+      _pos_float(
+        u_val["ffprobe_timeout_sec"],
+        "pipeline.validation.ffprobe_timeout_sec",
+      ),
+      current_resolved=before_cfg.validation.ffprobe_timeout_sec,
+    )
+  if "black_sample_sec" in u_val:
+    bs_sec = _pos_float(
+      u_val["black_sample_sec"],
+      "pipeline.validation.black_sample_sec",
+    )
+    if bs_sec < 0.5:
+      raise ValueError("pipeline.validation.black_sample_sec must be >= 0.5.")
+    _set_rt_value(
+      val,
+      "black_sample_sec",
+      bs_sec,
+      current_resolved=before_cfg.validation.black_sample_sec,
+    )
+  if "max_candidates_per_channel" in u_val:
+    _set_rt_value(
+      val,
+      "max_candidates_per_channel",
+      _pos_int(
+        u_val["max_candidates_per_channel"],
+        "pipeline.validation.max_candidates_per_channel",
+        minimum=1,
+      ),
+      current_resolved=before_cfg.validation.max_candidates_per_channel,
+    )
+
+
+def _apply_epg_and_output_updates(
+  pipe: MutableMapping[str, Any],
+  u_pipe: Mapping[str, Any],
+  before_cfg: AppConfig,
+) -> None:
+  if (
+    isinstance(u_pipe.get("matching"), dict)
+    and "upgrade_hysteresis_score" in u_pipe["matching"]
+  ):
+    hyst = _pos_float(
+      u_pipe["matching"]["upgrade_hysteresis_score"],
+      "pipeline.matching.upgrade_hysteresis_score",
+      allow_zero=True,
+    )
+    _set_rt_value(
+      _ensure_dict(pipe, "matching"),
+      "upgrade_hysteresis_score",
+      hyst,
+      current_resolved=before_cfg.state.upgrade_hysteresis_score,
+    )
+  if isinstance(u_pipe.get("epg"), dict):
+    u_epg = u_pipe["epg"]
+    epg_d = _ensure_dict(pipe, "epg")
+    if "verify" in u_epg:
+      _set_rt_value(
+        epg_d,
+        "verify",
+        bool(u_epg["verify"]),
+        current_resolved=before_cfg.epg.verify,
+      )
+    if "refresh_hours" in u_epg:
+      _set_rt_value(
+        epg_d,
+        "refresh_hours",
+        _pos_float(
+          u_epg["refresh_hours"],
+          "pipeline.epg.refresh_hours",
+          allow_zero=True,
+        ),
+        current_resolved=before_cfg.epg.refresh_hours,
+      )
+  if isinstance(u_pipe.get("output"), dict):
+    u_out = u_pipe["output"]
+    out_d = _ensure_dict(pipe, "output")
+    for bkey in ("include_unmatched_comment", "m3u8_enabled", "xtream_enabled"):
+      if bkey in u_out:
+        _set_rt_value(
+          out_d,
+          bkey,
+          bool(u_out[bkey]),
+          current_resolved=getattr(before_cfg.output, bkey),
+        )
+
+
 def apply_public_config_update(
   config_path: Path,
   updates: Mapping[str, Any],
   *,
   before_config: AppConfig | None = None,
 ) -> tuple[AppConfig, bool]:
-  """Validate and atomically merge operational settings into two-tier
-  `config.yaml`.
+  """Validate and atomically merge operational settings into `config.yaml`.
 
   Preserves YAML comments, quotes, and `${ENV}` placeholders via `ruamel.yaml`.
   Strictly scopes updates to `upstream_xtream` and `pipeline`.
@@ -332,340 +658,16 @@ def apply_public_config_update(
     )
   )
 
-  # 1. upstream_xtream (non-secret, non-path fields only)
-  u_xt = updates.get("upstream_xtream")
-  if isinstance(u_xt, dict):
-    xt = _ensure_dict(raw, "upstream_xtream")
-    if "server_url" in u_xt:
-      _set_rt_value(
-        xt,
-        "server_url",
-        _validate_xtream_server_url(u_xt["server_url"]),
-        current_resolved=before_cfg.xtream.server_url,
-      )
-    if "stream_format" in u_xt:
-      fmt = str(u_xt["stream_format"] or "").strip().lower().lstrip(".")
-      if fmt not in {"ts", "m3u8"}:
-        raise ValueError(
-          "upstream_xtream.stream_format must be 'ts' or 'm3u8'."
-        )
-      _set_rt_value(
-        xt,
-        "stream_format",
-        fmt,
-        current_resolved=before_cfg.xtream.stream_format,
-      )
-    if "request_timeout_sec" in u_xt:
-      _set_rt_value(
-        xt,
-        "request_timeout_sec",
-        _pos_float(
-          u_xt["request_timeout_sec"], "upstream_xtream.request_timeout_sec"
-        ),
-        current_resolved=before_cfg.xtream.request_timeout_sec,
-      )
-    if "refresh_hours" in u_xt:
-      _set_rt_value(
-        xt,
-        "refresh_hours",
-        _pos_float(
-          u_xt["refresh_hours"],
-          "upstream_xtream.refresh_hours",
-          allow_zero=True,
-        ),
-        current_resolved=before_cfg.xtream.cache_ttl_hours,
-      )
+  _apply_upstream_xtream_updates(
+    raw, updates.get("upstream_xtream"), before_cfg
+  )
 
-  # 2. pipeline (non-secret, non-path settings; provider URLs constant)
   u_pipe = updates.get("pipeline")
   if isinstance(u_pipe, dict):
     pipe = _ensure_dict(raw, "pipeline")
-
-    if isinstance(u_pipe.get("lineup"), dict):
-      u_lu = u_pipe["lineup"]
-      lu = _ensure_dict(pipe, "lineup")
-      if "backend" in u_lu:
-        bk = str(u_lu["backend"] or "").strip().lower()
-        if bk not in {"auto", "yaml", "tvguide", "schedules_direct"}:
-          raise ValueError(
-            "pipeline.lineup.backend must be one of: auto, yaml, tvguide, schedules_direct."
-          )
-        _set_rt_value(
-          lu, "backend", bk, current_resolved=before_cfg.lineup.backend
-        )
-      if "lineup_id" in u_lu:
-        lid = str(u_lu["lineup_id"] or "").strip()
-        if not lid:
-          raise ValueError("pipeline.lineup.lineup_id cannot be empty.")
-        _set_rt_value(
-          lu, "lineup_id", lid, current_resolved=before_cfg.lineup.lineup_id
-        )
-      if "postal_code" in u_lu:
-        _set_rt_value(
-          lu,
-          "postal_code",
-          str(u_lu["postal_code"] or "").strip(),
-          current_resolved=before_cfg.lineup.postal_code,
-        )
-      if "refresh_days" in u_lu:
-        _set_rt_value(
-          lu,
-          "refresh_days",
-          _pos_float(
-            u_lu["refresh_days"],
-            "pipeline.lineup.refresh_days",
-            allow_zero=True,
-          ),
-          current_resolved=before_cfg.lineup.refresh_days,
-        )
-      if "numbering_mode" in u_lu:
-        nm = str(u_lu["numbering_mode"] or "").strip().lower()
-        if nm not in {"both", "hd", "sd"}:
-          raise ValueError(
-            "pipeline.lineup.numbering_mode must be 'both', 'hd', or 'sd'."
-          )
-        _set_rt_value(
-          lu,
-          "numbering_mode",
-          nm,
-          current_resolved=before_cfg.lineup.numbering_mode,
-        )
-      if "collapse_sd_dupes" in u_lu:
-        _set_rt_value(
-          lu,
-          "collapse_sd_dupes",
-          bool(u_lu["collapse_sd_dupes"]),
-          current_resolved=before_cfg.lineup.collapse_sd_dupes,
-        )
-      if "exclude_audio" in u_lu:
-        _set_rt_value(
-          lu,
-          "exclude_audio",
-          bool(u_lu["exclude_audio"]),
-          current_resolved=before_cfg.lineup.exclude_audio,
-        )
-      if "pinned_streams" in u_lu:
-        raw_pins = u_lu["pinned_streams"]
-        if not isinstance(raw_pins, dict):
-          raise ValueError(
-            "pipeline.lineup.pinned_streams must be a mapping of channel number to stream ID."
-          )
-        _set_rt_value(
-          lu,
-          "pinned_streams",
-          {
-            _pos_int(k, "pipeline.lineup.pinned_streams key"): _pos_int(
-              v, "pipeline.lineup.pinned_streams value"
-            )
-            for k, v in raw_pins.items()
-          },
-          current_resolved=dict(before_cfg.lineup.pinned_streams),
-        )
-      if "excluded_channels" in u_lu:
-        raw_excl = u_lu["excluded_channels"]
-        if not isinstance(raw_excl, list):
-          raise ValueError(
-            "pipeline.lineup.excluded_channels must be a list of channel numbers."
-          )
-        _set_rt_value(
-          lu,
-          "excluded_channels",
-          sorted(
-            {
-              _pos_int(c, "pipeline.lineup.excluded_channels item")
-              for c in raw_excl
-            }
-          ),
-          current_resolved=sorted(before_cfg.lineup.excluded_channels),
-        )
-      if isinstance(u_lu.get("schedules_direct"), dict):
-        sd = _ensure_dict(lu, "schedules_direct")
-        if "auto_add_lineup" in u_lu["schedules_direct"]:
-          _set_rt_value(
-            sd,
-            "auto_add_lineup",
-            bool(u_lu["schedules_direct"]["auto_add_lineup"]),
-            current_resolved=before_cfg.lineup.schedules_direct.auto_add_lineup,
-          )
-      if isinstance(u_lu.get("iptv_org"), dict):
-        u_io = u_lu["iptv_org"]
-        io_d = _ensure_dict(lu, "iptv_org")
-        if "enabled" in u_io:
-          _set_rt_value(
-            io_d,
-            "enabled",
-            bool(u_io["enabled"]),
-            current_resolved=before_cfg.lineup.iptv_org.enabled,
-          )
-        if "recheck_hours" in u_io:
-          _set_rt_value(
-            io_d,
-            "recheck_hours",
-            _pos_float(
-              u_io["recheck_hours"],
-              "pipeline.lineup.iptv_org.recheck_hours",
-              allow_zero=True,
-            ),
-            current_resolved=before_cfg.lineup.iptv_org.recheck_hours,
-          )
-
-    if (
-      isinstance(u_pipe.get("matching"), dict)
-      and "upgrade_hysteresis_score" in u_pipe["matching"]
-    ):
-      hyst = _pos_float(
-        u_pipe["matching"]["upgrade_hysteresis_score"],
-        "pipeline.matching.upgrade_hysteresis_score",
-        allow_zero=True,
-      )
-      _set_rt_value(
-        _ensure_dict(pipe, "matching"),
-        "upgrade_hysteresis_score",
-        hyst,
-        current_resolved=before_cfg.state.upgrade_hysteresis_score,
-      )
-
-    if isinstance(u_pipe.get("validation"), dict):
-      u_val = u_pipe["validation"]
-      val = _ensure_dict(pipe, "validation")
-      for bkey in (
-        "enabled",
-        "only_changed",
-        "ignore_account_limit",
-        "use_ffprobe",
-        "detect_black_screen",
-        "check_audio_language",
-      ):
-        if bkey in u_val:
-          _set_rt_value(
-            val,
-            bkey,
-            bool(u_val[bkey]),
-            current_resolved=getattr(before_cfg.validation, bkey),
-          )
-      if "concurrency" in u_val:
-        _set_rt_value(
-          val,
-          "concurrency",
-          _pos_int(
-            u_val["concurrency"], "pipeline.validation.concurrency", minimum=1
-          ),
-          current_resolved=before_cfg.validation.concurrency,
-        )
-      if "inter_probe_delay_sec" in u_val:
-        _set_rt_value(
-          val,
-          "inter_probe_delay_sec",
-          _pos_float(
-            u_val["inter_probe_delay_sec"],
-            "pipeline.validation.inter_probe_delay_sec",
-            allow_zero=True,
-          ),
-          current_resolved=before_cfg.validation.inter_probe_delay_sec,
-        )
-      if "http_timeout_sec" in u_val:
-        _set_rt_value(
-          val,
-          "http_timeout_sec",
-          _pos_float(
-            u_val["http_timeout_sec"], "pipeline.validation.http_timeout_sec"
-          ),
-          current_resolved=before_cfg.validation.http_timeout_sec,
-        )
-      if "min_bytes_to_read" in u_val:
-        _set_rt_value(
-          val,
-          "min_bytes_to_read",
-          _pos_int(
-            u_val["min_bytes_to_read"],
-            "pipeline.validation.min_bytes_to_read",
-            minimum=512,
-          ),
-          current_resolved=before_cfg.validation.min_bytes_to_read,
-        )
-      if "ffprobe_timeout_sec" in u_val:
-        _set_rt_value(
-          val,
-          "ffprobe_timeout_sec",
-          _pos_float(
-            u_val["ffprobe_timeout_sec"],
-            "pipeline.validation.ffprobe_timeout_sec",
-          ),
-          current_resolved=before_cfg.validation.ffprobe_timeout_sec,
-        )
-      if "black_sample_sec" in u_val:
-        bs_sec = _pos_float(
-          u_val["black_sample_sec"],
-          "pipeline.validation.black_sample_sec",
-        )
-        if bs_sec < 0.5:
-          raise ValueError(
-            "pipeline.validation.black_sample_sec must be >= 0.5."
-          )
-        _set_rt_value(
-          val,
-          "black_sample_sec",
-          bs_sec,
-          current_resolved=before_cfg.validation.black_sample_sec,
-        )
-      if "max_candidates_per_channel" in u_val:
-        _set_rt_value(
-          val,
-          "max_candidates_per_channel",
-          _pos_int(
-            u_val["max_candidates_per_channel"],
-            "pipeline.validation.max_candidates_per_channel",
-            minimum=1,
-          ),
-          current_resolved=before_cfg.validation.max_candidates_per_channel,
-        )
-
-    if isinstance(u_pipe.get("epg"), dict):
-      u_epg = u_pipe["epg"]
-      epg_d = _ensure_dict(pipe, "epg")
-      if "verify" in u_epg:
-        _set_rt_value(
-          epg_d,
-          "verify",
-          bool(u_epg["verify"]),
-          current_resolved=before_cfg.epg.verify,
-        )
-      if "refresh_hours" in u_epg:
-        _set_rt_value(
-          epg_d,
-          "refresh_hours",
-          _pos_float(
-            u_epg["refresh_hours"],
-            "pipeline.epg.refresh_hours",
-            allow_zero=True,
-          ),
-          current_resolved=before_cfg.epg.refresh_hours,
-        )
-
-    if isinstance(u_pipe.get("output"), dict):
-      u_out = u_pipe["output"]
-      out_d = _ensure_dict(pipe, "output")
-      if "include_unmatched_comment" in u_out:
-        _set_rt_value(
-          out_d,
-          "include_unmatched_comment",
-          bool(u_out["include_unmatched_comment"]),
-          current_resolved=before_cfg.output.include_unmatched_comment,
-        )
-      if "m3u8_enabled" in u_out:
-        _set_rt_value(
-          out_d,
-          "m3u8_enabled",
-          bool(u_out["m3u8_enabled"]),
-          current_resolved=before_cfg.output.m3u8_enabled,
-        )
-      if "xtream_enabled" in u_out:
-        _set_rt_value(
-          out_d,
-          "xtream_enabled",
-          bool(u_out["xtream_enabled"]),
-          current_resolved=before_cfg.output.xtream_enabled,
-        )
+    _apply_lineup_updates(pipe, u_pipe.get("lineup"), before_cfg)
+    _apply_validation_updates(pipe, u_pipe.get("validation"), before_cfg)
+    _apply_epg_and_output_updates(pipe, u_pipe, before_cfg)
 
   validated = build_config_from_raw_dict(
     _to_plain_data(raw),
@@ -677,25 +679,9 @@ def apply_public_config_update(
   if not validated.serve.web.enabled and not validated.serve.xtream.enabled:
     raise ValueError("At least one server must remain enabled.")
 
-  ensure_private_dir(target.parent)
-  tmp_path = target.with_name(f".{target.name}.{secrets.token_hex(6)}.tmp")
   buf = StringIO()
   rt_yaml.dump(raw, buf)
-  fd = os.open(
-    str(tmp_path),
-    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-    PRIVATE_FILE_MODE,
-  )
-  try:
-    with os.fdopen(fd, "wb") as fh:
-      fh.write(buf.getvalue().encode("utf-8"))
-    with contextlib.suppress(OSError):
-      os.chmod(tmp_path, PRIVATE_FILE_MODE)
-    os.replace(tmp_path, target)
-  except BaseException:
-    with contextlib.suppress(OSError):
-      tmp_path.unlink(missing_ok=True)
-    raise
+  write_private_text(target, buf.getvalue())
 
   restart_required = bool(
     validated.xtream.server_url != before_cfg.xtream.server_url

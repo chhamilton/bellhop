@@ -1,5 +1,4 @@
-"""Dynamic Schedules Direct & XMLTV EPG refresher backed by WAL-mode SQLite
-(`epg.sqlite3`).
+"""Dynamic Schedules Direct & XMLTV EPG refresher backed by SQLite.
 
 Fetches multi-day Schedules Direct (`20141201`) and passthrough XMLTV guide data
 in the background, reconciles non-overlapping per-slot schedules, and commits
@@ -138,9 +137,7 @@ class EpgRefreshConfig:
 
 
 class EpgRefreshService:
-  """Dynamically fetches Schedules Direct & XMLTV EPG into SQLite
-  (`epg.sqlite3`).
-  """
+  """Dynamically fetches Schedules Direct & XMLTV EPG into `epg.sqlite3`."""
 
   def __init__(
     self,
@@ -245,9 +242,7 @@ class EpgRefreshService:
       self._last_updated = fetched_at
 
   def sync_external_if_needed(self, now_ts: int) -> None:
-    """Worker-thread helper: refresh cached coverage and detect external DB
-    writes.
-    """
+    """Refresh cached coverage and detect external DB writes in worker."""
     if not self.db.db_path.is_file():
       return
     with self._sync_lock:
@@ -264,8 +259,9 @@ class EpgRefreshService:
             self._state = "ok"
 
   def _sync_disk_state(self, now_ts: int) -> None:
-    """Periodic worker-thread check: recompute active coverage and sync external
-    writes.
+    """Recompute active coverage and sync external DB writes.
+
+    Runs periodically on the worker thread.
     """
     if not self.db.db_path.is_file():
       return
@@ -434,9 +430,7 @@ class EpgRefreshService:
   def trigger_background_if_needed(
     self, *, reason_prefix: str = "on_demand"
   ) -> bool:
-    """Non-blocking check: kick off a background refresh if EPG is stale or
-    empty.
-    """
+    """Kick off a background refresh non-blockingly if EPG is stale."""
     if not self.config.enabled or not self.is_configured:
       return False
     if self._in_flight is not None and not self._in_flight.done():
@@ -509,9 +503,7 @@ class EpgRefreshService:
   async def refresh_now(
     self, *, force: bool = True, reason: str = "manual"
   ) -> EpgStatusDict:
-    """Run or join an EPG refresh immediately and return the updated status
-    payload.
-    """
+    """Run or join an EPG refresh immediately and return status payload."""
     if not self.is_configured:
       self._state = "error"
       self._last_error = (
@@ -681,9 +673,7 @@ class EpgRefreshService:
     guide_fp: str,
     effective_url: str,
   ) -> float:
-    """Merge SD primary + XMLTV backfill schedules and commit atomically to
-    SQLite.
-    """
+    """Merge SD primary and XMLTV backfill into SQLite atomically."""
     now_epoch = self._clock()
     redacted_url = redact_url_secrets(effective_url) if effective_url else ""
     if sd_by_chno:

@@ -1,6 +1,4 @@
-"""Tests for Schedules Direct SD-JSON EPG priority, MD5 caching, and XMLTV
-backfill.
-"""
+"""Tests for Schedules Direct SD-JSON EPG priority and XMLTV backfill."""
 
 from __future__ import annotations
 
@@ -52,8 +50,9 @@ def _date_utc(ts: int) -> str:
 async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
   tmp_path: Path,
 ) -> None:
-  """Verify SD-JSON EPG takes priority, XMLTV backfills gaps, MD5 skips
-  unchanged fetches, and `/xmltv.php` serves merged XMLTV.
+  """Verify SD-JSON EPG priority, XMLTV backfill, MD5 skip, and `/xmltv.php`.
+
+  Ensures merged XMLTV feeds serve SD primary programs with XMLTV backfill.
   """
   now_ts = 1_795_530_000  # 2026-11-24T14:20:00Z
   today_str = _date_utc(now_ts)
@@ -669,9 +668,7 @@ async def test_epg_db_permissions_corrupt_recovery_schema_bump_and_cli_banner(
   tmp_path: Path,
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  """Verify `0o600` DB mode, corrupt/schema-bump recovery, and `bellhop serve`
-  SQLite banner.
-  """
+  """Verify `0o600` DB mode, corrupt recovery, and serve SQLite banner."""
   import argparse
   import contextlib
   import io

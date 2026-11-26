@@ -22,9 +22,7 @@ from bellhop.pipeline.providers.base import (
 
 
 class YamlLineupProvider(LineupProvider):
-  """Loads cable lineups from a local curated YAML definition (e.g. bundled
-  sample YAML).
-  """
+  """Loads cable lineups from a local curated YAML lineup file."""
 
   backend_name = "yaml"
 

@@ -130,9 +130,7 @@ class SchedulesDirectEpgConfig:
 
   @property
   def enabled(self) -> bool:
-    """Return `True` when both Schedules Direct username and password are
-    set.
-    """
+    """Return `True` when Schedules Direct credentials are configured."""
     return bool(self.username.strip() and self.password.strip())
 
 
@@ -147,9 +145,7 @@ class SdFetchSummary:
 
 
 class SchedulesDirectEpgClient:
-  """SQLite-backed SD-JSON (`20141201`) EPG fetcher with MD5 differential
-  sync.
-  """
+  """SQLite-backed SD-JSON (`20141201`) EPG fetcher with MD5 sync."""
 
   def __init__(
     self,
@@ -603,9 +599,210 @@ class SchedulesDirectEpgClient:
       "rating": rating,
     }
 
-  # ---------------------------------------------------------------------------
-  # Main EPG Fetch Entrypoint (SQLite MD5 Differential Sync)
-  # ---------------------------------------------------------------------------
+  async def _find_stale_schedule_requests(
+    self,
+    session: aiohttp.ClientSession,
+    unique_sids: Sequence[str],
+    dates: Sequence[str],
+    cached_sched_md5s: Mapping[tuple[str, str], str],
+  ) -> list[dict[str, Any]]:
+    stale_requests: list[dict[str, Any]] = []
+    for start_idx in range(0, len(unique_sids), MAX_SCHEDULE_BATCH):
+      batch_sids = unique_sids[start_idx : start_idx + MAX_SCHEDULE_BATCH]
+      md5_req = [{"stationID": sid, "date": list(dates)} for sid in batch_sids]
+      md5_resp = await self._request_json(
+        session, "POST", "schedules/md5", json_body=md5_req
+      )
+      md5_map = md5_resp if isinstance(md5_resp, Mapping) else {}
+      for sid in batch_sids:
+        remote_dates = md5_map.get(sid)
+        remote_by_dt = remote_dates if isinstance(remote_dates, Mapping) else {}
+        if int(remote_by_dt.get("code", 0) or 0) != 0:
+          continue
+        needed_dts: list[str] = []
+        for dt_str in dates:
+          r_info = remote_by_dt.get(dt_str)
+          if isinstance(r_info, Mapping):
+            r_code = int(r_info.get("code", 0) or 0)
+            if r_code in _SKIP_STATION_CODES:
+              continue
+            r_md5 = str(r_info.get("md5") or r_info.get("hash") or "")
+            if r_md5 and cached_sched_md5s.get((sid, dt_str)) == r_md5:
+              continue
+          needed_dts.append(dt_str)
+        if needed_dts:
+          stale_requests.append({"stationID": sid, "date": needed_dts})
+    return stale_requests
+
+  async def _fetch_and_store_schedule_days(
+    self,
+    session: aiohttp.ClientSession,
+    stale_requests: Sequence[dict[str, Any]],
+    *,
+    min_keep_date: str,
+  ) -> int:
+    fetched_sched_days = 0
+    new_sched_rows: list[tuple[str, str, str, list[dict[str, Any]]]] = []
+    for start_idx in range(0, len(stale_requests), MAX_SCHEDULE_BATCH):
+      sched_batch = list(
+        stale_requests[start_idx : start_idx + MAX_SCHEDULE_BATCH]
+      )
+      sched_resp = await self._request_json(
+        session, "POST", "schedules", json_body=sched_batch
+      )
+      if not isinstance(sched_resp, list):
+        continue
+      for item in sched_resp:
+        if not isinstance(item, Mapping):
+          continue
+        if int(item.get("code", 0) or 0) != 0:
+          continue
+        sid = str(item.get("stationID") or "").strip()
+        meta = item.get("metadata")
+        meta_map = meta if isinstance(meta, Mapping) else {}
+        start_dt = str(meta_map.get("startDate") or "").strip()
+        s_md5 = str(meta_map.get("md5") or meta_map.get("hash") or "")
+        raw_progs = item.get("programs")
+        if not sid or not start_dt or not isinstance(raw_progs, list):
+          continue
+        compact_airings: list[dict[str, Any]] = []
+        for air in raw_progs:
+          if not isinstance(air, Mapping):
+            continue
+          pid = str(air.get("programID") or "").strip()
+          air_ts = _parse_air_ts(str(air.get("airDateTime") or ""))
+          dur = int(air.get("duration") or 0)
+          if not pid or air_ts <= 0 or dur <= 0:
+            continue
+          compact_airings.append(
+            {
+              "pid": pid,
+              "md5": str(air.get("md5") or air.get("hash") or ""),
+              "start": air_ts,
+              "dur": dur,
+              "live": str(air.get("liveTapeDelay") or "").lower() == "live",
+              "new": bool(air.get("new")),
+            }
+          )
+        new_sched_rows.append((sid, start_dt, s_md5, compact_airings))
+        fetched_sched_days += 1
+
+    await asyncio.to_thread(
+      self.db.upsert_sd_schedule_days,
+      new_sched_rows,
+      min_keep_date=min_keep_date,
+    )
+    return fetched_sched_days
+
+  async def _sync_missing_programs(
+    self,
+    session: aiohttp.ClientSession,
+    missing_pids: Sequence[str],
+  ) -> int:
+    fetched_progs = 0
+    for start_idx in range(0, len(missing_pids), MAX_PROGRAM_BATCH):
+      pid_batch = list(missing_pids[start_idx : start_idx + MAX_PROGRAM_BATCH])
+      prog_resp = await self._request_json(
+        session, "POST", "programs", json_body=pid_batch
+      )
+      if not isinstance(prog_resp, list):
+        continue
+      batch_extracted: dict[str, dict[str, str]] = {}
+      for raw_p in prog_resp:
+        if not isinstance(raw_p, Mapping):
+          continue
+        if int(raw_p.get("code", 0) or 0) != 0:
+          continue
+        pid = str(raw_p.get("programID") or "").strip()
+        if not pid:
+          continue
+        extracted = self._extract_program_fields(raw_p)
+        if extracted["title"]:
+          batch_extracted[pid] = extracted
+          fetched_progs += 1
+      if batch_extracted:
+        await asyncio.to_thread(
+          self.db.upsert_sd_programs,
+          batch_extracted,
+          updated_at=float(self._clock()),
+        )
+    return fetched_progs
+
+  @staticmethod
+  def _assemble_snapshot_programs(
+    snap: GuideSnapshotProto,
+    chno_to_sid: Mapping[int, str],
+    unique_sids: Sequence[str],
+    airings_by_sid: Mapping[str, Sequence[Mapping[str, Any]]],
+    active_prog_meta: Mapping[str, Mapping[str, str]],
+    *,
+    recent_cutoff: int,
+    max_per_channel: int,
+  ) -> dict[int, list[ProgramItem]]:
+    station_programs: dict[str, list[ProgramItem]] = {}
+    seq = 0
+    for sid in unique_sids:
+      raw_items: list[ProgramItem] = []
+      for air in airings_by_sid.get(sid, ()):
+        start_ts = int(air.get("start") or 0)
+        stop_ts = start_ts + int(air.get("dur") or 0)
+        if stop_ts < recent_cutoff:
+          continue
+        pid = str(air.get("pid") or "")
+        p_meta = active_prog_meta.get(pid)
+        if not p_meta or not p_meta.get("title"):
+          continue
+        seq += 1
+        title = str(p_meta["title"])
+        if air.get("live") and "live" not in title.lower():
+          title = f"Live: {title}"
+        raw_items.append(
+          ProgramItem(
+            id=f"sd-{seq}",
+            channel_id=sid,
+            title=title,
+            sub_title=str(p_meta.get("sub_title") or ""),
+            description=str(p_meta.get("description") or ""),
+            category=str(p_meta.get("category") or ""),
+            start_timestamp=start_ts,
+            stop_timestamp=stop_ts,
+            episode_num=str(p_meta.get("episode_num") or ""),
+            air_date=str(p_meta.get("air_date") or ""),
+            rating=str(p_meta.get("rating") or ""),
+            is_new=bool(air.get("new")),
+            is_live_airing=bool(air.get("live")),
+          )
+        )
+      reconciled = reconcile_non_overlapping_schedule(raw_items)
+      if reconciled:
+        station_programs[sid] = reconciled[:max_per_channel]
+
+    by_chno: dict[int, list[ProgramItem]] = {}
+    for ch in snap.channels:
+      matched_sid = chno_to_sid.get(ch.chno)
+      if not matched_sid or matched_sid not in station_programs:
+        continue
+      cid = ch.epg_channel_id or f"sd.{matched_sid}"
+      by_chno[ch.chno] = [
+        ProgramItem(
+          id=p.id,
+          channel_id=cid,
+          title=p.title,
+          sub_title=p.sub_title,
+          description=p.description,
+          category=p.category,
+          start_timestamp=p.start_timestamp,
+          stop_timestamp=p.stop_timestamp,
+          episode_num=p.episode_num,
+          air_date=p.air_date,
+          rating=p.rating,
+          is_new=p.is_new,
+          is_live_airing=p.is_live_airing,
+        )
+        for p in station_programs[matched_sid]
+      ]
+    return by_chno
+
   async def fetch_for_snapshot(
     self,
     snap: GuideSnapshotProto,
@@ -613,9 +810,7 @@ class SchedulesDirectEpgClient:
     now_ts: int | None = None,
     max_per_channel: int = 120,
   ) -> SdFetchSummary:
-    """Fetch Schedules Direct listings for `snap` using SQLite MD5 differential
-    caching.
-    """
+    """Fetch Schedules Direct listings via SQLite MD5 differential sync."""
     if not self.enabled or not snap.channels:
       return SdFetchSummary(programs_by_chno={})
 
@@ -650,92 +845,14 @@ class SchedulesDirectEpgClient:
       cached_sched_md5s = await asyncio.to_thread(
         self.db.get_sd_schedule_md5s, unique_sids, dates
       )
-
-      # 1. Differential MD5 check (`POST /schedules/md5`)
-      stale_requests: list[dict[str, Any]] = []
-      for start_idx in range(0, len(unique_sids), MAX_SCHEDULE_BATCH):
-        batch_sids = unique_sids[start_idx : start_idx + MAX_SCHEDULE_BATCH]
-        md5_req = [{"stationID": sid, "date": dates} for sid in batch_sids]
-        md5_resp = await self._request_json(
-          session, "POST", "schedules/md5", json_body=md5_req
-        )
-        md5_map = md5_resp if isinstance(md5_resp, Mapping) else {}
-        for sid in batch_sids:
-          remote_dates = md5_map.get(sid)
-          remote_by_dt = (
-            remote_dates if isinstance(remote_dates, Mapping) else {}
-          )
-          if int(remote_by_dt.get("code", 0) or 0) != 0:
-            continue
-          needed_dts: list[str] = []
-          for dt_str in dates:
-            r_info = remote_by_dt.get(dt_str)
-            if isinstance(r_info, Mapping):
-              r_code = int(r_info.get("code", 0) or 0)
-              if r_code in _SKIP_STATION_CODES:
-                continue
-              r_md5 = str(r_info.get("md5") or r_info.get("hash") or "")
-              if r_md5 and cached_sched_md5s.get((sid, dt_str)) == r_md5:
-                continue
-            needed_dts.append(dt_str)
-          if needed_dts:
-            stale_requests.append({"stationID": sid, "date": needed_dts})
-
-      # 2. Fetch changed station-day schedules (`POST /schedules`) & commit to
-      #    SQLite
-      fetched_sched_days = 0
-      new_sched_rows: list[tuple[str, str, str, list[dict[str, Any]]]] = []
-      for start_idx in range(0, len(stale_requests), MAX_SCHEDULE_BATCH):
-        sched_batch = stale_requests[start_idx : start_idx + MAX_SCHEDULE_BATCH]
-        sched_resp = await self._request_json(
-          session, "POST", "schedules", json_body=sched_batch
-        )
-        if not isinstance(sched_resp, list):
-          continue
-        for item in sched_resp:
-          if not isinstance(item, Mapping):
-            continue
-          if int(item.get("code", 0) or 0) != 0:
-            continue
-          sid = str(item.get("stationID") or "").strip()
-          meta = item.get("metadata")
-          meta_map = meta if isinstance(meta, Mapping) else {}
-          start_dt = str(meta_map.get("startDate") or "").strip()
-          s_md5 = str(meta_map.get("md5") or meta_map.get("hash") or "")
-          raw_progs = item.get("programs")
-          if not sid or not start_dt or not isinstance(raw_progs, list):
-            continue
-          compact_airings: list[dict[str, Any]] = []
-          for air in raw_progs:
-            if not isinstance(air, Mapping):
-              continue
-            pid = str(air.get("programID") or "").strip()
-            air_ts = _parse_air_ts(str(air.get("airDateTime") or ""))
-            dur = int(air.get("duration") or 0)
-            if not pid or air_ts <= 0 or dur <= 0:
-              continue
-            compact_airings.append(
-              {
-                "pid": pid,
-                "md5": str(air.get("md5") or air.get("hash") or ""),
-                "start": air_ts,
-                "dur": dur,
-                "live": str(air.get("liveTapeDelay") or "").lower() == "live",
-                "new": bool(air.get("new")),
-              }
-            )
-          new_sched_rows.append((sid, start_dt, s_md5, compact_airings))
-          fetched_sched_days += 1
-
+      stale_requests = await self._find_stale_schedule_requests(
+        session, unique_sids, dates, cached_sched_md5s
+      )
       min_keep = (base_date - timedelta(days=1)).strftime("%Y-%m-%d")
-      await asyncio.to_thread(
-        self.db.upsert_sd_schedule_days,
-        new_sched_rows,
-        min_keep_date=min_keep,
+      fetched_sched_days = await self._fetch_and_store_schedule_days(
+        session, stale_requests, min_keep_date=min_keep
       )
 
-      # 3. Load active airings from SQLite and diff `programID` MD5s against
-      #    `sd_programs`
       airings_by_sid = await asyncio.to_thread(
         self.db.load_sd_airings, unique_sids, dates
       )
@@ -757,37 +874,8 @@ class SchedulesDirectEpgClient:
         if pid not in cached_prog_md5s
         or (p_md5 and cached_prog_md5s[pid] != p_md5)
       ]
+      fetched_progs = await self._sync_missing_programs(session, missing_pids)
 
-      fetched_progs = 0
-      for start_idx in range(0, len(missing_pids), MAX_PROGRAM_BATCH):
-        pid_batch = missing_pids[start_idx : start_idx + MAX_PROGRAM_BATCH]
-        prog_resp = await self._request_json(
-          session, "POST", "programs", json_body=pid_batch
-        )
-        if not isinstance(prog_resp, list):
-          continue
-        batch_extracted: dict[str, dict[str, str]] = {}
-        for raw_p in prog_resp:
-          if not isinstance(raw_p, Mapping):
-            continue
-          if int(raw_p.get("code", 0) or 0) != 0:
-            continue
-          pid = str(raw_p.get("programID") or "").strip()
-          if not pid:
-            continue
-          extracted = self._extract_program_fields(raw_p)
-          if extracted["title"]:
-            batch_extracted[pid] = extracted
-            fetched_progs += 1
-        if batch_extracted:
-          await asyncio.to_thread(
-            self.db.upsert_sd_programs,
-            batch_extracted,
-            updated_at=float(self._clock()),
-          )
-
-      # 4. Touch active `programID`s, prune >14d unreferenced rows, & load
-      #    active metadata
       await asyncio.to_thread(
         self.db.touch_and_prune_sd_programs,
         list(wanted_pids),
@@ -796,69 +884,15 @@ class SchedulesDirectEpgClient:
       active_prog_meta = await asyncio.to_thread(
         self.db.load_sd_programs, list(wanted_pids)
       )
-
-      station_programs: dict[str, list[ProgramItem]] = {}
-      seq = 0
-      for sid in unique_sids:
-        raw_items: list[ProgramItem] = []
-        for air in airings_by_sid.get(sid, ()):
-          start_ts = int(air.get("start") or 0)
-          stop_ts = start_ts + int(air.get("dur") or 0)
-          if stop_ts < recent_cutoff:
-            continue
-          pid = str(air.get("pid") or "")
-          p_meta = active_prog_meta.get(pid)
-          if not p_meta or not p_meta.get("title"):
-            continue
-          seq += 1
-          title = str(p_meta["title"])
-          if air.get("live") and "live" not in title.lower():
-            title = f"Live: {title}"
-          raw_items.append(
-            ProgramItem(
-              id=f"sd-{seq}",
-              channel_id=sid,
-              title=title,
-              sub_title=str(p_meta.get("sub_title") or ""),
-              description=str(p_meta.get("description") or ""),
-              category=str(p_meta.get("category") or ""),
-              start_timestamp=start_ts,
-              stop_timestamp=stop_ts,
-              episode_num=str(p_meta.get("episode_num") or ""),
-              air_date=str(p_meta.get("air_date") or ""),
-              rating=str(p_meta.get("rating") or ""),
-              is_new=bool(air.get("new")),
-              is_live_airing=bool(air.get("live")),
-            )
-          )
-        reconciled = reconcile_non_overlapping_schedule(raw_items)
-        if reconciled:
-          station_programs[sid] = reconciled[:max_per_channel]
-
-      by_chno: dict[int, list[ProgramItem]] = {}
-      for ch in snap.channels:
-        matched_sid = chno_to_sid.get(ch.chno)
-        if not matched_sid or matched_sid not in station_programs:
-          continue
-        cid = ch.epg_channel_id or f"sd.{matched_sid}"
-        by_chno[ch.chno] = [
-          ProgramItem(
-            id=p.id,
-            channel_id=cid,
-            title=p.title,
-            sub_title=p.sub_title,
-            description=p.description,
-            category=p.category,
-            start_timestamp=p.start_timestamp,
-            stop_timestamp=p.stop_timestamp,
-            episode_num=p.episode_num,
-            air_date=p.air_date,
-            rating=p.rating,
-            is_new=p.is_new,
-            is_live_airing=p.is_live_airing,
-          )
-          for p in station_programs[matched_sid]
-        ]
+      by_chno = self._assemble_snapshot_programs(
+        snap,
+        chno_to_sid,
+        unique_sids,
+        airings_by_sid,
+        active_prog_meta,
+        recent_cutoff=recent_cutoff,
+        max_per_channel=max_per_channel,
+      )
 
       logger.info(
         "Schedules Direct EPG resolved %d/%d channels (%d schedule-days fetched, %d programs fetched)",

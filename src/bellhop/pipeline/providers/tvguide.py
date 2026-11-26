@@ -1,6 +1,4 @@
-"""TV Guide (`backend.tvguide.com`) lineup provider supporting US & Canadian
-headends.
-"""
+"""TV Guide (`backend.tvguide.com`) lineup provider for US and Canada."""
 
 from __future__ import annotations
 
@@ -70,8 +68,9 @@ def parse_tvguide_provider_id(lineup_id: str) -> str | None:
 
 
 def _parse_channel_number(raw_num: Any, fallback_seq: int) -> int:
-  """Convert TVGuide channel number ('101', '1108', '2.1', '4-1', or None) into
-  an int dial slot.
+  """Parse a TVGuide channel number string into an integer dial slot.
+
+  Handles `'101'`, `'1108'`, `'2.1'`, `'4-1'`, or `None`.
   """
   if raw_num is None:
     return fallback_seq
@@ -91,9 +90,7 @@ def _parse_channel_number(raw_num: Any, fallback_seq: int) -> int:
 
 
 class TvGuideLineupProvider(LineupProvider):
-  """Free multi-provider US & Canadian lineup backend powered by
-  `backend.tvguide.com`.
-  """
+  """Free US and Canadian lineup backend via `backend.tvguide.com`."""
 
   backend_name = "tvguide"
 

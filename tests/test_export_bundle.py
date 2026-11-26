@@ -16,9 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def test_export_bundle_reader_empty_volume_and_store_parity(
   tmp_path: Path,
 ) -> None:
-  """Both stores share identical empty-volume initialization via
-  ExportBundleReader.
-  """
+  """Verify stores share empty-volume handling via ExportBundleReader."""
   xtream_dir = tmp_path / "xtream"
   xtream_dir.mkdir()
 
@@ -151,9 +149,7 @@ def test_export_bundle_reader_fallbacks_and_category_synthesis(
 
 
 def test_bellhop_domain_layer_boundaries() -> None:
-  """Enforce strict one-way domain layering across `src/bellhop/`
-  subpackages.
-  """
+  """Enforce acyclic domain layering across `src/bellhop/` subpackages."""
   assert not (REPO_ROOT / "src" / "bellhop_web").exists(), (
     "Legacy top-level src/bellhop_web/ must not exist; domain subpackages live under src/bellhop/"
   )

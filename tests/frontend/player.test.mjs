@@ -294,7 +294,23 @@ test("createPlayerController handles MPEG-TS -> HLS failover, autoplay mute retr
     assert.equal(elErrorBox.hidden, false);
     assert.ok(elErrorText.textContent.includes("manifestLoadError"));
 
-    // 5. closeOverlay() destroys HLS player and sends POST /api/tuner/release?client=tab-abc
+    // 5. Exercise overlay controls: unmute, click-play, retry, mode switch, PiP, fullscreen
+    await elUnmuteBtn.dispatch("click");
+    await elClickPlayBox.dispatch("click");
+    mpegtsSupported = true;
+    buttons.get("retry-stream-btn").dispatch("click");
+    buttons.get("switch-mode-btn").dispatch("click");
+    assert.equal(state.streamMode, "mpegts");
+    await buttons.get("pip-btn").dispatch("click");
+    globalThis.document.pictureInPictureElement = elVideo;
+    globalThis.document.exitPictureInPicture = async () => {
+      globalThis.document.pictureInPictureElement = null;
+    };
+    await buttons.get("pip-btn").dispatch("click");
+    buttons.get("fullscreen-btn").dispatch("click");
+    await ctrl.toggleFullscreen();
+
+    // 6. closeOverlay() destroys active players and sends POST /api/tuner/release?client=tab-abc
     await ctrl.closeOverlay();
     assert.equal(elOverlay.hidden, true);
     assert.equal(lastHlsInstance.destroyed, true);
@@ -305,6 +321,121 @@ test("createPlayerController handles MPEG-TS -> HLS failover, autoplay mute retr
           c.url === "/api/tuner/release?client=tab-abc",
       ),
     );
+  } finally {
+    globalThis.window = origWindow;
+    globalThis.document = origDoc;
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("createPlayerController supports native HLS video playback and unknown channel no-op", () => {
+  const buttons = new Map();
+  for (const id of [
+    "close-player-btn",
+    "fullscreen-btn",
+    "prev-ch-btn",
+    "next-ch-btn",
+    "pip-btn",
+    "retry-stream-btn",
+    "switch-mode-btn",
+  ]) {
+    buttons.set(id, makeEl(id));
+  }
+  const elOverlay = makeEl("player-overlay");
+  elOverlay.hidden = true;
+  const elVideo = makeEl("video");
+  elVideo.canPlayType = (mime) =>
+    mime === "application/vnd.apple.mpegurl" ? "maybe" : "";
+  const origWindow = globalThis.window;
+  const origDoc = globalThis.document;
+  const origFetch = globalThis.fetch;
+  globalThis.window = {
+    location: { origin: "http://bellhop.local:8080" },
+    mpegts: { isSupported: () => false },
+    Hls: { isSupported: () => false },
+  };
+  globalThis.document = {
+    activeElement: null,
+    fullscreenElement: null,
+    body: { style: { overflow: "" } },
+    querySelectorAll: () => [],
+  };
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 500,
+    json: async () => ({}),
+  });
+  try {
+    const state = {
+      channels: [
+        {
+          chno: 1108,
+          sd_chno: null,
+          name: "RDS",
+          callsign: "",
+          category_id: "2",
+          category_name: "Sports",
+          logo: "https://example.com/rds.png",
+          quality_tier: "unknown",
+          epg_id: "RDS.ca",
+          stream_url: "/api/stream/1108.ts",
+          hls_url: "/api/hls/1108/index.m3u8",
+          now_playing: {
+            title: "Hockey",
+            start_timestamp: 1000,
+            stop_timestamp: 2000,
+            progress_pct: 50,
+            description: "Period 2",
+          },
+          up_next: null,
+          schedule: [
+            { title: "Future Show", start_timestamp: 3000, stop_timestamp: 4000 },
+          ],
+        },
+      ],
+      filteredChannels: [],
+      activeChannel: null,
+      streamMode: "hls",
+      timezone: "UTC",
+    };
+    const ctrl = createPlayerController({
+      pageClientId: "tab-native",
+      state,
+      elOverlay,
+      elBackdrop: makeEl("backdrop"),
+      elPlayerStage: makeEl("stage"),
+      elVideo,
+      elUnmuteBtn: makeEl("unmute"),
+      elClickPlayBox: makeEl("click-play"),
+      elClickPlayBtn: makeEl("click-play-btn"),
+      elSpinner: makeEl("spinner"),
+      elStatusText: makeEl("status"),
+      elErrorBox: makeEl("err-box"),
+      elErrorText: makeEl("err-txt"),
+      elPlayerLogoWrap: makeEl("logo"),
+      elPlayerChno: makeEl("chno"),
+      elPlayerName: makeEl("name"),
+      elPlayerQuality: makeEl("qual"),
+      elPlayerLivePill: makeEl("live"),
+      elPlayerCategory: makeEl("cat"),
+      elPlayerNowTitle: makeEl("now-title"),
+      elPlayerNowTime: makeEl("now-time"),
+      elPlayerProgressWrap: makeEl("prog-wrap"),
+      elPlayerProgressBar: makeEl("prog-bar"),
+      elPlayerNowDesc: makeEl("now-desc"),
+      elPlayerUpcomingList: makeEl("upcoming"),
+      elSettingsOverlay: null,
+      requireEl: (id) => buttons.get(id),
+      syncUrlFromState: () => {},
+      syncModeButtons: () => {},
+    });
+    ctrl.openChannelOverlay(9999);
+    assert.equal(elOverlay.hidden, true);
+    ctrl.openChannelOverlay(1108);
+    assert.equal(elOverlay.hidden, false);
+    assert.ok(elVideo.src.startsWith("/api/hls/1108/index.m3u8?"));
+    ctrl.destroyActivePlayers(false);
+    assert.equal(elVideo.src, "");
   } finally {
     globalThis.window = origWindow;
     globalThis.document = origDoc;

@@ -1,5 +1,4 @@
-"""Mtime-aware `ConfigManager` caching `config.yaml`, `credentials.yaml`, &
-`.env`.
+"""Mtime-aware `ConfigManager` caching YAML config and `.env` files.
 
 Avoids reparsing YAML or re-interpolating environment variables across HTTP
 requests while automatically reloading whenever any backing file changes on

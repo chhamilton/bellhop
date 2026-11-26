@@ -1,6 +1,4 @@
-"""Tests for the config-driven `PipelineRunner` and single-command `bellhop run`
-CLI.
-"""
+"""Tests for the config-driven `PipelineRunner` and `bellhop` CLI."""
 
 from __future__ import annotations
 
@@ -183,9 +181,7 @@ pipeline:
 async def test_expired_account_auto_skips_validate_and_completes_matching_and_exports(
   tmp_path: Path,
 ) -> None:
-  """Verify expired Xtream accounts implicitly skip `validate` and finish
-  matching + exports.
-  """
+  """Verify expired Xtream accounts skip `validate` and complete export."""
   from aiohttp import web
 
   status_box = {"status": "Active"}
@@ -321,8 +317,9 @@ pipeline:
 def test_cli_non_quiet_panels_dry_run_export_and_empty_phases(
   tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """Verify non-quiet Rich panels render for `--dry-run`, `--phase export`, and
-  empty phase sets.
+  """Verify non-quiet Rich panels render for CLI execution modes.
+
+  Covers `--dry-run`, `--phase export`, and empty phase sets.
   """
   import io
 
@@ -464,9 +461,7 @@ pipeline:
 async def test_cli_serve_shared_and_split_banners_and_clean_cancellation(
   tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """Verify `_execute_cli_serve` renders shared & split/Xtream-only banners and
-  stops cleanly.
-  """
+  """Verify `_execute_cli_serve` renders shared & split banners cleanly."""
   import asyncio
   import io
 

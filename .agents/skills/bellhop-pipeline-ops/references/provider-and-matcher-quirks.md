@@ -22,6 +22,6 @@ Base URL: `https://backend.tvguide.com/tvschedules/tvguide` (requires `Referer: 
 
 ## 3. Schedules Direct SD-JSON Wire Format (`src/bellhop/epg/sd_client.py` & `src/bellhop/pipeline/providers/schedules_direct.py`)
 Base URL: `https://json.schedulesdirect.org/20141201`
-- **Auth:** `POST /token` with `{"username": "...", "password": "<lowercase_sha1_hex>"}` → returns `{"code": 0, "token": "..."}`. Pass header `token: <token>` on all subsequent requests; re-authenticate on HTTP `401`/`403` or JSON `code` in `{4001, 4003, 4004}`.
+- **Auth:** `POST /token` with `{"username": "...", "password": "<lowercase_sha1_hex>"}` → returns `{"code": 0, "token": "..."}`. Pass header `token: <token>` on all subsequent requests; re-authenticate on HTTP `401`/`403` or JSON `code` in `{4001, 4003, 4004, 4007, 4009}`.
 - **Discovery:** `GET /headends?country=CAN&postalcode=M5V2T6` (no spaces in Canadian postal codes).
 - **Subscription & Retrieval:** `PUT /lineups/{ID}` (if `code == 2100` and `auto_add_lineup=True`), then `GET /lineups/{ID}` → `{"map": [...], "stations": [...], "metadata": {...}}`.

@@ -1,6 +1,4 @@
-"""Tests for Phase (6): Official Xtream Codes API JSON playlist & passthrough
-EPG verification.
-"""
+"""Tests for Phase (6) Xtream API JSON playlists and passthrough EPG."""
 
 from __future__ import annotations
 

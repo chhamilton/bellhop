@@ -1,5 +1,4 @@
-"""2D `(Language x Genre)` Shannon self-information dial segmentation for Phase
-(1).
+"""2D `(Language x Genre)` Shannon self-information dial segmentation.
 
 Assigns strictly dial-contiguous channel groups by labeling each channel slot
 with an
@@ -18,7 +17,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from bellhop.pipeline.iptv_org import (
@@ -227,9 +226,7 @@ PAREN_GROUP_RE = re.compile(r"\(([^()]+)\)")
 
 @dataclass(slots=True)
 class ChannelTaxonomyLeaf:
-  """Per-channel `(language, leaf_genre, macro_genre)` input to 1D MDL
-  segmentation.
-  """
+  """Per-channel `(language, leaf_genre, macro_genre)` input to MDL."""
 
   chno: int
   name: str
@@ -240,9 +237,7 @@ class ChannelTaxonomyLeaf:
 
 @dataclass(frozen=True, slots=True)
 class DialSegment:
-  """Contiguous dial slice `[start_idx, end_idx)` emitted by
-  `segment_dial_channels`.
-  """
+  """Contiguous dial slice `[start_idx, end_idx)` from MDL segmentation."""
 
   start_idx: int
   end_idx: int
@@ -297,9 +292,7 @@ def build_channel_leaves_and_enrich(
   market: str = "",
   country: str = "CAN",
 ) -> list[ChannelTaxonomyLeaf]:
-  """Enrich `LineupChannel` metadata from `iptv-org` and return taxonomy
-  leaves.
-  """
+  """Enrich `LineupChannel` via `iptv-org` and build taxonomy leaves."""
   iso2_country = normalize_country_iso2(country)
   market_city_norm = normalize_lookup_key(market.split(",", 1)[0])
   leaves: list[ChannelTaxonomyLeaf] = []
@@ -465,16 +458,24 @@ def build_channel_leaves_and_enrich(
   return leaves
 
 
-def segment_dial_channels(
-  leaves: Sequence[ChannelTaxonomyLeaf],
-) -> list[DialSegment]:
-  """Partition dial-sorted `leaves` into strictly contiguous `(Language x
-  Genre)` groups.
-  """
-  n = len(leaves)
-  if n == 0:
-    return []
+@dataclass(slots=True)
+class _DialIcTables:
+  default_lang: str
+  major_langs: set[str]
+  all_lang_nodes: list[str]
+  all_genre_nodes: list[str]
+  lang_ic_by_idx: list[float]
+  genre_ic_by_idx: list[float]
+  leaf_lang_known: list[int]
+  leaf_lang_hits: list[tuple[int, ...]]
+  leaf_genre_known: list[int]
+  leaf_genre_hits: list[tuple[int, ...]]
+  prefix_leaf_bits: list[float]
 
+
+def _build_leaf_ic_tables(
+  leaves: Sequence[ChannelTaxonomyLeaf],
+) -> _DialIcTables:
   real_langs = [
     x.lang_iso3 for x in leaves if x.lang_iso3 and x.lang_iso3 != "INTL_HINT"
   ]
@@ -490,7 +491,6 @@ def segment_dial_channels(
   sub_g_counts = Counter(
     x.leaf_genre for x in leaves if x.leaf_genre in SUBGENRE_DISPLAY
   )
-
   intl_n = sum(v for k, v in lang_counts.items() if k not in major_langs) + sum(
     1 for x in leaves if x.lang_iso3 == "INTL_HINT"
   )
@@ -523,11 +523,11 @@ def segment_dial_channels(
   lang_idx_by_node = {ln: idx for idx, ln in enumerate(all_lang_nodes)}
   genre_idx_by_node = {gn: idx for idx, gn in enumerate(all_genre_nodes)}
 
-  leaf_bits: list[float] = []
   leaf_lang_hits: list[tuple[int, ...]] = []
   leaf_lang_known: list[int] = []
   leaf_genre_hits: list[tuple[int, ...]] = []
   leaf_genre_known: list[int] = []
+  prefix_leaf_bits: list[float] = [0.0]
 
   for ch in leaves:
     lb = 0.0
@@ -570,12 +570,28 @@ def segment_dial_channels(
         lb += genre_ic_by_idx[m_idx]
       leaf_genre_hits.append(tuple(g_hits))
 
-    leaf_bits.append(lb)
+    prefix_leaf_bits.append(prefix_leaf_bits[-1] + lb)
 
-  prefix_leaf_bits: list[float] = [0.0]
-  for b in leaf_bits:
-    prefix_leaf_bits.append(prefix_leaf_bits[-1] + b)
+  return _DialIcTables(
+    default_lang=default_lang,
+    major_langs=major_langs,
+    all_lang_nodes=all_lang_nodes,
+    all_genre_nodes=all_genre_nodes,
+    lang_ic_by_idx=lang_ic_by_idx,
+    genre_ic_by_idx=genre_ic_by_idx,
+    leaf_lang_known=leaf_lang_known,
+    leaf_lang_hits=leaf_lang_hits,
+    leaf_genre_known=leaf_genre_known,
+    leaf_genre_hits=leaf_genre_hits,
+    prefix_leaf_bits=prefix_leaf_bits,
+  )
 
+
+def _solve_dial_mdl_dp(
+  leaves: Sequence[ChannelTaxonomyLeaf],
+  tables: _DialIcTables,
+) -> tuple[list[int], dict[tuple[int, int], tuple[str, str]]]:
+  n = len(leaves)
   header_cost_bits = 1.65 * math.log2(n + 1)
   soft_min_target = min(5, max(1, n // 28))
   max_len = max(12, min(85, n))
@@ -584,8 +600,8 @@ def segment_dial_channels(
   prev: list[int] = [-1] * (n + 1)
   seg_meta: dict[tuple[int, int], tuple[str, str]] = {}
   dp[0] = 0.0
-  num_langs = len(all_lang_nodes)
-  num_genres = len(all_genre_nodes)
+  num_langs = len(tables.all_lang_nodes)
+  num_genres = len(tables.all_genre_nodes)
 
   for j in range(1, n + 1):
     min_i = max(0, j - max_len)
@@ -594,11 +610,11 @@ def segment_dial_channels(
     known_l = 0
     known_g = 0
     for i in range(j - 1, min_i - 1, -1):
-      known_l += leaf_lang_known[i]
-      for li in leaf_lang_hits[i]:
+      known_l += tables.leaf_lang_known[i]
+      for li in tables.leaf_lang_hits[i]:
         l_compat[li] += 1
-      known_g += leaf_genre_known[i]
-      for gi in leaf_genre_hits[i]:
+      known_g += tables.leaf_genre_known[i]
+      for gi in tables.leaf_genre_hits[i]:
         g_compat[gi] += 1
 
       length = j - i
@@ -612,10 +628,10 @@ def segment_dial_channels(
           compat = l_compat[li]
           if compat == 0 or (compat / known_l) < 0.72:
             continue
-          ic = lang_ic_by_idx[li]
+          ic = tables.lang_ic_by_idx[li]
           score = compat * ic - (known_l - compat) * 1.4 * ic
           if score > best_l_bits:
-            best_l = all_lang_nodes[li]
+            best_l = tables.all_lang_nodes[li]
             best_l_bits = score
 
       best_g = "ANY"
@@ -625,21 +641,18 @@ def segment_dial_channels(
           compat = g_compat[gi]
           if compat == 0 or (compat / known_g) < 0.68:
             continue
-          ic = genre_ic_by_idx[gi]
+          ic = tables.genre_ic_by_idx[gi]
           score = compat * ic - (known_g - compat) * 1.4 * ic
           if score > best_g_bits:
-            best_g = all_genre_nodes[gi]
+            best_g = tables.all_genre_nodes[gi]
             best_g_bits = score
 
-      # Discourage uninformative genre catch-alls on any major lineup language
-      # (>=5%)
-      if best_g == "ANY" and (best_l == "ANY" or best_l in major_langs):
+      if best_g == "ANY" and (best_l == "ANY" or best_l in tables.major_langs):
         best_g_bits -= 1.5 * length
 
       retained = best_l_bits + best_g_bits
-      raw_bits = prefix_leaf_bits[j] - prefix_leaf_bits[i]
+      raw_bits = tables.prefix_leaf_bits[j] - tables.prefix_leaf_bits[i]
       info_loss = max(0.0, raw_bits - retained)
-
       short_pen = (
         (soft_min_target - length) * 3.2 if length < soft_min_target else 0.0
       )
@@ -658,6 +671,16 @@ def segment_dial_channels(
         prev[j] = i
         seg_meta[(i, j)] = (best_l, best_g)
 
+  return prev, seg_meta
+
+
+def _merge_and_label_dial_segments(
+  leaves: Sequence[ChannelTaxonomyLeaf],
+  prev: Sequence[int],
+  seg_meta: Mapping[tuple[int, int], tuple[str, str]],
+  *,
+  default_lang: str,
+) -> list[DialSegment]:
   def _format_title(ln: str, gn: str) -> str:
     g_str = (
       ""
@@ -674,7 +697,7 @@ def segment_dial_channels(
     return f"{l_name} — {g_str}" if g_str else l_name
 
   raw_spans: list[tuple[int, int, str, str, str]] = []
-  cur = n
+  cur = len(leaves)
   while cur > 0:
     p = prev[cur]
     if p < 0:
@@ -684,7 +707,6 @@ def segment_dial_channels(
     cur = p
   raw_spans.reverse()
 
-  # Merge adjacent spans that resolved to the identical formatted title
   merged: list[tuple[int, int, str, str, str]] = []
   for i, j, ln, gn, title in raw_spans:
     if merged and merged[-1][4] == title:
@@ -693,8 +715,6 @@ def segment_dial_channels(
     else:
       merged.append((i, j, ln, gn, title))
 
-  # Always include the contiguous dial range `(lo–hi)` (refined post-validation
-  # at export)
   segments: list[DialSegment] = []
   for i, j, ln, gn, title in merged:
     lo = leaves[i].chno
@@ -711,8 +731,20 @@ def segment_dial_channels(
         group_title=uniq_title,
       )
     )
-
   return segments
+
+
+def segment_dial_channels(
+  leaves: Sequence[ChannelTaxonomyLeaf],
+) -> list[DialSegment]:
+  """Partition sorted `leaves` into contiguous `(Language x Genre)` groups."""
+  if not leaves:
+    return []
+  tables = _build_leaf_ic_tables(leaves)
+  prev, seg_meta = _solve_dial_mdl_dp(leaves, tables)
+  return _merge_and_label_dial_segments(
+    leaves, prev, seg_meta, default_lang=tables.default_lang
+  )
 
 
 def assign_dial_contiguous_groups(
@@ -722,9 +754,7 @@ def assign_dial_contiguous_groups(
   market: str = "",
   country: str = "CAN",
 ) -> list[DialSegment]:
-  """Sort `channels` by dial number, enrich from `iptv-org`, and assign MDL dial
-  groups.
-  """
+  """Sort channels by dial number, enrich, and assign MDL dial groups."""
   if not channels:
     return []
   channels.sort(key=lambda c: c.chno)

@@ -1,5 +1,4 @@
-"""Phase (6): Export the mapped lineup as structured Xtream Codes JSON artifacts
-with passthrough EPG.
+"""Phase (6): Export the mapped lineup as Xtream Codes JSON artifacts.
 
 Exported Directory Layout (`output/xtream/`)
 --------------------------------------------
@@ -77,7 +76,7 @@ from bellhop.common.export_bundle import (
   assign_unique_slot_epg_ids,
   resolve_preferred_epg_base_id,
 )
-from bellhop.common.file_utils import write_private_text
+from bellhop.common.file_utils import ensure_private_dir, write_private_text
 from bellhop.config import AppConfig
 from bellhop.epg.xmltv import (
   EpgVerificationResult,
@@ -121,9 +120,7 @@ class ExportedCategory:
 
 @dataclass(slots=True)
 class ExportedStreamGuideMeta:
-  """Enriched cable-lineup guide metadata attached under `guide` on each
-  exported stream.
-  """
+  """Enriched cable-lineup metadata under `guide` on exported streams."""
 
   lineup_id: str
   provider: str
@@ -171,9 +168,7 @@ class ExportedStreamGuideMeta:
 
 @dataclass(slots=True)
 class ExportedLiveStream:
-  """Single dial position entry written to `get_live_streams.json` and
-  `live_streams[]`.
-  """
+  """Single dial slot entry written to `get_live_streams.json`."""
 
   num: int
   name: str
@@ -217,9 +212,7 @@ class ExportedLiveStream:
 
 @dataclass(slots=True)
 class ExportedChannelGuideBinding:
-  """Canonical EPG channel binding stored in
-  `epg_guide.channels[epg_channel_id]`.
-  """
+  """Canonical EPG channel entry stored in `epg_guide.channels`."""
 
   epg_channel_id: str
   chno: int
@@ -324,9 +317,7 @@ class XtreamExportResult:
 
 
 def _resolve_canonical_epg_id(mapped: MappedChannel) -> str:
-  """Determine the canonical EPG channel ID for Xtream JSON passthrough
-  binding.
-  """
+  """Choose canonical EPG channel ID for Xtream JSON passthrough."""
   ch = mapped.channel
   cand = mapped.selected
   stream = cand.stream if cand is not None else None
@@ -347,9 +338,7 @@ def build_xtream_export_bundle(
   account: XtreamAccountInfo | None = None,
   epg_verification: EpgVerificationResult | None = None,
 ) -> XtreamExportBundle:
-  """Build a strongly-typed `XtreamExportBundle` from mapped channels and lineup
-  metadata.
-  """
+  """Build a typed `XtreamExportBundle` from mapped channels and lineup."""
   now_epoch = int(time.time())
   now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -562,9 +551,7 @@ def build_xtream_export_payloads(
   list[ExportedCategoryDict],
   list[dict[str, Any]],
 ]:
-  """Build `(bundle_dict, live_categories, live_streams)` with passthrough EPG
-  metadata.
-  """
+  """Build `(bundle_dict, live_categories, live_streams)` with EPG guide."""
   bundle = build_xtream_export_bundle(
     lineup,
     mappings,
@@ -585,11 +572,9 @@ async def export_xtream_playlist_and_guide(
   verify_epg: bool | None = None,
   client: aiohttp.ClientSession | None = None,
 ) -> XtreamExportResult:
-  """Phase (6): Verify upstream XMLTV passthrough and export Xtream API JSON
-  playlists.
-  """
+  """Phase (6): Verify XMLTV passthrough and export Xtream JSON feeds."""
   dest_dir = config.resolve_path(output_dir or config.output.xtream_dir)
-  dest_dir.mkdir(parents=True, exist_ok=True)
+  ensure_private_dir(dest_dir)
 
   should_verify = config.epg.verify if verify_epg is None else verify_epg
   if should_verify:

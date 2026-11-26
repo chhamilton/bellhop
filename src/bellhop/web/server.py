@@ -1,6 +1,4 @@
-"""aiohttp web application and single-tuner stream relay for the Bellhop Web
-Guide.
-"""
+"""aiohttp web app and single-tuner relay for the Bellhop Web Guide."""
 
 from __future__ import annotations
 
@@ -126,9 +124,7 @@ def rewrite_hls_manifest(
   *,
   register_asset: Callable[[int, str], str],
 ) -> str:
-  """Rewrite relative and absolute URIs in an M3U8 manifest to opaque local
-  tokens.
-  """
+  """Rewrite relative and absolute URIs in an M3U8 manifest to tokens."""
   out_lines: list[str] = []
 
   def _proxy_uri(raw_uri: str) -> str | None:
@@ -193,9 +189,7 @@ class ActiveTunerSession:
 
 
 class TunerSessionManager:
-  """Coordinates single-tuner stream handoffs so max_connections=1 accounts
-  never collide.
-  """
+  """Coordinate single-tuner handoffs for `max_connections=1` streams."""
 
   def __init__(
     self,
@@ -499,9 +493,7 @@ class WebGuideApp:
   # Lifecycle
   # ---------------------------------------------------------------------------
   async def startup(self) -> None:
-    """Create the upstream HTTP client and start the EPG refresher
-    (idempotent).
-    """
+    """Create upstream HTTP client and start EPG refresher cleanly."""
     if self._client is None:
       self._client = self._session_factory(
         timeout=aiohttp.ClientTimeout(
@@ -513,9 +505,7 @@ class WebGuideApp:
       await self.epg_refresher.start()
 
   async def shutdown(self) -> None:
-    """Stop the EPG refresher, release the tuner, and close the upstream
-    client.
-    """
+    """Stop EPG refresher, release tuner, and close upstream client."""
     if self.epg_refresher is not None:
       await self.epg_refresher.stop()
     await self.tuner.release_all()
@@ -592,8 +582,9 @@ class WebGuideApp:
 
   @staticmethod
   def _is_cross_site_mutation(request: web.Request) -> bool:
-    """Reject cross-site state-changing requests (`Sec-Fetch-Site` / `Origin` /
-    `Referer`).
+    """Reject cross-site state-changing requests via fetch/origin headers.
+
+    Validates `Sec-Fetch-Site`, `Origin`, and `Referer` against same-origin.
     """
     sec_site = (request.headers.get("Sec-Fetch-Site") or "").strip().lower()
     if sec_site and sec_site not in {"same-origin", "none"}:
@@ -613,9 +604,7 @@ class WebGuideApp:
     return False
 
   def _is_https_request(self, request: web.Request) -> bool:
-    """Return `True` when `request` arrived over TLS or a trusted HTTPS
-    proxy.
-    """
+    """Return True when `request` used TLS or a trusted HTTPS proxy."""
     if request.secure:
       return True
     if not is_trusted_proxy_peer(
@@ -648,9 +637,7 @@ class WebGuideApp:
     )
 
   def _protected(self, handler: _Handler) -> _Handler:
-    """Wrap `handler` with mandatory Web Guide session enforcement & sliding
-    renewal.
-    """
+    """Wrap `handler` with Web Guide session auth and sliding renewal."""
 
     async def _wrapped(request: web.Request) -> web.StreamResponse:
       now_ts = int(self._clock())
@@ -683,6 +670,9 @@ class WebGuideApp:
 
       response = await handler(request)
       if session.needs_renewal(now_ts=now_ts) and not response.prepared:
+        self.auth.revoke_session_from_headers(
+          request.headers, now_ts=now_ts, grace_sec=30
+        )
         new_tok, _ = self.auth.create_session_token(
           session.username, now_ts=now_ts
         )
@@ -824,7 +814,9 @@ class WebGuideApp:
         {"error": "Cross-site logout is forbidden"},
         status=HTTPStatus.FORBIDDEN,
       )
-    self.auth.revoke_session_from_headers(request.headers)
+    self.auth.revoke_session_from_headers(
+      request.headers, now_ts=int(self._clock())
+    )
     client_id = request.query.get("client", "").strip() or None
     if client_id:
       await self.tuner.release_all(client_id=client_id)
@@ -1143,9 +1135,7 @@ class WebGuideApp:
     return extract_explicit_private_origins(urls)
 
   def _register_hls_asset(self, chno: int, resolved_url: str) -> str:
-    """Register an HTTP(S) HLS segment/playlist URL and return its opaque
-    token.
-    """
+    """Register an HTTP(S) HLS URL and return its opaque relay token."""
     ch = self.store.get_snapshot().channels_by_chno.get(chno)
     allowed_origins = self._allowed_private_origins_for(ch)
     try:

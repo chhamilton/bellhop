@@ -1,6 +1,4 @@
-"""Pluggable lineup providers supporting curated YAML, TV Guide JSON, and
-Schedules Direct SD-JSON.
-"""
+"""Pluggable lineup providers for YAML, TV Guide, and Schedules Direct."""
 
 from bellhop.pipeline.providers.base import (
   LineupBackendError,

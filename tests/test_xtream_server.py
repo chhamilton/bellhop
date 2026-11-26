@@ -1425,9 +1425,7 @@ async def test_short_epg_limit_clamping_and_unknown_stream_ids(
   raw_limit: str,
   expected_limit: int,
 ) -> None:
-  """Verify `get_short_epg` / `get_simple_data_table` clamp `limit` and handle
-  bad `stream_id`s.
-  """
+  """Verify `get_short_epg` / `get_simple_data_table` limits and IDs."""
   xt_dir = write_minimal_xtream_export(tmp_path / "output" / "xtream")
   observed_limits: list[int] = []
 
@@ -1483,9 +1481,7 @@ async def test_short_epg_limit_clamping_and_unknown_stream_ids(
 async def test_xmltv_head_and_small_chunk_streaming_and_xtream_only_health(
   tmp_path: Path,
 ) -> None:
-  """Verify `HEAD /xmltv.php`, multi-chunk `GET /xmltv.php`, and Xtream-only
-  `/health`.
-  """
+  """Verify `HEAD /xmltv.php`, streamed `GET`, & Xtream-only `/health`."""
   from collections.abc import Iterator
 
   from bellhop.config import (

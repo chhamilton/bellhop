@@ -1,6 +1,4 @@
-"""Shared timing, retention, and safety constants for the `bellhop.epg`
-domain.
-"""
+"""Shared timing, retention, and safety constants for `bellhop.epg`."""
 
 from __future__ import annotations
 

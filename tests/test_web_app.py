@@ -869,9 +869,7 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
   tmp_path: Path,
   caplog: pytest.LogCaptureFixture,
 ) -> None:
-  """Verify `/api/health` exposes `lineup_updated_at`, logs reload, &
-  auto-fetches EPG.
-  """
+  """Verify `/api/health` exposes `lineup_updated_at` and auto-fetches."""
   import logging
   from datetime import datetime, timezone
 
@@ -1027,8 +1025,9 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
 def test_epg_priority_fallback_and_weighted_interval_deoverlapping(
   tmp_path: Path,
 ) -> None:
-  """Verify EPG alias priority fallback (no cross-feed pooling), v1 cache
-  invalidation, and DP de-overlapping.
+  """Verify EPG alias fallback, v1 cache invalidation, & DP de-overlap.
+
+  Confirms cross-feed pooling is disabled during EPG resolution.
   """
   now_ts = 1_764_000_000
   xt_dir = tmp_path / "xtream"

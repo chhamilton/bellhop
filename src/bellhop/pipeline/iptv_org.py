@@ -1,5 +1,4 @@
-"""Conditional-cached `iptv-org` channel & feed metadata client (`ETag` /
-`Last-Modified`).
+"""Conditional-cached `iptv-org` channel and feed metadata client.
 
 Fetches `channels.json` and `feeds.json` from `https://iptv-org.github.io/api`
 (public
@@ -187,24 +186,18 @@ IPTV_ORG_SPINOFF_TOKENS = frozenset(
 
 
 class IptvOrgError(RuntimeError):
-  """Raised when fetching or parsing `iptv-org` metadata fails without a
-  fallback.
-  """
+  """Raised when fetching or parsing `iptv-org` metadata fails."""
 
 
 def fold_latin_accents(text: str) -> str:
-  """Collapse accented Latin characters and ligatures (`é`->`e`, `œ`->`oe`) to
-  ASCII.
-  """
+  """Collapse accented Latin characters and ligatures to ASCII."""
   translated = text.translate(LATIN_LIGATURE_TABLE)
   nfkd = unicodedata.normalize("NFKD", translated)
   return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
 
 
 def tokenize_station_name(text: str) -> tuple[str, ...]:
-  """Tokenize `text` into accent-folded lowercase words and split attached
-  digits.
-  """
+  """Tokenize `text` into accent-folded lowercase words and numbers."""
   folded = fold_latin_accents(text).lower()
   folded = folded.replace("&", " and ").replace("+", " plus ")
   out: list[str] = []
@@ -219,16 +212,12 @@ def tokenize_station_name(text: str) -> tuple[str, ...]:
 
 
 def normalize_lookup_key(text: str) -> str:
-  """Return lowercase accent-folded ASCII alphanumeric key for station
-  matching.
-  """
+  """Return lowercase accent-folded ASCII alphanumeric lookup key."""
   return re.sub(r"[^a-z0-9]+", "", fold_latin_accents(text).lower())
 
 
 def normalize_country_iso2(country: str) -> str:
-  """Normalize 2- or 3-letter country code (`CAN`/`CA`, `USA`/`US`) to ISO-3166
-  alpha-2.
-  """
+  """Normalize 2- or 3-letter country code to ISO-3166 alpha-2."""
   up = country.strip().upper()
   if up in COUNTRY_ISO2_MAP:
     return COUNTRY_ISO2_MAP[up]
@@ -260,9 +249,7 @@ class IptvOrgMatch:
 
 @dataclass(slots=True)
 class HttpCacheEntry:
-  """Persisted HTTP conditional-request validators for one remote JSON
-  resource.
-  """
+  """Persisted HTTP conditional validators for one JSON resource."""
 
   url: str
   etag: str | None = None
@@ -306,9 +293,7 @@ class HttpCacheEntry:
 
 
 class IptvOrgIndex:
-  """In-memory lookup index built from `iptv-org` `channels.json` and
-  `feeds.json`.
-  """
+  """In-memory lookup index built from `iptv-org` channels and feeds."""
 
   def __init__(self) -> None:
     self._by_id: dict[str, tuple[IptvOrgChannelInfo, bool, str | None]] = {}
@@ -360,9 +345,7 @@ class IptvOrgIndex:
     channels_raw: Sequence[Any],
     feeds_raw: Sequence[Any] = (),
   ) -> IptvOrgIndex:
-    """Construct `IptvOrgIndex`, resolving `replaced_by` chains and closed
-    stations.
-    """
+    """Construct `IptvOrgIndex` resolving `replaced_by` and closed stations."""
     idx = cls()
 
     ota_feed_re = re.compile(r"^([CWK][A-Z]{2,4})(?:-?(?:DT|TV|HD))?(?:-?1)?$")
@@ -582,9 +565,7 @@ class IptvOrgIndex:
   def is_permanently_closed_alias(
     self, alias: str, *, country: str = "CA"
   ) -> bool:
-    """Return True if `alias` names a shut-down unreplaced channel and no active
-    one.
-    """
+    """Return True if `alias` names only a shut-down unreplaced channel."""
     k = normalize_lookup_key(alias)
     if not k:
       return False
@@ -597,17 +578,13 @@ class IptvOrgIndex:
     )
 
   def has_id(self, tvg_id: str | None) -> bool:
-    """Return True if `tvg_id` resolves to an active or replaced station in
-    `iptv-org`.
-    """
+    """Return True if `tvg_id` maps to an active or replaced station."""
     if not tvg_id:
       return False
     return tvg_id.strip().lower() in self._by_id
 
   def is_permanently_closed_id(self, tvg_id: str | None) -> bool:
-    """Return True if `tvg_id` is marked `closed` in `iptv-org` with no
-    `replaced_by`.
-    """
+    """Return True if `tvg_id` is permanently closed with no replacement."""
     if not tvg_id:
       return False
     low = tvg_id.strip().lower()
@@ -620,9 +597,7 @@ class IptvOrgIndex:
     primary_name: str,
     country: str = "CA",
   ) -> list[str]:
-    """Remove permanently closed defunct station aliases while preserving
-    `primary_name`.
-    """
+    """Drop closed defunct station aliases while keeping `primary_name`."""
     if self.is_empty:
       return list(aliases)
     primary_norm = normalize_lookup_key(primary_name)
@@ -704,9 +679,7 @@ class IptvOrgIndex:
     aliases: Sequence[str] = (),
     country: str = "CA",
   ) -> IptvOrgMatch | None:
-    """Fuzzy-match a lineup slot against `iptv-org` using accent-folded IDF
-    similarity.
-    """
+    """Fuzzy-match a lineup slot via accent-folded `iptv-org` IDF score."""
     if self.is_empty:
       return None
 
@@ -856,9 +829,7 @@ class IptvOrgFetchResult:
 
 
 class IptvOrgClient:
-  """HTTP client for `iptv-org` JSON API with `ETag` / `Last-Modified` cache
-  tracking.
-  """
+  """HTTP client for `iptv-org` JSON API with `ETag` / `Last-Modified`."""
 
   def __init__(
     self,
@@ -910,9 +881,7 @@ class IptvOrgClient:
     dry_run: bool,
     allow_offline_empty: bool,
   ) -> tuple[list[Any], str, bool, bool]:
-    """Return `(records, status, content_updated, used_cache)` for one JSON
-    resource.
-    """
+    """Fetch or revalidate one `iptv-org` JSON resource with cache info."""
     url = f"{self.base_url}/{filename}"
     file_path = self.store_dir / filename
     now = self._clock()
@@ -1017,9 +986,7 @@ class IptvOrgClient:
     dry_run: bool = False,
     allow_offline_empty: bool = True,
   ) -> IptvOrgFetchResult:
-    """Fetch or conditionally revalidate `channels.json` + `feeds.json` via
-    `ETag`.
-    """
+    """Fetch or revalidate `channels.json` and `feeds.json` via `ETag`."""
     meta = self._load_meta()
     before_meta_dump = {k: v.to_dict() for k, v in meta.items()}
 

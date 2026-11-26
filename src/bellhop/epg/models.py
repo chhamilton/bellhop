@@ -1,6 +1,4 @@
-"""Core EPG schedule data models, interval reconciliation, and guide store
-protocols.
-"""
+"""Core EPG schedule models, interval reconciliation, and store protocols."""
 
 from __future__ import annotations
 
@@ -307,9 +305,7 @@ def reconcile_non_overlapping_schedule(
 
 
 class GuideChannelProto(Protocol):
-  """Minimal channel interface consumed by `bellhop.epg` without Web UI
-  coupling.
-  """
+  """Minimal channel protocol consumed by `bellhop.epg` without Web UI."""
 
   @property
   def chno(self) -> int: ...
@@ -366,9 +362,7 @@ class GuideSnapshotProto(Protocol):
 
 
 class GuideStoreProto(Protocol):
-  """Minimal hot-reloading guide store interface consumed by
-  `EpgRefreshService`.
-  """
+  """Hot-reloading guide store protocol consumed by `EpgRefreshService`."""
 
   def get_snapshot(
     self, *, force_reload: bool = False

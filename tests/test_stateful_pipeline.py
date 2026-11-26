@@ -1,5 +1,7 @@
-"""Tests for the 5-phase stateful pipeline: monthly lineup, daily catalog,
-incremental matching, candidate-only validation, and M3U8 output.
+"""Tests for the stateful pipeline phases and incremental tracking.
+
+Covers monthly lineup, daily catalog, matching, candidate validation,
+and M3U8 exports.
 """
 
 from __future__ import annotations

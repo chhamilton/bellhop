@@ -1,6 +1,4 @@
-"""Read-only Web Guide store loading Phase (6) Xtream JSON / M3U8 outputs with
-hot-reload.
-"""
+"""Read-only store loading Xtream JSON / M3U8 outputs with hot-reload."""
 
 from __future__ import annotations
 
@@ -62,9 +60,7 @@ class GuideCategory:
 
 @dataclass(slots=True)
 class WebChannel:
-  """A mapped lineup channel ready for web guide display and local stream
-  proxying.
-  """
+  """Mapped lineup channel prepared for web guide and local relay."""
 
   chno: int
   sd_chno: int | None
@@ -90,9 +86,7 @@ class WebChannel:
     now_ts: int,
     upcoming_limit: int = 48,
   ) -> PublicChannelDict:
-    """Serialize channel for browser UI without leaking upstream provider
-    credentials.
-    """
+    """Serialize channel for UI without exposing upstream credentials."""
     now_prog: ProgramItemDict | None = None
     next_prog: ProgramItemDict | None = None
     upcoming: list[ProgramItemDict] = []
@@ -168,9 +162,7 @@ class LineupSnapshot:
     return self._guide_fingerprint
 
   def build_epg_channel_lookup(self) -> dict[str, str]:
-    """Build lowercase upstream channel ID -> canonical `epg_channel_id` lookup
-    map.
-    """
+    """Build lowercase upstream channel ID to canonical EPG ID map."""
     if self._epg_lookup is None:
       self._epg_lookup = build_epg_lookup_from_pairs(
         (ch.epg_channel_id, ch.epg_aliases) for ch in self.channels
@@ -178,9 +170,7 @@ class LineupSnapshot:
     return self._epg_lookup
 
   def build_epg_candidate_chains(self) -> dict[str, tuple[str, ...]]:
-    """Build ordered fallback chains `canonical_epg_id -> (primary_id,
-    fallback_alias, ...)`.
-    """
+    """Build ordered fallback chains `canonical_epg_id -> alias tuple`."""
     if self._epg_chains is None:
       self._epg_chains = build_epg_chains_from_pairs(
         (ch.epg_channel_id, ch.epg_aliases) for ch in self.channels
@@ -189,9 +179,7 @@ class LineupSnapshot:
 
 
 class LineupGuideStore:
-  """Loads Phase (6) Xtream JSON outputs (or M3U8 fallback) with automatic
-  hot-reload.
-  """
+  """Loads Phase (6) Xtream JSON (or M3U8) outputs with hot-reload."""
 
   def __init__(
     self,
@@ -216,9 +204,7 @@ class LineupGuideStore:
 
   @property
   def bundle_signature(self) -> tuple[float, ...]:
-    """Return the `(mtime_ns, size)` signature of the currently loaded export
-    bundle.
-    """
+    """Return `(mtime_ns, size)` signature of the loaded export bundle."""
     return self._last_signature
 
   def _next_updated_at(self) -> float:
@@ -235,9 +221,7 @@ class LineupGuideStore:
     return self._bundle_reader.compute_signature()
 
   def get_snapshot(self, *, force_reload: bool = False) -> LineupSnapshot:
-    """Return the current `LineupSnapshot`, reloading from disk when files
-    changed.
-    """
+    """Return current `LineupSnapshot`, reloading on disk change."""
     sig = self._compute_signature()
     prev_snap = self._snapshot
     if (
@@ -267,9 +251,7 @@ class LineupGuideStore:
   async def async_get_snapshot(
     self, *, force_reload: bool = False
   ) -> LineupSnapshot:
-    """Async-safe snapshot retrieval offloading disk reloads off event
-    loop.
-    """
+    """Async-safe snapshot retrieval offloading disk reloads."""
     sig = self._compute_signature()
     prev_snap = self._snapshot
     if (

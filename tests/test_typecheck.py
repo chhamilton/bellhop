@@ -163,8 +163,8 @@ def test_frontend_unit_tests_pass() -> None:
     str(p.relative_to(REPO_ROOT))
     for p in (REPO_ROOT / "tests" / "frontend").glob("*.test.mjs")
   )
-  assert len(frontend_tests) >= 4, (
-    f"Expected >= 4 frontend test suites, found: {frontend_tests}"
+  assert len(frontend_tests) >= 7, (
+    f"Expected >= 7 frontend test suites, found: {frontend_tests}"
   )
 
   res = subprocess.run(
@@ -180,9 +180,7 @@ def test_frontend_unit_tests_pass() -> None:
 
 
 def test_repository_and_private_permissions_hygiene(tmp_path: Path) -> None:
-  """Ensure repo trees are never group/world-writable and private files stay
-  0600/0700.
-  """
+  """Ensure repo trees stay non-writable and secrets stay `0600`/`0700`."""
   executable_scripts = {
     Path(".agents/scripts/bootstrap.sh"),
     Path("docker/entrypoint.sh"),

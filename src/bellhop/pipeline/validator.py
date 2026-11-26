@@ -1,5 +1,6 @@
-"""Multi-stage async IPTV stream validator (HTTP/HLS/MPEG-TS, ffprobe
-audio/video, blackdetect).
+"""Multi-stage async IPTV stream validator.
+
+Runs Stage 1 HTTP/HLS/MPEG-TS checks, Stage 2 ffprobe, and Stage 3 blackdetect.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from bellhop.pipeline.models import (
 logger = logging.getLogger(__name__)
 
 STREAM_USER_AGENT = "VLC/3.0.20 LibVLC/3.0.20"
+FFMPEG_PROTOCOL_WHITELIST = "http,https,tcp,tls,crypto,hls"
 TS_PACKET_SIZE = 188
 TS_SYNC_BYTE = 0x47
 AUDIO_LANG_MISMATCH_PREFIX = "Audio track language mismatch"
@@ -122,9 +124,7 @@ ProgressCallback = Callable[[MappedChannel, int, int], None]
 
 
 def normalize_audio_language_code(raw_lang: str | None) -> str | None:
-  """Normalize an ISO-639-1/2/3 audio track language tag, ignoring
-  `und`/`mul`.
-  """
+  """Normalize an ISO-639 audio language tag, ignoring `und` and `mul`."""
   if not raw_lang:
     return None
   token = re.split(r"[-_]", raw_lang.strip().lower(), maxsplit=1)[0].strip()
@@ -143,9 +143,7 @@ def check_audio_language_compatibility(
   *,
   allow_audio_only: bool = False,
 ) -> tuple[bool, bool]:
-  """Return `(is_compatible, is_verified_match)` for a slot language vs probed
-  tracks.
-  """
+  """Return `(is_compatible, is_verified_match)` for slot vs probe audio."""
   if allow_audio_only:
     return (True, False)
   expected = normalize_audio_language_code(expected_lang)
@@ -164,9 +162,7 @@ def check_audio_language_compatibility(
 def clone_probe_with_language_mismatch(
   probe: ProbeResult, expected_lang: str
 ) -> ProbeResult:
-  """Return a slot-scoped demoted `ProbeResult` flagging an audio language
-  mismatch.
-  """
+  """Return a slot-scoped demoted `ProbeResult` for audio mismatch."""
   exp = normalize_audio_language_code(expected_lang) or expected_lang
   tracks = ",".join(probe.audio_languages) or "unknown"
   return replace(
@@ -178,9 +174,7 @@ def clone_probe_with_language_mismatch(
 
 
 def strip_slot_language_mismatch(probe: ProbeResult) -> ProbeResult:
-  """Recover intrinsic stream health if `probe` was flagged for slot language
-  mismatch.
-  """
+  """Recover stream health if `probe` was flagged only for audio language."""
   if not probe.black_screen and (
     probe.audio_language_mismatch
     or (
@@ -194,9 +188,7 @@ def strip_slot_language_mismatch(probe: ProbeResult) -> ProbeResult:
 
 
 def parse_blackdetect_duration(stderr_text: str) -> float:
-  """Sum `black_duration:<sec>` intervals reported by `ffmpeg -vf
-  blackdetect`.
-  """
+  """Sum `black_duration:<sec>` intervals reported by `ffmpeg`."""
   total = 0.0
   for match in BLACK_DURATION_RE.finditer(stderr_text):
     try:
@@ -209,9 +201,7 @@ def parse_blackdetect_duration(stderr_text: str) -> float:
 def effective_concurrency(
   config: AppConfig, account: XtreamAccountInfo | None = None
 ) -> int:
-  """Compute safe stream probe concurrency respecting Xtream account
-  max_connections.
-  """
+  """Compute safe probe concurrency respecting `max_connections`."""
   desired = max(1, config.validation.concurrency)
   if config.validation.ignore_account_limit or account is None:
     return desired
@@ -219,9 +209,7 @@ def effective_concurrency(
 
 
 def has_mpegts_sync(data: bytes) -> bool:
-  """Verify 188-byte MPEG-TS 0x47 sync byte cadence inside an initial byte
-  buffer.
-  """
+  """Verify 188-byte MPEG-TS `0x47` sync cadence in an initial buffer."""
   n = len(data)
   if n < TS_PACKET_SIZE * 2:
     return False
@@ -284,9 +272,7 @@ def _parse_fps(rate_str: str | None) -> float | None:
 
 
 class StreamValidator:
-  """Validates candidate Xtream live streams using Stage 1 HTTP/HLS + Stage 2
-  ffprobe.
-  """
+  """Validates candidate live streams via HTTP/HLS and ffprobe stages."""
 
   def __init__(
     self,
@@ -341,9 +327,7 @@ class StreamValidator:
     *,
     on_channel_done: ProgressCallback | None = None,
   ) -> list[MappedChannel]:
-    """Validate ranked candidates per channel, stopping at the first working
-    stream.
-    """
+    """Validate ranked candidates per channel, stopping on first winner."""
     timeout = aiohttp.ClientTimeout(
       total=None,
       connect=min(5.0, self.val_cfg.http_timeout_sec),
@@ -450,9 +434,7 @@ class StreamValidator:
     *,
     allow_audio_only: bool = False,
   ) -> ProbeResult:
-    """Probe a single Xtream stream (deduplicated across channels sharing a
-    candidate).
-    """
+    """Probe one Xtream stream (deduplicated across sharing channels)."""
     sid = stream.stream_id
     if sid in self._probe_cache:
       return self._probe_cache[sid]
@@ -530,18 +512,17 @@ class StreamValidator:
 
     return result
 
-  async def _stage1_http_check(
+  async def _read_initial_stream_response(
     self,
     stream_id: int,
     url: str,
     client: aiohttp.ClientSession,
     *,
-    _hls_depth: int = 0,
-  ) -> ProbeResult:
-    checked_at = datetime.now(timezone.utc).isoformat()
-    t0 = time.perf_counter()
-    min_bytes = self.val_cfg.min_bytes_to_read
-
+    checked_at: str,
+    t0: float,
+    min_bytes: int,
+    _hls_depth: int,
+  ) -> tuple[ProbeResult | None, int, str, str, bool, bytes]:
     try:
       async with client.get(upstream_url(url)) as resp:
         latency_ms = (time.perf_counter() - t0) * 1000.0
@@ -550,20 +531,26 @@ class StreamValidator:
         final_url = str(resp.url)
 
         if status not in (200, 206):
-          return ProbeResult(
-            stream_id=stream_id,
-            url=url,
-            ok=False,
-            http_status=status,
-            content_type=content_type,
-            latency_ms=latency_ms,
-            error=f"HTTP {status}",
-            checked_at=checked_at,
+          return (
+            ProbeResult(
+              stream_id=stream_id,
+              url=url,
+              ok=False,
+              http_status=status,
+              content_type=content_type,
+              latency_ms=latency_ms,
+              error=f"HTTP {status}",
+              checked_at=checked_at,
+            ),
+            status,
+            content_type,
+            final_url,
+            False,
+            b"",
           )
 
         path_lower = final_url.split("?", 1)[0].lower()
-        # Detect Xtream panel offline placeholder / dummy loop redirects (e.g.
-        # /video/black.ts)
+        # Reject Xtream panel offline placeholder / dummy loop redirects.
         if _hls_depth == 0 and (
           any(
             marker in path_lower
@@ -581,24 +568,30 @@ class StreamValidator:
             and resp.headers.get("Content-Length") is not None
           )
         ):
-          return ProbeResult(
-            stream_id=stream_id,
-            url=url,
-            ok=False,
-            http_status=status,
-            content_type=content_type,
-            latency_ms=latency_ms,
-            error=redact_url_secrets(
-              f"Redirected to static offline placeholder ({final_url})",
-              secret=self.config.xtream.password,
+          return (
+            ProbeResult(
+              stream_id=stream_id,
+              url=url,
+              ok=False,
+              http_status=status,
+              content_type=content_type,
+              latency_ms=latency_ms,
+              error=redact_url_secrets(
+                f"Redirected to static offline placeholder ({final_url})",
+                secret=self.config.xtream.password,
+              ),
+              checked_at=checked_at,
             ),
-            checked_at=checked_at,
+            status,
+            content_type,
+            final_url,
+            False,
+            b"",
           )
 
         is_hls_hint = "mpegurl" in content_type.lower() or path_lower.endswith(
           ".m3u8"
         )
-
         buf = bytearray()
         read_limit = (
           65536 if is_hls_hint else max(min_bytes, TS_PACKET_SIZE * 4)
@@ -614,32 +607,144 @@ class StreamValidator:
         await asyncio.wait_for(
           _read_initial(), timeout=self.val_cfg.http_timeout_sec
         )
-        data = bytes(buf)
-
+        return (None, status, content_type, final_url, is_hls_hint, bytes(buf))
     except asyncio.TimeoutError:
-      return ProbeResult(
-        stream_id=stream_id,
-        url=url,
-        ok=False,
-        latency_ms=(time.perf_counter() - t0) * 1000.0,
-        error="Stream read timed out",
-        checked_at=checked_at,
+      return (
+        ProbeResult(
+          stream_id=stream_id,
+          url=url,
+          ok=False,
+          latency_ms=(time.perf_counter() - t0) * 1000.0,
+          error="Stream read timed out",
+          checked_at=checked_at,
+        ),
+        0,
+        "",
+        url,
+        False,
+        b"",
       )
     except aiohttp.ClientError as exc:
+      return (
+        ProbeResult(
+          stream_id=stream_id,
+          url=url,
+          ok=False,
+          latency_ms=(time.perf_counter() - t0) * 1000.0,
+          error=redact_url_secrets(
+            f"HTTP error: {exc}",
+            secret=self.config.xtream.password,
+          ),
+          checked_at=checked_at,
+        ),
+        0,
+        "",
+        url,
+        False,
+        b"",
+      )
+
+  async def _classify_stage1_hls(
+    self,
+    stream_id: int,
+    url: str,
+    client: aiohttp.ClientSession,
+    *,
+    status: int,
+    content_type: str,
+    final_url: str,
+    data: bytes,
+    latency_ms: float,
+    checked_at: str,
+    _hls_depth: int,
+  ) -> ProbeResult:
+    manifest_text = data.decode("utf-8", errors="replace")
+    if "#EXTM3U" not in manifest_text:
       return ProbeResult(
         stream_id=stream_id,
         url=url,
         ok=False,
-        latency_ms=(time.perf_counter() - t0) * 1000.0,
-        error=redact_url_secrets(
-          f"HTTP error: {exc}",
-          secret=self.config.xtream.password,
-        ),
+        http_status=status,
+        content_type=content_type,
+        bytes_read=len(data),
+        latency_ms=latency_ms,
+        is_hls=True,
+        error="Invalid HLS manifest (missing #EXTM3U)",
         checked_at=checked_at,
       )
 
-    # Notice: `async with client.stream(...)` has exited cleanly here, closing
-    # the connection
+    child_uri, _ = _extract_first_hls_uri(manifest_text)
+    if not child_uri:
+      return ProbeResult(
+        stream_id=stream_id,
+        url=url,
+        ok=False,
+        http_status=status,
+        content_type=content_type,
+        bytes_read=len(data),
+        latency_ms=latency_ms,
+        is_hls=True,
+        error="Empty HLS manifest (no variant or segment URIs)",
+        checked_at=checked_at,
+      )
+
+    if _hls_depth >= 2:
+      return ProbeResult(
+        stream_id=stream_id,
+        url=url,
+        ok=True,
+        http_status=status,
+        content_type=content_type,
+        bytes_read=len(data),
+        latency_ms=latency_ms,
+        is_hls=True,
+        checked_at=checked_at,
+      )
+
+    resolved_child = urljoin(final_url, child_uri)
+    seg_probe = await self._stage1_http_check(
+      stream_id,
+      resolved_child,
+      client,
+      _hls_depth=_hls_depth + 1,
+    )
+    seg_probe.url = url
+    seg_probe.is_hls = True
+    seg_probe.latency_ms = latency_ms + seg_probe.latency_ms
+    return seg_probe
+
+  async def _stage1_http_check(
+    self,
+    stream_id: int,
+    url: str,
+    client: aiohttp.ClientSession,
+    *,
+    _hls_depth: int = 0,
+  ) -> ProbeResult:
+    checked_at = datetime.now(timezone.utc).isoformat()
+    t0 = time.perf_counter()
+    min_bytes = self.val_cfg.min_bytes_to_read
+
+    (
+      early,
+      status,
+      content_type,
+      final_url,
+      is_hls_hint,
+      data,
+    ) = await self._read_initial_stream_response(
+      stream_id,
+      url,
+      client,
+      checked_at=checked_at,
+      t0=t0,
+      min_bytes=min_bytes,
+      _hls_depth=_hls_depth,
+    )
+    if early is not None:
+      return early
+
+    latency_ms = (time.perf_counter() - t0) * 1000.0
     if not data:
       return ProbeResult(
         stream_id=stream_id,
@@ -652,62 +757,19 @@ class StreamValidator:
         checked_at=checked_at,
       )
 
-    # Handle HLS playlists (#EXTM3U) by following variant/segment up to depth 2
     if is_hls_hint or data.lstrip().startswith(b"#EXTM3U"):
-      manifest_text = data.decode("utf-8", errors="replace")
-      if "#EXTM3U" not in manifest_text:
-        return ProbeResult(
-          stream_id=stream_id,
-          url=url,
-          ok=False,
-          http_status=status,
-          content_type=content_type,
-          bytes_read=len(data),
-          latency_ms=latency_ms,
-          is_hls=True,
-          error="Invalid HLS manifest (missing #EXTM3U)",
-          checked_at=checked_at,
-        )
-
-      child_uri, _ = _extract_first_hls_uri(manifest_text)
-      if not child_uri:
-        return ProbeResult(
-          stream_id=stream_id,
-          url=url,
-          ok=False,
-          http_status=status,
-          content_type=content_type,
-          bytes_read=len(data),
-          latency_ms=latency_ms,
-          is_hls=True,
-          error="Empty HLS manifest (no variant or segment URIs)",
-          checked_at=checked_at,
-        )
-
-      if _hls_depth >= 2:
-        return ProbeResult(
-          stream_id=stream_id,
-          url=url,
-          ok=True,
-          http_status=status,
-          content_type=content_type,
-          bytes_read=len(data),
-          latency_ms=latency_ms,
-          is_hls=True,
-          checked_at=checked_at,
-        )
-
-      resolved_child = urljoin(final_url, child_uri)
-      seg_probe = await self._stage1_http_check(
+      return await self._classify_stage1_hls(
         stream_id,
-        resolved_child,
+        url,
         client,
-        _hls_depth=_hls_depth + 1,
+        status=status,
+        content_type=content_type,
+        final_url=final_url,
+        data=data,
+        latency_ms=latency_ms,
+        checked_at=checked_at,
+        _hls_depth=_hls_depth,
       )
-      seg_probe.url = url
-      seg_probe.is_hls = True
-      seg_probe.latency_ms = latency_ms + seg_probe.latency_ms
-      return seg_probe
 
     if _looks_like_error_payload(data, content_type):
       return ProbeResult(
@@ -724,10 +786,6 @@ class StreamValidator:
 
     ts_ok = has_mpegts_sync(data)
     container_ok = ts_ok or _looks_like_fmp4_or_flv(data)
-
-    # HLS segments might theoretically be small in mock tests, while live
-    # continuous streams
-    # must deliver at least min_bytes_to_read
     enough_bytes = len(data) >= min_bytes or (_hls_depth > 0 and container_ok)
     if not enough_bytes:
       return ProbeResult(
@@ -788,8 +846,11 @@ class StreamValidator:
       "3000000",
       "-probesize",
       "2000000",
+      "-protocol_whitelist",
+      FFMPEG_PROTOCOL_WHITELIST,
       "-user_agent",
       STREAM_USER_AGENT,
+      "-i",
       probe.url,
     ]
 
@@ -884,9 +945,7 @@ class StreamValidator:
       probe.error = "ffprobe found no decodable video stream"
 
   async def _stage3_black_screen_check(self, probe: ProbeResult) -> None:
-    """Decode a short sample via `ffmpeg -vf blackdetect` and reject pure-black
-    streams.
-    """
+    """Decode a short video sample via `ffmpeg` and reject black feeds."""
     assert self.ffmpeg_path is not None
     sample_sec = max(0.5, float(self.val_cfg.black_sample_sec))
     min_black_dur = round(sample_sec * 0.85, 2)
@@ -896,6 +955,8 @@ class StreamValidator:
       "-nostats",
       "-loglevel",
       "info",
+      "-protocol_whitelist",
+      FFMPEG_PROTOCOL_WHITELIST,
       "-user_agent",
       STREAM_USER_AGENT,
       "-t",

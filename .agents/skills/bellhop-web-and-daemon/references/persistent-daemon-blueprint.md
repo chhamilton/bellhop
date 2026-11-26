@@ -28,8 +28,8 @@ Extend `WebGuideApp` with admin endpoints:
 - `GET /api/admin/status` — Active tuner state, scheduler next-run timestamp, current running phase/progress, and latest `PipelineRunResult`.
 - `GET /api/admin/history` — Recent `PipelineRunResult` entries from `state/run_history.jsonl`.
 - `POST /api/admin/run` — Trigger an immediate background run (`{phases, skip_phases, dry_run, force_refresh, reprobe_all}`), streaming live phase/slot progress via `GET /api/admin/events` (`text/event-stream` SSE).
-- `GET /api/admin/config` — Returns `config.to_dict(redact_secrets=True)`.
-- `PUT /api/admin/config` — Validates and atomically writes updates to `config.yaml` (preserving existing secrets in `credentials.yaml` when redacted `***` placeholders are submitted).
+- `GET /api/admin/config` — Returns strictly Tier-2 operational settings via `ConfigManager.get_public()` (`export_public_config`), never exposing `web_server`, `xtream_server`, filesystem `paths`, or secrets.
+- `PUT /api/admin/config` — Validates and atomically persists Tier-2 operational updates via `ConfigManager.update_public()` (`apply_public_config_update`), preserving YAML comments and `${ENV}` placeholders while leaving Tier-1 infrastructure and credentials read-only (`config.yaml` / `credentials.yaml` only).
 - `GET /api/admin/discover-lineups` — Wraps `discover_provider_lineups()` so users can search TV Guide or Schedules Direct lineups by ZIP/postal code right from a dropdown in the web UI!
 
 ## 4. Web UI Additions (`Admin / Settings` Drawer or Tab)

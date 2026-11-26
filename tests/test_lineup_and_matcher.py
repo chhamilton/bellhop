@@ -1,6 +1,4 @@
-"""Tests for Bell Fibe Montreal YAML lineup integrity and multi-signal channel
-matching.
-"""
+"""Tests for Bell Fibe Montreal YAML lineup and multi-signal matching."""
 
 from __future__ import annotations
 
@@ -150,9 +148,7 @@ def test_matcher_prioritizes_montreal_and_isolates_siblings() -> None:
 
 
 def test_every_bell_fibe_channel_matches_canonical_xtream_stream() -> None:
-  """Verify all 163 Bell Fibe Montreal channels match realistic CA/QC Xtream
-  stream names.
-  """
+  """Verify all 163 Bell Fibe Montreal channels match CA/QC streams."""
   lineup = load_lineup(LINEUP_PATH)
   synthetic_streams = [
     XtreamStream(
@@ -177,9 +173,7 @@ def test_every_bell_fibe_channel_matches_canonical_xtream_stream() -> None:
 
 
 def test_non_montreal_lineup_regional_and_timezone_generalization() -> None:
-  """Verify Toronto, Vancouver, New York, and LA lineups infer local feeds &
-  logos.
-  """
+  """Verify Toronto, Vancouver, NYC, and LA infer local feeds and logos."""
   streams = [
     XtreamStream(
       stream_id=101,

@@ -1,5 +1,4 @@
-"""Signed expiring session-cookie authentication for the Bellhop Web Guide
-(`bellhop serve`).
+"""Signed expiring session-cookie auth for the Bellhop Web Guide.
 
 Uses Python standard-library primitives (`hmac`, `hashlib.sha256`, `secrets`,
 `http.cookies`)
@@ -12,6 +11,7 @@ restarts.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -24,7 +24,12 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
 from bellhop.common.file_utils import chmod_private_file, write_private_text
-from bellhop.common.http_utils import LoginRateLimiter as LoginRateLimiter
+from bellhop.common.http_utils import (
+  LoginRateLimiter as LoginRateLimiter,
+)
+from bellhop.common.http_utils import (
+  constant_time_credential_match,
+)
 
 SESSION_COOKIE_NAME = "bellhop_session"
 
@@ -39,7 +44,9 @@ def _b64u_decode(token: str) -> bytes:
 
 
 def _safe_compare_str(left: str, right: str) -> bool:
-  return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+  left_dig = hashlib.sha256(left.encode("utf-8")).digest()
+  right_dig = hashlib.sha256(right.encode("utf-8")).digest()
+  return hmac.compare_digest(left_dig, right_dig)
 
 
 def sanitize_next_url(raw_next: str | None) -> str:
@@ -76,18 +83,18 @@ class WebAuthConfig:
   session_ttl_hours: float = 168.0  # 7 days
   session_secret: str = ""
   secret_file: Path | None = None
+  revocation_file: Path | None = None
   secure_cookie: bool = False
 
 
 @dataclass(slots=True)
 class SessionInfo:
-  """Verified browser session extracted from a signed `bellhop_session`
-  cookie.
-  """
+  """Verified browser session extracted from a signed cookie."""
 
   username: str
   issued_at: int
   expires_at: int
+  jti: str = ""
 
   def needs_renewal(self, *, now_ts: int | None = None) -> bool:
     """Sliding expiry: renew cookie once past half its total TTL."""
@@ -97,9 +104,7 @@ class SessionInfo:
 
 
 class WebAuthManager:
-  """Manages Web Guide login verification and HMAC-SHA256 signed session
-  cookies.
-  """
+  """Manages Web Guide login verification and HMAC-SHA256 session cookies."""
 
   def __init__(
     self,
@@ -110,20 +115,89 @@ class WebAuthManager:
     self.config = config
     self._clock = clock
     self._key: bytes | None = None
-    self._revoked_tokens: dict[str, int] = {}
+    self._revoked_tokens: dict[str, tuple[int, int]] = {}
+    self._revoked_sig: tuple[int, int] | None = None
     self._max_revoked = 4096
+
+  @property
+  def revocation_path(self) -> Path | None:
+    """Path persisting revoked session `jti` entries across restarts."""
+    if self.config.revocation_file is not None:
+      return self.config.revocation_file
+    if self.config.secret_file is not None:
+      return self.config.secret_file.with_name("session_revoked.json")
+    return None
 
   @staticmethod
   def _token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
   def _prune_revoked(self, now: int) -> None:
-    for digest, exp in list(self._revoked_tokens.items()):
+    for rev_key, (_rev_after, exp) in list(self._revoked_tokens.items()):
       if exp <= now:
-        self._revoked_tokens.pop(digest, None)
+        self._revoked_tokens.pop(rev_key, None)
     while len(self._revoked_tokens) >= self._max_revoked:
       oldest = next(iter(self._revoked_tokens))
       self._revoked_tokens.pop(oldest, None)
+
+  def _sync_revoked_from_disk(self, now: int) -> None:
+    path = self.revocation_path
+    if path is None:
+      return
+    try:
+      st = path.stat()
+    except OSError:
+      return
+    sig = (int(st.st_mtime_ns), int(st.st_size))
+    if self._revoked_sig == sig:
+      return
+    try:
+      chmod_private_file(path)
+      raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+      self._revoked_sig = sig
+      return
+    entries = raw.get("revoked") if isinstance(raw, dict) else None
+    if isinstance(entries, dict):
+      for rev_key, vals in entries.items():
+        if not isinstance(rev_key, str) or not rev_key:
+          continue
+        if isinstance(vals, (list, tuple)) and len(vals) == 2:
+          rev_after = int(vals[0])
+          exp = int(vals[1])
+        elif isinstance(vals, (int, float)):
+          rev_after = 0
+          exp = int(vals)
+        else:
+          continue
+        if exp <= now:
+          continue
+        prev = self._revoked_tokens.get(rev_key)
+        if prev is None or rev_after < prev[0] or exp > prev[1]:
+          self._revoked_tokens[rev_key] = (
+            min(prev[0], rev_after) if prev else rev_after,
+            max(prev[1], exp) if prev else exp,
+          )
+    self._prune_revoked(now)
+    self._revoked_sig = sig
+
+  def _save_revocations(self) -> None:
+    path = self.revocation_path
+    if path is None:
+      return
+    payload = {
+      "v": 1,
+      "revoked": {
+        k: [rev_after, exp]
+        for k, (rev_after, exp) in self._revoked_tokens.items()
+      },
+    }
+    with contextlib.suppress(OSError):
+      write_private_text(
+        path, json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+      )
+      st = path.stat()
+      self._revoked_sig = (int(st.st_mtime_ns), int(st.st_size))
 
   @property
   def has_credentials(self) -> bool:
@@ -169,31 +243,32 @@ class WebAuthManager:
     return self._key
 
   def _credential_fingerprint(self) -> str:
-    """Short HMAC binding sessions to current credentials (password change
-    invalidates old cookies).
+    """Return short HMAC binding sessions to current credentials.
+
+    Password changes automatically invalidate old session cookies.
     """
     key = self._get_signing_key()
     material = f"{self.config.username}\0{self.config.password}".encode()
     return hmac.new(key, material, hashlib.sha256).hexdigest()[:12]
 
   def verify_credentials(self, username: str, password: str) -> bool:
-    if not self.has_credentials:
-      return False
-    return _safe_compare_str(username, self.config.username) and (
-      _safe_compare_str(password, self.config.password)
+    matched = constant_time_credential_match(
+      username, password, self.config.username, self.config.password
     )
+    return bool(self.has_credentials and matched)
 
   def create_session_token(
     self, username: str, *, now_ts: int | None = None
   ) -> tuple[str, SessionInfo]:
     now = int(self._clock()) if now_ts is None else now_ts
     exp = now + self.ttl_seconds
+    jti = secrets.token_hex(8)
     payload = {
       "u": username,
       "iat": now,
       "exp": exp,
       "v": self._credential_fingerprint(),
-      "jti": secrets.token_hex(8),
+      "jti": jti,
     }
     payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     payload_b64 = _b64u_encode(payload_bytes)
@@ -201,7 +276,9 @@ class WebAuthManager:
       self._get_signing_key(), payload_b64.encode("ascii"), hashlib.sha256
     ).digest()
     token = f"{payload_b64}.{_b64u_encode(sig)}"
-    return token, SessionInfo(username=username, issued_at=now, expires_at=exp)
+    return token, SessionInfo(
+      username=username, issued_at=now, expires_at=exp, jti=jti
+    )
 
   def verify_session_token(
     self, token: str, *, now_ts: int | None = None
@@ -234,22 +311,29 @@ class WebAuthManager:
     iat = int(data.get("iat") or 0)
     exp = int(data.get("exp") or 0)
     ver = str(data.get("v") or "")
+    jti = str(data.get("jti") or "")
 
     now = int(self._clock()) if now_ts is None else now_ts
     if exp <= now:
       return None
+    self._sync_revoked_from_disk(now)
     if self._revoked_tokens:
       self._prune_revoked(now)
-      if self._token_digest(token) in self._revoked_tokens:
-        return None
+      for key in (jti, self._token_digest(token)):
+        if key:
+          rec = self._revoked_tokens.get(key)
+          if rec is not None and now >= rec[0]:
+            return None
     if not _safe_compare_str(user, self.config.username):
       return None
     if not _safe_compare_str(ver, self._credential_fingerprint()):
       return None
 
-    return SessionInfo(username=user, issued_at=iat, expires_at=exp)
+    return SessionInfo(username=user, issued_at=iat, expires_at=exp, jti=jti)
 
-  def revoke_token(self, token: str, *, now_ts: int | None = None) -> None:
+  def revoke_token(
+    self, token: str, *, now_ts: int | None = None, grace_sec: int = 0
+  ) -> None:
     """Revoke `token` server-side until its natural expiration timestamp."""
     if not token:
       return
@@ -258,10 +342,21 @@ class WebAuthManager:
     if info is None:
       return
     self._prune_revoked(now)
-    self._revoked_tokens[self._token_digest(token)] = info.expires_at
+    rev_key = info.jti or self._token_digest(token)
+    rev_after = now + max(0, int(grace_sec))
+    prev = self._revoked_tokens.get(rev_key)
+    self._revoked_tokens[rev_key] = (
+      min(prev[0], rev_after) if prev is not None else rev_after,
+      info.expires_at,
+    )
+    self._save_revocations()
 
   def revoke_session_from_headers(
-    self, headers: Mapping[str, str], *, now_ts: int | None = None
+    self,
+    headers: Mapping[str, str],
+    *,
+    now_ts: int | None = None,
+    grace_sec: int = 0,
   ) -> None:
     """Extract and revoke any `bellhop_session` cookie present in `headers`."""
     raw_cookie = headers.get("cookie") or headers.get("Cookie") or ""
@@ -274,7 +369,7 @@ class WebAuthManager:
       return
     morsel = cookie.get(SESSION_COOKIE_NAME)
     if morsel is not None and morsel.value:
-      self.revoke_token(morsel.value, now_ts=now_ts)
+      self.revoke_token(morsel.value, now_ts=now_ts, grace_sec=grace_sec)
 
   def extract_session_from_headers(
     self,
@@ -332,9 +427,7 @@ class WebAuthManager:
 def render_login_page_html(
   *, next_url: str = "/", error_message: str = ""
 ) -> bytes:
-  """Render a clean, standalone dark-themed login page matching the Web Guide
-  UI.
-  """
+  """Render a standalone dark-themed login page matching the Web Guide."""
   safe_next = sanitize_next_url(next_url)
   esc_next = (
     safe_next.replace("&", "&amp;")

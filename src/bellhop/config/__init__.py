@@ -1,6 +1,4 @@
-"""Declarative two-tier configuration package (`model`, `load`, `public`,
-`manager`).
-"""
+"""Two-tier configuration package (`model`, `load`, `public`, `manager`)."""
 
 from __future__ import annotations
 

@@ -77,9 +77,7 @@ def test_json_schema_generation_and_validator_negative_cases() -> None:
 async def test_live_http_endpoints_conform_to_generated_ts_contracts(
   tmp_path: Path,
 ) -> None:
-  """Verify real WebGuideApp HTTP responses satisfy their TypedDict
-  contracts.
-  """
+  """Verify real WebGuideApp responses satisfy TypedDict contracts."""
   now_ts = int(time.time())
   xt_dir = tmp_path / "output" / "xtream"
   xt_dir.mkdir(parents=True)
