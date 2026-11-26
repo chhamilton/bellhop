@@ -154,8 +154,8 @@ export const createSettingsController = (
     const xt = cfg.upstream_xtream || {};
     const pipe = cfg.pipeline || {};
     const lu = pipe.lineup || {};
-    const tvg = lu.tvguide || {};
     const sd = lu.schedules_direct || {};
+    const iptvOrg = lu.iptv_org || {};
     const match = pipe.matching || {};
     const val = pipe.validation || {};
     const epg = pipe.epg || {};
@@ -204,16 +204,16 @@ export const createSettingsController = (
         </div>
 
         <div class="settings-group">
-          <h3>Channel Overrides &amp; Provider Endpoints</h3>
+          <h3>Channel Overrides &amp; Provider Options</h3>
           <div class="settings-grid">
             <div class="settings-field span-2">
               <label for="cfg-lu-pins">Pinned Streams (one <code>chno=stream_id</code> per line)</label>
               <textarea id="cfg-lu-pins" placeholder="1108=410108">${escapeHtml(pinsText)}</textarea>
             </div>
             ${renderTextField("cfg-lu-excl", "Excluded Channel Numbers (comma-separated)", exclText, { placeholder: "1107, 1424", span2: true })}
-            ${renderTextField("cfg-lu-tvg-url", "TV Guide Base URL", tvg.base_url, { span2: true })}
-            ${renderTextField("cfg-lu-sd-url", "Schedules Direct Base URL", sd.base_url, { span2: true })}
+            ${renderNumberField("cfg-lu-iptv-recheck", "iptv-org Recheck Interval (hours)", iptvOrg.recheck_hours, { step: "1", min: "0" })}
           </div>
+          ${renderCheckboxField("cfg-lu-iptv-en", "Enrich dynamic lineups with iptv-org genres & languages", iptvOrg.enabled !== false)}
           ${renderCheckboxField("cfg-lu-sd-autoadd", "Auto-add Schedules Direct lineup to account if unsubscribed", Boolean(sd.auto_add_lineup))}
         </div>
       </div>
@@ -225,12 +225,15 @@ export const createSettingsController = (
           ${renderCheckboxField("cfg-val-only-changed", "Only probe changed or previously unvalidated slots", val.only_changed !== false)}
           ${renderCheckboxField("cfg-val-ignore-limit", "Ignore upstream max_connections account limit (use cautiously)", Boolean(val.ignore_account_limit))}
           ${renderCheckboxField("cfg-val-ffprobe", "Use ffprobe codec/stream verification", val.use_ffprobe !== false)}
+          ${renderCheckboxField("cfg-val-black", "Detect black/frozen video frames via ffmpeg", val.detect_black_screen !== false)}
+          ${renderCheckboxField("cfg-val-audio-lang", "Verify audio track language matches channel", val.check_audio_language !== false)}
           <div class="settings-grid">
             ${renderNumberField("cfg-val-concurrency", "Probe Concurrency", val.concurrency, { step: "1", min: "1" })}
             ${renderNumberField("cfg-val-delay", "Inter-Probe Delay (sec)", val.inter_probe_delay_sec, { step: "0.05", min: "0" })}
             ${renderNumberField("cfg-val-http-timeout", "HTTP Probe Timeout (sec)", val.http_timeout_sec, { step: "0.5", min: "1" })}
             ${renderNumberField("cfg-val-min-bytes", "Minimum Bytes to Read", val.min_bytes_to_read, { step: "512", min: "512" })}
             ${renderNumberField("cfg-val-ffprobe-timeout", "ffprobe Timeout (sec)", val.ffprobe_timeout_sec, { step: "0.5", min: "1" })}
+            ${renderNumberField("cfg-val-black-sec", "Black-Frame Sample Duration (sec)", val.black_sample_sec, { step: "0.25", min: "0.5" })}
             ${renderNumberField("cfg-val-max-cands", "Max Candidates Per Channel", val.max_candidates_per_channel, { step: "1", min: "1" })}
           </div>
         </div>
@@ -293,10 +296,12 @@ export const createSettingsController = (
           exclude_audio: isChecked("cfg-lu-excl-audio"),
           pinned_streams: pinnedStreams,
           excluded_channels: excludedChannels,
-          tvguide: { base_url: valStr("cfg-lu-tvg-url") },
           schedules_direct: {
-            base_url: valStr("cfg-lu-sd-url"),
             auto_add_lineup: isChecked("cfg-lu-sd-autoadd"),
+          },
+          iptv_org: {
+            enabled: isChecked("cfg-lu-iptv-en"),
+            recheck_hours: reqNum("cfg-lu-iptv-recheck"),
           },
         },
         matching: {
@@ -312,6 +317,9 @@ export const createSettingsController = (
           min_bytes_to_read: reqNum("cfg-val-min-bytes"),
           use_ffprobe: isChecked("cfg-val-ffprobe"),
           ffprobe_timeout_sec: reqNum("cfg-val-ffprobe-timeout"),
+          detect_black_screen: isChecked("cfg-val-black"),
+          black_sample_sec: reqNum("cfg-val-black-sec"),
+          check_audio_language: isChecked("cfg-val-audio-lang"),
           max_candidates_per_channel: reqNum("cfg-val-max-cands"),
         },
         epg: {
@@ -460,7 +468,7 @@ export const createSettingsController = (
         if (data.config) renderSettingsForm(data.config);
         if (data.restart_required) {
           setSettingsStatus(
-            "Saved to config.yaml — restart `bellhop serve` to apply Xtream server listener changes.",
+            "Saved to config.yaml — restart bellhop serve to apply provider changes.",
             "warn",
           );
         } else {

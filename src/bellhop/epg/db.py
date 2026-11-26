@@ -134,17 +134,19 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     PRIMARY KEY (chno, epg_channel_id, start_ts)
   )
   """,
+  "DROP INDEX IF EXISTS idx_guide_chno_stop",
+  "DROP INDEX IF EXISTS idx_guide_epg_stop",
   """
-  CREATE INDEX IF NOT EXISTS idx_guide_chno_stop
-    ON guide_airings (chno, stop_ts, start_ts)
-  """,
-  """
-  CREATE INDEX IF NOT EXISTS idx_guide_epg_stop
-    ON guide_airings (epg_channel_id, stop_ts, start_ts)
+  CREATE INDEX IF NOT EXISTS idx_guide_chno_start
+    ON guide_airings (chno, start_ts, stop_ts)
   """,
   """
   CREATE INDEX IF NOT EXISTS idx_guide_stop
     ON guide_airings (stop_ts)
+  """,
+  """
+  CREATE INDEX IF NOT EXISTS idx_sd_schedule_days_date
+    ON sd_schedule_days (schedule_date)
   """,
   """
   CREATE INDEX IF NOT EXISTS idx_sd_programs_updated
@@ -514,7 +516,8 @@ class EpgDatabase:
     transaction.
     """
     self.ensure_initialized()
-    rows: list[
+    row_by_pk: dict[
+      tuple[int, str, int],
       tuple[
         int,
         str,
@@ -531,8 +534,8 @@ class EpgDatabase:
         int,
         int,
         str,
-      ]
-    ] = []
+      ],
+    ] = {}
     emitted_epg_ids: set[str] = set()
 
     if snap.channels:
@@ -549,36 +552,8 @@ class EpgDatabase:
         emitted_epg_ids.add(cid)
         for p in reconciled:
           src = "sd" if p.id.startswith("sd-") else "xmltv"
-          rows.append(
-            (
-              ch.chno,
-              cid,
-              p.start_timestamp,
-              p.stop_timestamp,
-              p.id,
-              p.title,
-              p.sub_title,
-              p.description,
-              p.category,
-              p.episode_num,
-              p.air_date,
-              p.rating,
-              1 if p.is_new else 0,
-              1 if p.is_live_airing else 0,
-              src,
-            )
-          )
-
-    # Also store any unattached `programs_by_id` entries (`chno = 0`)
-    for cid, plist in programs_by_id.items():
-      if cid in emitted_epg_ids or not plist:
-        continue
-      reconciled = reconcile_non_overlapping_schedule(plist)
-      for p in reconciled:
-        src = "sd" if p.id.startswith("sd-") else "xmltv"
-        rows.append(
-          (
-            0,
+          row_by_pk[(ch.chno, cid, p.start_timestamp)] = (
+            ch.chno,
             cid,
             p.start_timestamp,
             p.stop_timestamp,
@@ -594,7 +569,50 @@ class EpgDatabase:
             1 if p.is_live_airing else 0,
             src,
           )
+
+    # Also store any unattached `programs_by_id` entries (`chno = 0`)
+    for cid, plist in programs_by_id.items():
+      if cid in emitted_epg_ids or not plist:
+        continue
+      reconciled = reconcile_non_overlapping_schedule(plist)
+      for p in reconciled:
+        src = "sd" if p.id.startswith("sd-") else "xmltv"
+        row_by_pk[(0, cid, p.start_timestamp)] = (
+          0,
+          cid,
+          p.start_timestamp,
+          p.stop_timestamp,
+          p.id,
+          p.title,
+          p.sub_title,
+          p.description,
+          p.category,
+          p.episode_num,
+          p.air_date,
+          p.rating,
+          1 if p.is_new else 0,
+          1 if p.is_live_airing else 0,
+          src,
         )
+
+    rows = list(row_by_pk.values())
+    recent_floor = int(fetched_at) - EPG_RECENT_FLOOR_SEC
+    active_count = 0
+    max_stop = 0
+    channels_seen: set[str] = set()
+    for row in rows:
+      s_stop = row[3]
+      if s_stop == 0 or s_stop > recent_floor:
+        active_count += 1
+      if s_stop > max_stop:
+        max_stop = s_stop
+      channels_seen.add(f"c:{row[0]}" if row[0] > 0 else f"e:{row[1]}")
+    summary = EpgCoverageSummary(
+      total_programs=len(rows),
+      active_programs=active_count,
+      max_stop_timestamp=max_stop,
+      channels_with_epg=len(channels_seen),
+    )
 
     effective_covered = sorted(
       covered_channel_ids
@@ -627,7 +645,6 @@ class EpgDatabase:
           "INSERT OR REPLACE INTO epg_meta (key, value) VALUES (?, ?)",
           meta_pairs,
         )
-        summary = self._query_coverage_on_conn(conn, now_ts=int(fetched_at))
         conn.execute("COMMIT")
       except Exception:
         conn.execute("ROLLBACK")
@@ -744,29 +761,33 @@ class EpgDatabase:
       for r in cur:
         chno = int(r[0])
         cid = str(r[1])
-        item = ProgramItem(
-          id=str(r[2]),
-          channel_id=cid,
-          title=str(r[3]),
-          sub_title=str(r[4]),
-          description=str(r[5]),
-          category=str(r[6]),
-          start_timestamp=int(r[7]),
-          stop_timestamp=int(r[8]),
-          episode_num=str(r[9]),
-          air_date=str(r[10]),
-          rating=str(r[11]),
-          is_new=bool(r[12]),
-          is_live_airing=bool(r[13]),
-        )
         if chno > 0:
           bucket = by_chno.setdefault(chno, [])
-          if len(bucket) < per_channel_limit:
-            bucket.append(item)
+          if len(bucket) >= per_channel_limit:
+            continue
         elif cid:
-          ebucket = by_epg_id.setdefault(cid, [])
-          if len(ebucket) < per_channel_limit:
-            ebucket.append(item)
+          bucket = by_epg_id.setdefault(cid, [])
+          if len(bucket) >= per_channel_limit:
+            continue
+        else:
+          continue
+        bucket.append(
+          ProgramItem(
+            id=str(r[2]),
+            channel_id=cid,
+            title=str(r[3]),
+            sub_title=str(r[4]),
+            description=str(r[5]),
+            category=str(r[6]),
+            start_timestamp=int(r[7]),
+            stop_timestamp=int(r[8]),
+            episode_num=str(r[9]),
+            air_date=str(r[10]),
+            rating=str(r[11]),
+            is_new=bool(r[12]),
+            is_live_airing=bool(r[13]),
+          )
+        )
     return by_chno, by_epg_id
 
   def query_xtream_epg_listings(

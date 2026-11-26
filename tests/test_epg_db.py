@@ -610,3 +610,42 @@ def test_unique_slot_epg_ids_and_xmltv_rich_tag_roundtrip(
   assert "<category>Hockey</category>" in xml_out
   assert "<new/>" in xml_out
   assert "<live/>" in xml_out
+
+  # Verify composite index `idx_guide_chno_start` handles both channel-schedule
+  # and timeline-window scans without any `TEMP B-TREE`.
+  with sqlite3.connect(db.db_path) as raw_conn:
+    chan_plan = " ".join(
+      str(r[3])
+      for r in raw_conn.execute(
+        """
+        EXPLAIN QUERY PLAN
+        SELECT program_uid, epg_channel_id, title, sub_title, description,
+               category, start_ts, stop_ts, episode_num, air_date, rating,
+               is_new, is_live
+        FROM guide_airings
+        WHERE chno = ? AND (stop_ts = 0 OR stop_ts > ?)
+        ORDER BY start_ts ASC
+        LIMIT ?
+        """,
+        (1108, 0, 120),
+      ).fetchall()
+    )
+    win_plan = " ".join(
+      str(r[3])
+      for r in raw_conn.execute(
+        """
+        EXPLAIN QUERY PLAN
+        SELECT chno, epg_channel_id, program_uid, title, sub_title,
+               description, category, start_ts, stop_ts, episode_num,
+               air_date, rating, is_new, is_live
+        FROM guide_airings
+        WHERE (stop_ts = 0 OR stop_ts > ?) AND start_ts <= ?
+        ORDER BY chno ASC, start_ts ASC
+        """,
+        (0, now_ts + 7200),
+      ).fetchall()
+    )
+  assert "idx_guide_chno_start" in chan_plan
+  assert "TEMP B-TREE" not in chan_plan
+  assert "idx_guide_chno_start" in win_plan
+  assert "TEMP B-TREE" not in win_plan

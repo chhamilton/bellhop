@@ -124,12 +124,12 @@ interface UpstreamXtreamPublicConfig {
   refresh_hours: number;
 }
 
-interface TvGuidePublicConfig {
-  base_url: string;
+interface IptvOrgPublicConfig {
+  enabled: boolean;
+  recheck_hours: number;
 }
 
 interface SchedulesDirectPublicConfig {
-  base_url: string;
   auto_add_lineup: boolean;
 }
 
@@ -143,8 +143,8 @@ interface LineupPublicConfig {
   exclude_audio: boolean;
   pinned_streams: Record<string, number>;
   excluded_channels: number[];
-  tvguide: TvGuidePublicConfig;
   schedules_direct: SchedulesDirectPublicConfig;
+  iptv_org: IptvOrgPublicConfig;
 }
 
 interface MatchingPublicConfig {
@@ -161,6 +161,9 @@ interface ValidationPublicConfig {
   min_bytes_to_read: number;
   use_ffprobe: boolean;
   ffprobe_timeout_sec: number;
+  detect_black_screen: boolean;
+  black_sample_sec: number;
+  check_audio_language: boolean;
   max_candidates_per_channel: number;
 }
 

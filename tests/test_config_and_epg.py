@@ -409,3 +409,170 @@ async def test_verify_epg_endpoint_plain_gzip_local_and_errors(
     bad_status = await verify_epg_endpoint(remote_cfg, client=client)
     assert bad_status.verified is False
     assert bad_status.status_code == 503
+
+
+def test_config_manager_cache_invalidation_and_constant_provider_urls(
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Verify `ConfigManager` caches parses, provider URLs stay constant, &
+  `${ENV}` placeholders survive Tier-2 updates.
+  """
+  from bellhop.config import (
+    DEFAULT_IPTV_ORG_API_URL,
+    DEFAULT_SD_BASE_URL,
+    DEFAULT_TVGUIDE_BASE_URL,
+    ConfigManager,
+    IptvOrgConfig,
+    LineupConfig,
+    SchedulesDirectConfig,
+    clear_config_cache,
+  )
+  from bellhop.config.load import _load_yaml_dict
+
+  assert DEFAULT_SD_BASE_URL.startswith("https://")
+  assert DEFAULT_TVGUIDE_BASE_URL.startswith("https://")
+  assert DEFAULT_IPTV_ORG_API_URL.startswith("https://")
+  assert not hasattr(SchedulesDirectConfig(), "base_url")
+  assert not hasattr(IptvOrgConfig(), "base_url")
+  assert not hasattr(LineupConfig(), "tvguide")
+
+  monkeypatch.setenv("VAL_MAX_CANDS", "6")
+  monkeypatch.setenv("EPG_REFRESH_H", "8")
+  monkeypatch.setenv("OUT_UNMATCHED", "true")
+  cfg_path = tmp_path / "config.yaml"
+  cfg_path.write_text(
+    """\
+upstream_xtream:
+  server_url: "http://panel.example:8080"
+  username: "u"
+  password: "p"
+pipeline:
+  lineup:
+    backend: "schedules_direct"
+    refresh_days: 30
+    iptv_org:
+      enabled: true
+      recheck_hours: 24
+  validation:
+    max_candidates_per_channel: "${VAL_MAX_CANDS}"
+    detect_black_screen: true
+    black_sample_sec: 1.5
+    check_audio_language: true
+  epg:
+    refresh_hours: "${EPG_REFRESH_H}"
+  output:
+    include_unmatched_comment: "${OUT_UNMATCHED}"
+""",
+    encoding="utf-8",
+  )
+
+  parse_calls = {"n": 0}
+  orig_loader = _load_yaml_dict
+
+  def _counting_loader(
+    path: Path, *, interpolate: bool = False
+  ) -> dict[str, object]:
+    parse_calls["n"] += 1
+    return orig_loader(path, interpolate=interpolate)
+
+  monkeypatch.setattr(
+    "bellhop.config.manager._load_yaml_dict", _counting_loader
+  )
+  clear_config_cache()
+  mgr = ConfigManager(cfg_path)
+
+  first_cfg = mgr.get()
+  second_cfg = mgr.get()
+  pub1 = mgr.get_public()
+  assert first_cfg is second_cfg
+  assert parse_calls["n"] == 1
+  assert "tvguide" not in pub1["pipeline"]["lineup"]
+  assert "base_url" not in pub1["pipeline"]["lineup"]["schedules_direct"]
+  assert pub1["pipeline"]["lineup"]["iptv_org"]["enabled"] is True
+
+  # Writing changed content (different size) invalidates cache once.
+  cfg_path.write_text(
+    cfg_path.read_text(encoding="utf-8").replace(
+      "refresh_days: 30", "refresh_days: 14"
+    )
+    + "# cache bump\n",
+    encoding="utf-8",
+  )
+  reloaded_cfg = mgr.get()
+  assert reloaded_cfg.lineup.refresh_days == 14.0
+  assert parse_calls["n"] == 2
+
+  # Updating non-restart fields refreshes cache in memory and keeps `${ENV}`.
+  updated_cfg, restart_req = mgr.update_public(
+    {
+      "pipeline": {
+        "lineup": {"iptv_org": {"enabled": False, "recheck_hours": 12.0}},
+        "validation": {
+          "detect_black_screen": False,
+          "black_sample_sec": 2.5,
+          "check_audio_language": False,
+        },
+      }
+    }
+  )
+  assert restart_req is False
+  assert mgr.get() is updated_cfg
+  assert parse_calls["n"] == 2
+  assert updated_cfg.lineup.iptv_org.enabled is False
+  assert updated_cfg.lineup.iptv_org.recheck_hours == 12.0
+  assert updated_cfg.validation.detect_black_screen is False
+  assert updated_cfg.validation.black_sample_sec == 2.5
+  assert updated_cfg.validation.check_audio_language is False
+
+  raw_text = cfg_path.read_text(encoding="utf-8")
+  for env_ref in ("${VAL_MAX_CANDS}", "${EPG_REFRESH_H}", "${OUT_UNMATCHED}"):
+    assert env_ref in raw_text
+
+  # Changing server_url triggers restart_required=True; invalid URLs fail.
+  _, restart_url = mgr.update_public(
+    {"upstream_xtream": {"server_url": "https://next-panel.example:8443"}}
+  )
+  assert restart_url is True
+  for bad_url in (
+    "ftp://panel.example",
+    "http://user:pass@panel.example:8080",
+    "http://panel.example:8080?x=1",
+    "http://panel.example:8080#frag",
+    "http://bad host.example:8080",
+  ):
+    with pytest.raises(ValueError, match="server_url"):
+      mgr.update_public({"upstream_xtream": {"server_url": bad_url}})
+
+
+def test_docker_config_xtream_stream_format_env_and_numbering_mode(
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Verify `XTREAM_STREAM_FORMAT` env override & explicit `numbering_mode`."""
+  repo_root = Path(__file__).resolve().parents[1]
+  monkeypatch.setenv("XTREAM_SERVER_URL", "http://panel.example:8080")
+  monkeypatch.setenv("XTREAM_USERNAME", "xt_u")
+  monkeypatch.setenv("XTREAM_PASSWORD", "xt_p")
+  monkeypatch.setenv("XTREAM_STREAM_FORMAT", "m3u8")
+  monkeypatch.setenv("BELLHOP_WEB_USERNAME", "web_u")
+  monkeypatch.setenv("BELLHOP_WEB_PASSWORD", "web_p")
+  monkeypatch.setenv("BELLHOP_SERVE_USERNAME", "srv_u")
+  monkeypatch.setenv("BELLHOP_SERVE_PASSWORD", "srv_p")
+
+  docker_cfg = load_config(repo_root / "docker" / "config.docker.yaml")
+  assert docker_cfg.xtream.stream_format == "m3u8"
+
+  cfg_path = tmp_path / "num_mode.yaml"
+  cfg_path.write_text(
+    """\
+pipeline:
+  lineup:
+    collapse_sd_dupes: true
+    numbering_mode: "both"
+""",
+    encoding="utf-8",
+  )
+  parsed = load_config(cfg_path)
+  assert parsed.lineup.collapse_sd_dupes is True
+  assert parsed.lineup.numbering_mode == "both"

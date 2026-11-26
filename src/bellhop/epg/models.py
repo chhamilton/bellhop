@@ -377,6 +377,21 @@ class GuideStoreProto(Protocol):
   def touch_epg_revision(self, *, xmltv_url: str = "") -> None: ...
 
 
+def _compute_raw_guide_fingerprint(snap: GuideSnapshotProto) -> str:
+  """Compute uncached SHA-256 fingerprint of channel-to-EPG bindings."""
+  rows = [
+    (
+      ch.chno,
+      ch.epg_channel_id.strip().lower(),
+      ch.gracenote_station_id.strip(),
+      [a.strip().lower() for a in ch.epg_aliases if a.strip()],
+    )
+    for ch in sorted(snap.channels, key=lambda c: c.chno)
+  ]
+  payload = json.dumps(rows, separators=(",", ":"), ensure_ascii=True)
+  return hashlib.sha256(payload.encode("ascii")).hexdigest()[:24]
+
+
 def compute_guide_fingerprint(snap: GuideSnapshotProto) -> str:
   """Compute a deterministic SHA-256 fingerprint of channel-to-EPG bindings.
 
@@ -390,14 +405,7 @@ def compute_guide_fingerprint(snap: GuideSnapshotProto) -> str:
   Returns:
     24-character lowercase hex SHA-256 prefix identifying the guide bindings.
   """
-  rows = [
-    (
-      ch.chno,
-      ch.epg_channel_id.strip().lower(),
-      ch.gracenote_station_id.strip(),
-      [a.strip().lower() for a in ch.epg_aliases if a.strip()],
-    )
-    for ch in sorted(snap.channels, key=lambda c: c.chno)
-  ]
-  payload = json.dumps(rows, separators=(",", ":"), ensure_ascii=True)
-  return hashlib.sha256(payload.encode("ascii")).hexdigest()[:24]
+  cached = getattr(snap, "_guide_fingerprint", "")
+  if isinstance(cached, str) and cached:
+    return cached
+  return _compute_raw_guide_fingerprint(snap)

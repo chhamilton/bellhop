@@ -60,7 +60,7 @@ upstream_xtream:
   server_url: "${XTREAM_SERVER_URL}"
   username: "${XTREAM_USERNAME}"
   password: "${XTREAM_PASSWORD}"
-  stream_format: "ts"
+  stream_format: "${XTREAM_STREAM_FORMAT}"
   request_timeout_sec: 90.0
   refresh_hours: 24.0
 
@@ -75,16 +75,12 @@ pipeline:
     exclude_audio: false
     pinned_streams: {}
     excluded_channels: []
-    tvguide:
-      base_url: "https://backend.tvguide.com/tvschedules/tvguide"
     schedules_direct:
       username: "${SD_USERNAME}"
       password: "${SD_PASSWORD}"
-      base_url: "https://json.schedulesdirect.org/20141201"
       auto_add_lineup: false
     iptv_org:
       enabled: true
-      base_url: "https://iptv-org.github.io/api"
       recheck_hours: 24.0
 
   matching:

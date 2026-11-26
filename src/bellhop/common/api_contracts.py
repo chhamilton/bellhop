@@ -161,16 +161,16 @@ class PublicUpstreamXtreamDict(TypedDict):
   refresh_hours: float
 
 
-class PublicTvGuideDict(TypedDict):
-  """Tier-2 `pipeline.lineup.tvguide` settings exposed on `/api/config`."""
+class PublicIptvOrgDict(TypedDict):
+  """Tier-2 `pipeline.lineup.iptv_org` settings exposed on `/api/config`."""
 
-  base_url: str
+  enabled: bool
+  recheck_hours: float
 
 
 class PublicSchedulesDirectDict(TypedDict):
   """Tier-2 `pipeline.lineup.schedules_direct` settings on `/api/config`."""
 
-  base_url: str
   auto_add_lineup: bool
 
 
@@ -186,8 +186,8 @@ class PublicLineupDict(TypedDict):
   exclude_audio: bool
   pinned_streams: dict[str, int]
   excluded_channels: list[int]
-  tvguide: PublicTvGuideDict
   schedules_direct: PublicSchedulesDirectDict
+  iptv_org: PublicIptvOrgDict
 
 
 class PublicMatchingDict(TypedDict):
@@ -208,6 +208,9 @@ class PublicValidationDict(TypedDict):
   min_bytes_to_read: int
   use_ffprobe: bool
   ffprobe_timeout_sec: float
+  detect_black_screen: bool
+  black_sample_sec: float
+  check_audio_language: bool
   max_candidates_per_channel: int
 
 
@@ -274,7 +277,7 @@ API_CONTRACT_TYPES: tuple[tuple[type[Any], str], ...] = (
   (AuthStatusResponseDict, "AuthStatusResponse"),
   (ChannelEpgResponseDict, "ChannelEpgResponse"),
   (PublicUpstreamXtreamDict, "UpstreamXtreamPublicConfig"),
-  (PublicTvGuideDict, "TvGuidePublicConfig"),
+  (PublicIptvOrgDict, "IptvOrgPublicConfig"),
   (PublicSchedulesDirectDict, "SchedulesDirectPublicConfig"),
   (PublicLineupDict, "LineupPublicConfig"),
   (PublicMatchingDict, "MatchingPublicConfig"),

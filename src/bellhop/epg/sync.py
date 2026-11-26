@@ -6,13 +6,22 @@ Used by both `bellhop.pipeline.runner` (`bellhop run`) and `bellhop.serve`
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from bellhop.common.export_bundle import ExportBundleReader
+from bellhop.common.export_bundle import (
+  ExportBundleReader,
+  build_epg_chains_from_pairs,
+  build_epg_lookup_from_pairs,
+)
 from bellhop.common.http_utils import ClientSessionFactory
-from bellhop.config import AppConfig
-from bellhop.epg.models import GuideSnapshotProto, GuideStoreProto
+from bellhop.config import DEFAULT_SD_BASE_URL, AppConfig
+from bellhop.epg.models import (
+  GuideSnapshotProto,
+  GuideStoreProto,
+  _compute_raw_guide_fingerprint,
+)
 from bellhop.epg.refresh import EpgRefreshConfig, EpgRefreshService
 from bellhop.epg.sd_epg import SchedulesDirectEpgConfig
 from bellhop.epg.xmltv import build_passthrough_xmltv_url
@@ -43,35 +52,34 @@ class BundleGuideSnapshot:
   postal_prefix: str = ""
   xmltv_url: str = ""
   channels: list[BundleGuideChannel] = field(default_factory=list)
+  _epg_lookup: dict[str, str] | None = field(
+    default=None, init=False, repr=False
+  )
+  _epg_chains: dict[str, tuple[str, ...]] | None = field(
+    default=None, init=False, repr=False
+  )
+  _guide_fingerprint: str = field(default="", init=False, repr=False)
+
+  @property
+  def guide_fingerprint(self) -> str:
+    """Cached SHA-256 fingerprint of channel-to-EPG bindings."""
+    if not self._guide_fingerprint:
+      self._guide_fingerprint = _compute_raw_guide_fingerprint(self)
+    return self._guide_fingerprint
 
   def build_epg_channel_lookup(self) -> dict[str, str]:
-    lookup: dict[str, str] = {}
-    for ch in self.channels:
-      canonical = ch.epg_channel_id.strip()
-      if canonical:
-        lookup[canonical.lower()] = canonical
-    for ch in self.channels:
-      canonical = ch.epg_channel_id.strip()
-      if not canonical:
-        continue
-      for alias in ch.epg_aliases:
-        cleaned = alias.strip()
-        if cleaned and cleaned.lower() not in lookup:
-          lookup[cleaned.lower()] = canonical
-    return lookup
+    if self._epg_lookup is None:
+      self._epg_lookup = build_epg_lookup_from_pairs(
+        (ch.epg_channel_id, ch.epg_aliases) for ch in self.channels
+      )
+    return self._epg_lookup
 
   def build_epg_candidate_chains(self) -> dict[str, tuple[str, ...]]:
-    chains: dict[str, list[str]] = {}
-    for ch in self.channels:
-      canonical = ch.epg_channel_id.strip()
-      if not canonical:
-        continue
-      bucket = chains.setdefault(canonical, [])
-      for cand in (canonical, *ch.epg_aliases):
-        low = cand.strip().lower()
-        if low and low not in bucket:
-          bucket.append(low)
-    return {k: tuple(v) for k, v in chains.items()}
+    if self._epg_chains is None:
+      self._epg_chains = build_epg_chains_from_pairs(
+        (ch.epg_channel_id, ch.epg_aliases) for ch in self.channels
+      )
+    return self._epg_chains
 
 
 class ExportBundleGuideStore:
@@ -85,16 +93,31 @@ class ExportBundleGuideStore:
     *,
     m3u8_path: Path | None = None,
     fallback_xmltv_url: str = "",
+    bundle_reader: ExportBundleReader | None = None,
   ) -> None:
-    self._reader = ExportBundleReader(
+    self._reader = bundle_reader or ExportBundleReader(
       xtream_dir,
       m3u8_path=m3u8_path,
       fallback_xmltv_url=fallback_xmltv_url,
     )
     self._overlay_url = ""
+    self._last_sig: tuple[float, ...] = ()
+    self._snapshot: BundleGuideSnapshot | None = None
+
+  @property
+  def fallback_xmltv_url(self) -> str:
+    return self._reader.fallback_xmltv_url
+
+  @fallback_xmltv_url.setter
+  def fallback_xmltv_url(self, value: str) -> None:
+    self._reader.fallback_xmltv_url = value.strip()
 
   def get_snapshot(self, *, force_reload: bool = False) -> GuideSnapshotProto:
-    _, bundle = self._reader.read_cached(force_reload=force_reload)
+    sig, bundle = self._reader.read_cached(force_reload=force_reload)
+    if (
+      not force_reload and self._snapshot is not None and sig == self._last_sig
+    ):
+      return self._snapshot
     channels = [
       BundleGuideChannel(
         chno=rec.num,
@@ -110,7 +133,7 @@ class ExportBundleGuideStore:
       for rec in bundle.streams
     ]
     channels.sort(key=lambda c: c.chno)
-    return BundleGuideSnapshot(
+    snap = BundleGuideSnapshot(
       lineup_id=bundle.lineup_id,
       provider=bundle.provider,
       market=bundle.market,
@@ -118,10 +141,31 @@ class ExportBundleGuideStore:
       xmltv_url=bundle.xmltv_url or self._overlay_url,
       channels=channels,
     )
+    snap.build_epg_channel_lookup()
+    snap.build_epg_candidate_chains()
+    _ = snap.guide_fingerprint
+    self._snapshot = snap
+    self._last_sig = sig
+    return snap
+
+  async def async_get_snapshot(
+    self, *, force_reload: bool = False
+  ) -> GuideSnapshotProto:
+    """Async-safe snapshot retrieval offloading disk reloads off event
+    loop.
+    """
+    sig = self._reader.compute_signature()
+    if (
+      not force_reload and self._snapshot is not None and sig == self._last_sig
+    ):
+      return self._snapshot
+    return await asyncio.to_thread(self.get_snapshot, force_reload=force_reload)
 
   def touch_epg_revision(self, *, xmltv_url: str = "") -> None:
     if xmltv_url:
       self._overlay_url = xmltv_url
+      if self._snapshot is not None and not self._snapshot.xmltv_url:
+        self._snapshot.xmltv_url = xmltv_url
 
 
 def build_epg_refresher_from_config(
@@ -130,6 +174,7 @@ def build_epg_refresher_from_config(
   *,
   session_factory: ClientSessionFactory | None = None,
   enabled: bool = True,
+  sd_base_url: str = DEFAULT_SD_BASE_URL,
 ) -> EpgRefreshService:
   """Construct an `EpgRefreshService` wired to `config`'s SD-JSON & XMLTV.
 
@@ -138,6 +183,7 @@ def build_epg_refresher_from_config(
     store: Optional guide store (defaults to `ExportBundleGuideStore`).
     session_factory: Optional `aiohttp.ClientSession` factory override.
     enabled: Whether background refresh timers are enabled on startup.
+    sd_base_url: Schedules Direct API base URL (overridable in tests).
 
   Returns:
     Configured `EpgRefreshService` backed by `cache/epg.sqlite3`.
@@ -147,7 +193,7 @@ def build_epg_refresher_from_config(
     if config.epg.xmltv_file is not None
     else None
   )
-  cache_dir = config.resolve_path(config.xtream.cache_dir)
+  cache_dir = config.resolve_path(config.cache_dir)
   epg_db_file = cache_dir / "epg.sqlite3"
   fallback_xmltv_url = build_passthrough_xmltv_url(config, redact_secret=False)
   if store is None:
@@ -162,7 +208,7 @@ def build_epg_refresher_from_config(
   sd_epg_cfg = SchedulesDirectEpgConfig(
     username=sd_raw.username,
     password=sd_raw.password,
-    base_url=sd_raw.base_url,
+    base_url=sd_base_url,
     auto_add_lineup=sd_raw.auto_add_lineup,
     preferred_lineup_id=config.lineup.lineup_id,
     postal_code=config.lineup.postal_code,

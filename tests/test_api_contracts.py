@@ -145,6 +145,7 @@ xtream_server:
 
   cfg = load_config(cfg_path)
   srv = UnifiedServeServer.from_config(cfg)
+  assert srv.web_app is not None
   assert srv.web_app.epg_refresher is not None
   snap = srv.web_app.store.get_snapshot()
   srv.web_app.epg_refresher.db.replace_guide_schedules(

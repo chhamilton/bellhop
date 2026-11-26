@@ -38,7 +38,12 @@ from pathlib import Path
 from typing import Any
 
 from bellhop.common.file_utils import write_private_text
-from bellhop.config import AppConfig
+from bellhop.config import (
+  DEFAULT_IPTV_ORG_API_URL,
+  DEFAULT_SD_BASE_URL,
+  DEFAULT_TVGUIDE_BASE_URL,
+  AppConfig,
+)
 from bellhop.pipeline.dial_grouping import assign_dial_contiguous_groups
 from bellhop.pipeline.iptv_org import (
   IptvOrgClient,
@@ -169,17 +174,16 @@ class LineupRetrievalResult:
 
 def build_default_providers(config: AppConfig) -> list[LineupProvider]:
   """Construct the ordered registry of lineup providers from `AppConfig`."""
-  cache_dir = config.resolve_path(config.xtream.cache_dir)
+  cache_dir = config.resolve_path(config.cache_dir)
   yaml_path = config.resolve_path(config.lineup.file)
   sd_cfg = config.lineup.schedules_direct
-  tvg_cfg = config.lineup.tvguide
 
   return [
-    TvGuideLineupProvider(base_url=tvg_cfg.base_url),
+    TvGuideLineupProvider(base_url=DEFAULT_TVGUIDE_BASE_URL),
     SchedulesDirectLineupProvider(
       username=sd_cfg.username,
       password=sd_cfg.password,
-      base_url=sd_cfg.base_url,
+      base_url=DEFAULT_SD_BASE_URL,
       token_cache_path=cache_dir / "sd_token.json",
       auto_add_lineup=sd_cfg.auto_add_lineup,
     ),
@@ -350,8 +354,8 @@ async def retrieve_cable_lineup(
   iptv_org_index: IptvOrgIndex | None = None
   if chosen_provider.backend_name != "yaml" and config.lineup.iptv_org.enabled:
     active_iptv_org = iptv_org_client or IptvOrgClient(
-      cache_dir=config.resolve_path(config.xtream.cache_dir),
-      base_url=config.lineup.iptv_org.base_url,
+      cache_dir=config.resolve_path(config.cache_dir),
+      base_url=DEFAULT_IPTV_ORG_API_URL,
       recheck_hours=config.lineup.iptv_org.recheck_hours,
     )
     iptv_org_res = await active_iptv_org.fetch_index(

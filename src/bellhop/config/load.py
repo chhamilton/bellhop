@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,6 @@ from bellhop.common.http_utils import (
 )
 from bellhop.config.model import (
   DEFAULT_BELL_FIBE_MTL_LINEUP_ID,
-  DEFAULT_IPTV_ORG_API_URL,
   AppConfig,
   EpgConfig,
   IptvOrgConfig,
@@ -29,7 +29,6 @@ from bellhop.config.model import (
   ServeWebConfig,
   ServeXtreamConfig,
   StateConfig,
-  TvGuideConfig,
   ValidationConfig,
   XtreamConfig,
 )
@@ -72,6 +71,22 @@ def _opt_str(val: Any) -> str | None:
   return s if s else None
 
 
+def _pick_bool(*values: Any, default: bool = False) -> bool:
+  for val in values:
+    if val is None:
+      continue
+    if isinstance(val, str):
+      s = val.strip().lower()
+      if not s:
+        continue
+      if s in {"1", "true", "yes", "on"}:
+        return True
+      if s in {"0", "false", "no", "off"}:
+        return False
+    return bool(val)
+  return default
+
+
 def _load_yaml_dict(path: Path, *, interpolate: bool = False) -> dict[str, Any]:
   if not path.is_file():
     return {}
@@ -82,7 +97,8 @@ def _load_yaml_dict(path: Path, *, interpolate: bool = False) -> dict[str, Any]:
   return interpolate_env(loaded) if interpolate else loaded
 
 
-def _find_project_root(config_path: Path | None = None) -> Path:
+def find_project_root(config_path: Path | None = None) -> Path:
+  """Locate the workspace/project root directory containing `data/lineups`."""
   if config_path is not None:
     cfg_dir = config_path.resolve().parent
     for candidate in (cfg_dir, *cfg_dir.parents):
@@ -102,26 +118,16 @@ def _find_project_root(config_path: Path | None = None) -> Path:
   return pkg_root if (pkg_root / "data" / "lineups").is_dir() else cwd
 
 
-def load_config(
+_find_project_root = find_project_root
+
+
+def resolve_config_targets(
   config_path: Path | str | None = None,
-  env_path: Path | str | None = None,
-  credentials_path: Path | str | None = None,
-) -> AppConfig:
-  """Load declarative two-tier settings from `config.yaml` (+ `credentials.yaml`
-  & `.env`).
-
-  Args:
-    config_path: Explicit `config.yaml` path (defaults to `$BELLHOP_CONFIG` or
-      `<project_root>/config.yaml`).
-    env_path: Optional explicit `.env` file path.
-    credentials_path: Optional explicit `credentials.yaml` path override.
-
-  Returns:
-    Validated `AppConfig` instance.
+) -> tuple[Path, Path | None, Path, Path]:
+  """Resolve `(root, explicit_cfg, yaml_target, base_dir)` for config loading.
 
   Raises:
     FileNotFoundError: When an explicit `config_path` does not exist.
-    ValueError: When `trusted_proxy_ips` or numeric fields are invalid.
   """
   raw_cfg_path = config_path or os.environ.get("BELLHOP_CONFIG") or None
   explicit_cfg = Path(raw_cfg_path).resolve() if raw_cfg_path else None
@@ -133,22 +139,31 @@ def load_config(
     explicit_cfg if explicit_cfg is not None else (root / "config.yaml")
   )
   base_dir = yaml_target.parent if yaml_target.is_file() else root
+  return root, explicit_cfg, yaml_target, base_dir
 
-  pre_raw = _load_yaml_dict(yaml_target, interpolate=False)
+
+def resolve_dependency_paths(
+  pre_raw: Mapping[str, Any],
+  *,
+  root: Path,
+  base_dir: Path,
+  env_path: Path | str | None = None,
+  credentials_path: Path | str | None = None,
+) -> tuple[Path, Path]:
+  """Resolve `(dotenv_target, creds_target)` from an uninterpolated dict."""
   cfg_env_file = pre_raw.get("env_file")
   dotenv_target = (
     Path(env_path)
     if env_path
     else ((base_dir / str(cfg_env_file)) if cfg_env_file else (root / ".env"))
   )
-  if dotenv_target.is_file():
-    load_dotenv(dotenv_target, override=False)
-  else:
-    load_dotenv(override=False)
-
-  raw = interpolate_env(pre_raw)
-
-  cfg_creds_ref = Path(str(raw.get("credentials_file") or "credentials.yaml"))
+  raw_creds_val = pre_raw.get("credentials_file") or "credentials.yaml"
+  creds_ref_str = (
+    str(interpolate_env(raw_creds_val) or "credentials.yaml")
+    if isinstance(raw_creds_val, str)
+    else str(raw_creds_val)
+  )
+  cfg_creds_ref = Path(creds_ref_str)
   if credentials_path:
     creds_target = Path(credentials_path)
   else:
@@ -159,6 +174,42 @@ def load_config(
     )
     if not creds_target.is_file():
       creds_target = root / cfg_creds_ref
+  return dotenv_target, creds_target
+
+
+def build_config_from_raw_dict(
+  pre_raw: Mapping[str, Any],
+  *,
+  root: Path,
+  base_dir: Path,
+  config_file: Path | None,
+  is_explicit: bool = False,
+  env_path: Path | str | None = None,
+  credentials_path: Path | str | None = None,
+) -> AppConfig:
+  """Validate and construct an `AppConfig` from an already-parsed raw YAML
+  dict.
+  """
+  pre_dict = dict(pre_raw)
+  cfg_env_file = pre_dict.get("env_file")
+  dotenv_target = (
+    Path(env_path)
+    if env_path
+    else ((base_dir / str(cfg_env_file)) if cfg_env_file else (root / ".env"))
+  )
+  if dotenv_target.is_file():
+    load_dotenv(dotenv_target, override=False)
+  else:
+    load_dotenv(override=False)
+
+  raw = interpolate_env(pre_dict)
+  _dotenv_resolved, creds_target = resolve_dependency_paths(
+    pre_dict,
+    root=root,
+    base_dir=base_dir,
+    env_path=env_path,
+    credentials_path=credentials_path,
+  )
 
   loaded_creds = _load_yaml_dict(creds_target, interpolate=True)
   sd_creds = _subdict(loaded_creds, "schedules_direct")
@@ -167,8 +218,8 @@ def load_config(
   xt_creds = _subdict(loaded_creds, "upstream_xtream", "xtream") or loaded_creds
 
   # Canonical two-tier `config.yaml` sections:
-  # Tier 1: `paths`, `web_server`
-  # Tier 2: `upstream_xtream`, `xtream_server`, `pipeline`
+  # Tier 1: `paths`, `web_server`, `xtream_server`
+  # Tier 2: `upstream_xtream`, `pipeline`
   paths_raw = _subdict(raw, "paths")
   web_srv_raw = _subdict(raw, "web_server")
   xt_raw = _subdict(raw, "upstream_xtream")
@@ -180,6 +231,7 @@ def load_config(
   epg_raw = _subdict(pipe_raw, "epg")
   out_raw = _subdict(pipe_raw, "output")
 
+  cache_dir_path = Path(_first_str(paths_raw.get("cache_dir"), default="cache"))
   seed_json_raw = paths_raw.get("seed_json")
   xtream = XtreamConfig(
     server_url=_first_str(
@@ -205,7 +257,7 @@ def load_config(
       default="ts",
     ).lstrip("."),
     request_timeout_sec=float(xt_raw.get("request_timeout_sec", 90.0)),
-    cache_dir=Path(_first_str(paths_raw.get("cache_dir"), default="cache")),
+    cache_dir=cache_dir_path,
     cache_ttl_hours=float(xt_raw.get("refresh_hours", 24.0)),
     seed_json=Path(str(seed_json_raw)) if seed_json_raw else None,
   )
@@ -231,14 +283,11 @@ def load_config(
   )
 
   sd_cfg_raw = _subdict(lu_raw, "schedules_direct")
-  tvg_cfg_raw = _subdict(lu_raw, "tvguide")
   iptv_org_raw = _subdict(lu_raw, "iptv_org")
   collapse_sd = bool(lu_raw.get("collapse_sd_dupes", False))
   raw_num_mode = str(
-    lu_raw.get("numbering_mode", "hd" if collapse_sd else "both")
+    lu_raw.get("numbering_mode") or ("hd" if collapse_sd else "both")
   ).lower()
-  if collapse_sd:
-    raw_num_mode = "hd"
 
   lineup = LineupConfig(
     backend=str(lu_raw.get("backend", "auto"))
@@ -276,29 +325,15 @@ def load_config(
         sd_creds.get("password"),
         os.environ.get("SD_PASSWORD"),
       ),
-      base_url=_first_str(
-        sd_cfg_raw.get("base_url"),
-        sd_creds.get("base_url"),
-        default="https://json.schedulesdirect.org/20141201",
+      auto_add_lineup=_pick_bool(
+        sd_cfg_raw.get("auto_add_lineup"),
+        sd_creds.get("auto_add_lineup"),
+        os.environ.get("SD_AUTO_ADD_LINEUP"),
+        default=False,
       ),
-      auto_add_lineup=bool(
-        sd_cfg_raw.get(
-          "auto_add_lineup", sd_creds.get("auto_add_lineup", False)
-        )
-      ),
-    ),
-    tvguide=TvGuideConfig(
-      base_url=_first_str(
-        tvg_cfg_raw.get("base_url"),
-        default="https://backend.tvguide.com/tvschedules/tvguide",
-      )
     ),
     iptv_org=IptvOrgConfig(
       enabled=bool(iptv_org_raw.get("enabled", True)),
-      base_url=_first_str(
-        iptv_org_raw.get("base_url"),
-        default=DEFAULT_IPTV_ORG_API_URL,
-      ),
       recheck_hours=max(0.0, float(iptv_org_raw.get("recheck_hours", 24.0))),
     ),
   )
@@ -428,9 +463,7 @@ def load_config(
 
   pkg_root = Path(__file__).resolve().parents[3]
   effective_root = (
-    base_dir
-    if (explicit_cfg is not None and not (base_dir / "src").is_dir())
-    else root
+    base_dir if (is_explicit and not (base_dir / "src").is_dir()) else root
   )
   if (
     not lineup.file.is_absolute()
@@ -443,8 +476,9 @@ def load_config(
 
   return AppConfig(
     project_root=effective_root,
-    config_file=yaml_target if yaml_target.is_file() else None,
+    config_file=config_file,
     credentials_file=creds_target,
+    cache_dir=cache_dir_path,
     xtream=xtream,
     validation=validation,
     lineup=lineup,
@@ -452,4 +486,40 @@ def load_config(
     epg=epg,
     output=output,
     serve=serve,
+  )
+
+
+def load_config(
+  config_path: Path | str | None = None,
+  env_path: Path | str | None = None,
+  credentials_path: Path | str | None = None,
+) -> AppConfig:
+  """Load declarative two-tier settings from `config.yaml` (+ `credentials.yaml`
+  & `.env`).
+
+  Args:
+    config_path: Explicit `config.yaml` path (defaults to `$BELLHOP_CONFIG` or
+      `<project_root>/config.yaml`).
+    env_path: Optional explicit `.env` file path.
+    credentials_path: Optional explicit `credentials.yaml` path override.
+
+  Returns:
+    Validated `AppConfig` instance.
+
+  Raises:
+    FileNotFoundError: When an explicit `config_path` does not exist.
+    ValueError: When `trusted_proxy_ips` or numeric fields are invalid.
+  """
+  root, explicit_cfg, yaml_target, base_dir = resolve_config_targets(
+    config_path
+  )
+  pre_raw = _load_yaml_dict(yaml_target, interpolate=False)
+  return build_config_from_raw_dict(
+    pre_raw,
+    root=root,
+    base_dir=base_dir,
+    config_file=yaml_target if yaml_target.is_file() else None,
+    is_explicit=explicit_cfg is not None,
+    env_path=env_path,
+    credentials_path=credentials_path,
   )

@@ -10,9 +10,15 @@ REAL_BELLHOP="/usr/local/libexec/bellhop"
 if [ "$(id -u)" -eq 0 ]; then
   PUID="${PUID:-1000}"
   PGID="${PGID:-1000}"
-  case "${PUID}:${PGID}" in
-    0:*|*:0|*[!0-9:]*)
-      echo "[bellhop] ERROR: PUID and PGID must be positive integers (>= 1)." >&2
+  case "${PUID}" in
+    ''|*[!0-9]*|0*)
+      echo "[bellhop] ERROR: PUID must be a positive integer (>= 1); refusing to run as root (PUID=${PUID})." >&2
+      exit 1
+      ;;
+  esac
+  case "${PGID}" in
+    ''|*[!0-9]*|0*)
+      echo "[bellhop] ERROR: PGID must be a positive integer (>= 1); refusing to run as root (PGID=${PGID})." >&2
       exit 1
       ;;
   esac

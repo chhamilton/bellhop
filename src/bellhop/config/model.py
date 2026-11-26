@@ -9,6 +9,8 @@ from typing import Any
 from bellhop.common.http_utils import DEFAULT_TRUSTED_PROXY_IPS
 
 DEFAULT_BELL_FIBE_MTL_LINEUP_ID = "CAN-BELLFIBE-MTL-X"
+DEFAULT_SD_BASE_URL = "https://json.schedulesdirect.org/20141201"
+DEFAULT_TVGUIDE_BASE_URL = "https://backend.tvguide.com/tvschedules/tvguide"
 DEFAULT_IPTV_ORG_API_URL = "https://iptv-org.github.io/api"
 
 
@@ -55,15 +57,7 @@ class SchedulesDirectConfig:
 
   username: str = ""
   password: str = ""
-  base_url: str = "https://json.schedulesdirect.org/20141201"
   auto_add_lineup: bool = False
-
-
-@dataclass(slots=True)
-class TvGuideConfig:
-  """TV Guide backend endpoint configuration."""
-
-  base_url: str = "https://backend.tvguide.com/tvschedules/tvguide"
 
 
 @dataclass(slots=True)
@@ -71,7 +65,6 @@ class IptvOrgConfig:
   """Phase (1) `iptv-org` channel/feed metadata & HTTP ETag cache settings."""
 
   enabled: bool = True
-  base_url: str = DEFAULT_IPTV_ORG_API_URL
   recheck_hours: float = 24.0
 
 
@@ -92,7 +85,6 @@ class LineupConfig:
   schedules_direct: SchedulesDirectConfig = field(
     default_factory=SchedulesDirectConfig
   )
-  tvguide: TvGuideConfig = field(default_factory=TvGuideConfig)
   iptv_org: IptvOrgConfig = field(default_factory=IptvOrgConfig)
 
 
@@ -207,6 +199,14 @@ class ServeConfig:
   def server_protocol(self) -> str:
     return self.xtream.server_protocol
 
+  @property
+  def trust_proxy_headers(self) -> bool:
+    return self.web.trust_proxy_headers
+
+  @property
+  def trusted_proxy_ips(self) -> list[str]:
+    return self.web.trusted_proxy_ips
+
 
 @dataclass(slots=True)
 class AppConfig:
@@ -215,6 +215,7 @@ class AppConfig:
   project_root: Path = field(default_factory=Path.cwd)
   config_file: Path | None = None
   credentials_file: Path = Path("credentials.yaml")
+  cache_dir: Path = Path("cache")
   xtream: XtreamConfig = field(default_factory=XtreamConfig)
   validation: ValidationConfig = field(default_factory=ValidationConfig)
   lineup: LineupConfig = field(default_factory=LineupConfig)
@@ -222,6 +223,14 @@ class AppConfig:
   epg: EpgConfig = field(default_factory=EpgConfig)
   output: OutputConfig = field(default_factory=OutputConfig)
   serve: ServeConfig = field(default_factory=ServeConfig)
+
+  def __post_init__(self) -> None:
+    if self.cache_dir == Path("cache") and self.xtream.cache_dir != Path(
+      "cache"
+    ):
+      self.cache_dir = self.xtream.cache_dir
+    else:
+      self.xtream.cache_dir = self.cache_dir
 
   def resolve_path(self, path: Path | str) -> Path:
     """Resolve `path` relative to `project_root` when not already absolute."""
@@ -241,7 +250,7 @@ class AppConfig:
         "stream_format": self.xtream.stream_format,
         "request_timeout_sec": self.xtream.request_timeout_sec,
         "refresh_hours": self.xtream.cache_ttl_hours,
-        "cache_dir": str(self.xtream.cache_dir),
+        "cache_dir": str(self.cache_dir),
         "seed_json": str(self.xtream.seed_json)
         if self.xtream.seed_json
         else None,
@@ -262,13 +271,10 @@ class AppConfig:
           "password": _mask(
             self.lineup.schedules_direct.password, redact_secrets
           ),
-          "base_url": self.lineup.schedules_direct.base_url,
           "auto_add_lineup": self.lineup.schedules_direct.auto_add_lineup,
         },
-        "tvguide": {"base_url": self.lineup.tvguide.base_url},
         "iptv_org": {
           "enabled": self.lineup.iptv_org.enabled,
-          "base_url": self.lineup.iptv_org.base_url,
           "recheck_hours": self.lineup.iptv_org.recheck_hours,
         },
       },

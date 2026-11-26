@@ -54,6 +54,7 @@ __all__ = [
   "default_session_factory",
   "detect_device_ip",
   "extract_explicit_private_origins",
+  "is_trusted_proxy_peer",
   "json_response",
   "open_upstream_url",
   "parse_trusted_proxy_networks",
@@ -475,6 +476,19 @@ def parse_trusted_proxy_networks(
   return tuple(networks)
 
 
+def is_trusted_proxy_peer(
+  remote: str | None,
+  *,
+  trust_proxy_headers: bool = False,
+  trusted_networks: Sequence[IpNetwork] = (),
+) -> bool:
+  """Return `True` when `remote` is an allowlisted reverse-proxy peer."""
+  if not trust_proxy_headers or not trusted_networks:
+    return False
+  peer_ip = _parse_ip_addr(remote)
+  return peer_ip is not None and _ip_in_networks(peer_ip, trusted_networks)
+
+
 def _ip_in_networks(addr: IpAddress, networks: Sequence[IpNetwork]) -> bool:
   return any(addr.version == net.version and addr in net for net in networks)
 
@@ -620,27 +634,11 @@ def _redact_request_path(path: str) -> str:
   return _STREAM_CRED_PATH_RE.sub(r"/live/\1/***/\3", path)
 
 
-def _is_web_guide_path(path: str) -> bool:
-  """Return `True` for Web Guide UI/API routes (which never allow wildcard
-  CORS).
-  """
-  return path in (
-    "/",
-    "/index.html",
-    "/login",
-    "/favicon.ico",
-    "/favicon.svg",
-    "/health",
-  ) or path.startswith(("/api/", "/static/"))
-
-
 @web.middleware
 async def _preflight_and_error_middleware(
   request: web.Request, handler: _Handler
 ) -> web.StreamResponse:
-  """Answer Xtream CORS preflights and convert errors into JSON responses."""
-  if request.method == "OPTIONS" and not _is_web_guide_path(request.path):
-    return web.Response(status=HTTPStatus.NO_CONTENT)
+  """Convert body-limit errors and HTTP exceptions into JSON responses."""
   max_bytes = request.app.get(_MAX_BODY_KEY, DEFAULT_CLIENT_MAX_SIZE)
   if request.content_length is not None and request.content_length > max_bytes:
     return json_response(
@@ -675,15 +673,11 @@ async def _preflight_and_error_middleware(
 
 
 async def _add_security_headers(
-  request: web.Request, response: web.StreamResponse
+  _request: web.Request, response: web.StreamResponse
 ) -> None:
-  if not _is_web_guide_path(request.path):
-    response.headers.setdefault("Access-Control-Allow-Origin", "*")
-    response.headers.setdefault(
-      "Access-Control-Allow-Methods", "GET, POST, HEAD, OPTIONS"
-    )
   response.headers.setdefault("Content-Security-Policy", WEB_CSP_POLICY)
   response.headers.setdefault("X-Content-Type-Options", "nosniff")
+  response.headers.setdefault("Referrer-Policy", "no-referrer")
 
 
 def create_web_app(

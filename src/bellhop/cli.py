@@ -28,7 +28,7 @@ from rich.table import Table
 
 from bellhop.common.api_contracts import EpgStatusDict
 from bellhop.common.http_utils import build_access_urls, redact_url_secrets
-from bellhop.config import AppConfig, load_config
+from bellhop.config import AppConfig, ConfigManager, load_config
 from bellhop.pipeline.catalog_fetcher import CatalogFetchResult
 from bellhop.pipeline.lineup_loader import CableLineup
 from bellhop.pipeline.lineup_retriever import (
@@ -474,14 +474,15 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
     ):
       logging.getLogger(log_name).setLevel(logging.INFO)
 
-  cfg = load_config(args.config)
-  server = UnifiedServeServer.from_config(cfg)
+  cfg_mgr = ConfigManager(args.config)
+  cfg = cfg_mgr.get()
+  server = UnifiedServeServer.from_config(cfg, config_manager=cfg_mgr)
 
   # Validate pipeline outputs & hydrate persistent disk EPG cache before banner
   if (
     server.web_enabled or server.xtream_enabled
-  ) and server.web_app.epg_refresher is not None:
-    await asyncio.to_thread(server.web_app.epg_refresher.hydrate_from_cache)
+  ) and server.epg_refresher is not None:
+    await asyncio.to_thread(server.epg_refresher.hydrate_from_cache)
   xt_snap = server.xtream_app.store.get_snapshot()
 
   if not args.quiet:
@@ -550,7 +551,7 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
 
     epg_lines = ""
     if server.web_enabled or server.xtream_enabled:
-      epg_ref = server.web_app.epg_refresher
+      epg_ref = server.epg_refresher
       if epg_ref is not None and epg_ref.is_configured:
         epg_st = epg_ref.status_dict()
         total_progs = epg_st["program_count"]

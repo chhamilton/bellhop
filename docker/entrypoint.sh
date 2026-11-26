@@ -39,21 +39,35 @@ if [ "$(id -u)" -eq 0 ]; then
   PGID="${PGID:-1000}"
 
   case "${PUID}" in
-    ''|*[!0-9]*|0)
+    ''|*[!0-9]*|0*)
       echo "[bellhop] ERROR: PUID must be a positive integer (>= 1); refusing to run as root (PUID=${PUID})." >&2
       exit 1
       ;;
   esac
   case "${PGID}" in
-    ''|*[!0-9]*|0)
+    ''|*[!0-9]*|0*)
       echo "[bellhop] ERROR: PGID must be a positive integer (>= 1); refusing to run as root (PGID=${PGID})." >&2
       exit 1
       ;;
   esac
 
-  if [ -n "${TZ:-}" ] && [ -f "/usr/share/zoneinfo/${TZ}" ]; then
-    ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime 2>/dev/null || true
-    printf '%s\n' "${TZ}" > /etc/timezone 2>/dev/null || true
+  if [ -n "${TZ:-}" ]; then
+    case "${TZ}" in
+      /*|*..*|*[!A-Za-z0-9_+/-]*)
+        echo "[bellhop] WARNING: Ignoring unsafe TZ value: ${TZ}" >&2
+        ;;
+      *)
+        TZ_RESOLVED="$(readlink -f "/usr/share/zoneinfo/${TZ}" 2>/dev/null || true)"
+        case "${TZ_RESOLVED}" in
+          /usr/share/zoneinfo/*)
+            if [ -f "${TZ_RESOLVED}" ]; then
+              ln -snf "${TZ_RESOLVED}" /etc/localtime 2>/dev/null || true
+              printf '%s\n' "${TZ}" > /etc/timezone 2>/dev/null || true
+            fi
+            ;;
+        esac
+        ;;
+    esac
   fi
 
   # Create or reuse group for PGID.
@@ -72,7 +86,7 @@ if [ "$(id -u)" -eq 0 ]; then
 
   # Only chown non-symlink paths that do not already match PUID:PGID.
   for dir in "${CONFIG_DIR}" "${STATE_DIR}" "${CACHE_DIR}" "${OUTPUT_DIR}"; do
-    find "${dir}" ! -type l \( ! -user "${USER_NAME}" -o ! -group "${GROUP_NAME}" \) \
+    find -P "${dir}" ! -type l \( ! -user "${USER_NAME}" -o ! -group "${GROUP_NAME}" \) \
       -exec chown -h "${PUID}:${PGID}" {} + 2>/dev/null || true
   done
 

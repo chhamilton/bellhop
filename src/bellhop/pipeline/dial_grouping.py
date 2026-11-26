@@ -491,17 +491,18 @@ def segment_dial_channels(
     x.leaf_genre for x in leaves if x.leaf_genre in SUBGENRE_DISPLAY
   )
 
-  def ic_lang(node: str) -> float:
+  intl_n = sum(v for k, v in lang_counts.items() if k not in major_langs) + sum(
+    1 for x in leaves if x.lang_iso3 == "INTL_HINT"
+  )
+
+  def _calc_ic_lang(node: str) -> float:
     if node == "ANY":
       return 0.0
     if node == "INTL":
-      intl_n = sum(
-        v for k, v in lang_counts.items() if k not in major_langs
-      ) + sum(1 for x in leaves if x.lang_iso3 == "INTL_HINT")
       return -math.log2(min(max(intl_n, 1) / (known_lang_total + 10), 1.0))
     return -math.log2(min(max(lang_counts[node], 1) / known_lang_total, 1.0))
 
-  def ic_genre(node: str) -> float:
+  def _calc_ic_genre(node: str) -> float:
     if node == "ANY":
       return 0.0
     if node.startswith("sub:"):
@@ -511,108 +512,69 @@ def segment_dial_channels(
       min(max(macro_g_counts[node], 1) / known_genre_total, 1.0)
     )
 
-  def lang_covers(ch_lang: str | None, node: str) -> bool | None:
-    if ch_lang is None:
-      return None
-    if node == "ANY":
-      return True
-    if node == "INTL":
-      return ch_lang == "INTL_HINT" or ch_lang not in major_langs
-    if ch_lang == "INTL_HINT":
-      return False
-    return ch_lang == node
-
-  def genre_covers(ch: ChannelTaxonomyLeaf, node: str) -> bool | None:
-    if ch.macro_genre is None:
-      return None
-    if node == "ANY":
-      return True
-    if node.startswith("sub:"):
-      return ch.leaf_genre == node[4:]
-    return ch.macro_genre == node
-
   all_lang_nodes = ["ANY", "INTL", *lang_counts.keys()]
   all_genre_nodes = [
     "ANY",
     *macro_g_counts.keys(),
     *(f"sub:{sg}" for sg, cnt in sub_g_counts.items() if cnt >= 6),
   ]
+  lang_ic_by_idx = [_calc_ic_lang(ln) for ln in all_lang_nodes]
+  genre_ic_by_idx = [_calc_ic_genre(gn) for gn in all_genre_nodes]
+  lang_idx_by_node = {ln: idx for idx, ln in enumerate(all_lang_nodes)}
+  genre_idx_by_node = {gn: idx for idx, gn in enumerate(all_genre_nodes)}
 
   leaf_bits: list[float] = []
+  leaf_lang_hits: list[tuple[int, ...]] = []
+  leaf_lang_known: list[int] = []
+  leaf_genre_hits: list[tuple[int, ...]] = []
+  leaf_genre_known: list[int] = []
+
   for ch in leaves:
     lb = 0.0
-    if ch.lang_iso3 == "INTL_HINT":
-      lb += ic_lang("INTL")
-    elif ch.lang_iso3:
-      lb += ic_lang(ch.lang_iso3)
-    if (
-      ch.leaf_genre is not None
-      and ch.leaf_genre in SUBGENRE_DISPLAY
-      and sub_g_counts[ch.leaf_genre] >= 6
-    ):
-      lb += ic_genre(f"sub:{ch.leaf_genre}")
-    elif ch.macro_genre:
-      lb += ic_genre(ch.macro_genre)
+    if ch.lang_iso3 is None:
+      leaf_lang_known.append(0)
+      leaf_lang_hits.append(())
+    else:
+      leaf_lang_known.append(1)
+      l_hits = [0]
+      if ch.lang_iso3 == "INTL_HINT":
+        l_hits.append(1)
+        lb += lang_ic_by_idx[1]
+      else:
+        if ch.lang_iso3 not in major_langs:
+          l_hits.append(1)
+        if ch.lang_iso3 in lang_idx_by_node:
+          c_idx = lang_idx_by_node[ch.lang_iso3]
+          l_hits.append(c_idx)
+          lb += lang_ic_by_idx[c_idx]
+      leaf_lang_hits.append(tuple(l_hits))
+
+    if ch.macro_genre is None:
+      leaf_genre_known.append(0)
+      leaf_genre_hits.append(())
+    else:
+      leaf_genre_known.append(1)
+      g_hits = [0]
+      m_idx = genre_idx_by_node.get(ch.macro_genre)
+      if m_idx is not None:
+        g_hits.append(m_idx)
+      sub_idx = (
+        genre_idx_by_node.get(f"sub:{ch.leaf_genre}")
+        if ch.leaf_genre is not None
+        else None
+      )
+      if sub_idx is not None:
+        g_hits.append(sub_idx)
+        lb += genre_ic_by_idx[sub_idx]
+      elif m_idx is not None:
+        lb += genre_ic_by_idx[m_idx]
+      leaf_genre_hits.append(tuple(g_hits))
+
     leaf_bits.append(lb)
 
   prefix_leaf_bits: list[float] = [0.0]
   for b in leaf_bits:
     prefix_leaf_bits.append(prefix_leaf_bits[-1] + b)
-
-  def best_segment_label(i: int, j: int) -> tuple[str, str, float]:
-    seg = leaves[i:j]
-    best_l = "ANY"
-    best_l_bits = 0.0
-    for ln in all_lang_nodes:
-      ic = ic_lang(ln)
-      score = 0.0
-      compat = 0
-      known = 0
-      for ch in seg:
-        cov = lang_covers(ch.lang_iso3, ln)
-        if cov is None:
-          continue
-        known += 1
-        if cov:
-          compat += 1
-          score += ic
-        else:
-          score -= 1.4 * ic
-      if ln != "ANY" and known > 0 and (compat / known) < 0.72:
-        continue
-      if score > best_l_bits:
-        best_l = ln
-        best_l_bits = score
-
-    best_g = "ANY"
-    best_g_bits = 0.0
-    for gn in all_genre_nodes:
-      ic = ic_genre(gn)
-      score = 0.0
-      compat = 0
-      known = 0
-      for ch in seg:
-        cov = genre_covers(ch, gn)
-        if cov is None:
-          continue
-        known += 1
-        if cov:
-          compat += 1
-          score += ic
-        else:
-          score -= 1.4 * ic
-      if gn != "ANY" and known > 0 and (compat / known) < 0.68:
-        continue
-      if score > best_g_bits:
-        best_g = gn
-        best_g_bits = score
-
-    # Discourage uninformative genre catch-alls on any major lineup language
-    # (>=5%)
-    if best_g == "ANY" and (best_l == "ANY" or best_l in major_langs):
-      best_g_bits -= 1.5 * len(seg)
-
-    return best_l, best_g, (best_l_bits + best_g_bits)
 
   header_cost_bits = 1.65 * math.log2(n + 1)
   soft_min_target = min(5, max(1, n // 28))
@@ -622,13 +584,59 @@ def segment_dial_channels(
   prev: list[int] = [-1] * (n + 1)
   seg_meta: dict[tuple[int, int], tuple[str, str]] = {}
   dp[0] = 0.0
+  num_langs = len(all_lang_nodes)
+  num_genres = len(all_genre_nodes)
 
   for j in range(1, n + 1):
-    for i in range(max(0, j - max_len), j):
+    min_i = max(0, j - max_len)
+    l_compat = [0] * num_langs
+    g_compat = [0] * num_genres
+    known_l = 0
+    known_g = 0
+    for i in range(j - 1, min_i - 1, -1):
+      known_l += leaf_lang_known[i]
+      for li in leaf_lang_hits[i]:
+        l_compat[li] += 1
+      known_g += leaf_genre_known[i]
+      for gi in leaf_genre_hits[i]:
+        g_compat[gi] += 1
+
       length = j - i
       if n >= 20 and length < 2:
         continue
-      ln, gn, retained = best_segment_label(i, j)
+
+      best_l = "ANY"
+      best_l_bits = 0.0
+      if known_l > 0:
+        for li in range(1, num_langs):
+          compat = l_compat[li]
+          if compat == 0 or (compat / known_l) < 0.72:
+            continue
+          ic = lang_ic_by_idx[li]
+          score = compat * ic - (known_l - compat) * 1.4 * ic
+          if score > best_l_bits:
+            best_l = all_lang_nodes[li]
+            best_l_bits = score
+
+      best_g = "ANY"
+      best_g_bits = 0.0
+      if known_g > 0:
+        for gi in range(1, num_genres):
+          compat = g_compat[gi]
+          if compat == 0 or (compat / known_g) < 0.68:
+            continue
+          ic = genre_ic_by_idx[gi]
+          score = compat * ic - (known_g - compat) * 1.4 * ic
+          if score > best_g_bits:
+            best_g = all_genre_nodes[gi]
+            best_g_bits = score
+
+      # Discourage uninformative genre catch-alls on any major lineup language
+      # (>=5%)
+      if best_g == "ANY" and (best_l == "ANY" or best_l in major_langs):
+        best_g_bits -= 1.5 * length
+
+      retained = best_l_bits + best_g_bits
       raw_bits = prefix_leaf_bits[j] - prefix_leaf_bits[i]
       info_loss = max(0.0, raw_bits - retained)
 
@@ -648,7 +656,7 @@ def segment_dial_channels(
       if cost < dp[j]:
         dp[j] = cost
         prev[j] = i
-        seg_meta[(i, j)] = (ln, gn)
+        seg_meta[(i, j)] = (best_l, best_g)
 
   def _format_title(ln: str, gn: str) -> str:
     g_str = (

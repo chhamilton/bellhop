@@ -619,6 +619,52 @@ async def test_session_revocation_on_logout_https_cookie_flag_and_url_redaction(
       ) as r_replay,
     ):
       assert r_replay.status == 401
+
+    # Verify IPv4-mapped IPv6 loopback (`::ffff:127.0.0.1`), SameSite/Referer,
+    # and empty-Host CSRF hardening on `WebGuideApp` + `is_trusted_proxy_peer`
+    from types import SimpleNamespace
+    from typing import cast
+
+    from aiohttp import web
+
+    from bellhop.common.http_utils import is_trusted_proxy_peer
+
+    assert is_trusted_proxy_peer(
+      "::ffff:127.0.0.1",
+      trust_proxy_headers=True,
+      trusted_networks=parse_trusted_proxy_networks(["127.0.0.1"]),
+    )
+    mapped_req = cast(
+      web.Request,
+      SimpleNamespace(
+        secure=False,
+        remote="::ffff:127.0.0.1",
+        headers={"X-Forwarded-Proto": "https"},
+      ),
+    )
+    assert app._is_https_request(mapped_req) is True
+
+    # Block same-site `Sec-Fetch-Site`, mismatched `Referer`, & empty `Host`
+    async with new_test_session(base_url) as csrf_cli:
+      async with csrf_cli.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "secret"},
+        headers={"Sec-Fetch-Site": "same-site"},
+      ) as r_samesite:
+        assert r_samesite.status == 403
+      async with csrf_cli.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "secret"},
+        headers={"Referer": "https://evil.example/phish"},
+      ) as r_referer:
+        assert r_referer.status == 403
+    no_host_req = cast(
+      web.Request,
+      SimpleNamespace(
+        headers={"Origin": f"http://127.0.0.1:{port}", "Host": ""}
+      ),
+    )
+    assert WebGuideApp._is_cross_site_mutation(no_host_req) is True
   finally:
     await runner.cleanup()
     await app.shutdown()

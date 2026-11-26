@@ -886,3 +886,58 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
       check=False,
     )
     await fake_xtream.stop()
+
+
+def test_docker_entrypoint_and_shim_reject_root_and_unsafe_tz(
+  tmp_path: Path,
+) -> None:
+  """Verify entrypoint & shim reject root/zero `PUID`/`PGID` & unsafe `TZ`."""
+  fake_bin = tmp_path / "fake_bin"
+  fake_bin.mkdir(parents=True, exist_ok=True)
+  fake_id = fake_bin / "id"
+  fake_id.write_text("#!/bin/sh\necho 0\n", encoding="utf-8")
+  fake_id.chmod(0o755)
+  # Provide harmless `find` & `su-exec` stubs so valid PUID paths stay safe.
+  for stub_name in ("su-exec", "find", "chown", "addgroup", "adduser"):
+    stub = fake_bin / stub_name
+    stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    stub.chmod(0o755)
+
+  base_env = {
+    "PATH": f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+    "BELLHOP_CONFIG_DIR": str(tmp_path / "cfg"),
+    "BELLHOP_STATE_DIR": str(tmp_path / "state"),
+    "BELLHOP_CACHE_DIR": str(tmp_path / "cache"),
+    "BELLHOP_OUTPUT_DIR": str(tmp_path / "out"),
+    "BELLHOP_DEFAULT_CONFIG": str(tmp_path / "missing_default.yaml"),
+  }
+
+  for script_rel in ("docker/entrypoint.sh", "docker/bellhop-shim.sh"):
+    script_path = REPO_ROOT / script_rel
+    for bad_env in (
+      {"PUID": "0", "PGID": "1000"},
+      {"PUID": "00", "PGID": "1000"},
+      {"PUID": "1000", "PGID": "000"},
+      {"PUID": "1000:0", "PGID": "1000"},
+    ):
+      res = subprocess.run(
+        ["/bin/sh", str(script_path), "--version"],
+        env={**base_env, **bad_env},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5,
+      )
+      assert res.returncode != 0, f"{script_rel} accepted {bad_env}"
+      assert "ERROR" in res.stderr
+
+  tz_res = subprocess.run(
+    ["/bin/sh", str(REPO_ROOT / "docker" / "entrypoint.sh"), "true"],
+    env={**base_env, "PUID": "1000", "PGID": "1000", "TZ": "../../etc/passwd"},
+    capture_output=True,
+    text=True,
+    check=False,
+    timeout=5,
+  )
+  assert tz_res.returncode == 0
+  assert "WARNING: Ignoring unsafe TZ value" in tz_res.stderr

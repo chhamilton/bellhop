@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import logging
 import re
 import time
@@ -215,6 +216,23 @@ class XtreamExportSnapshot:
   stream_by_id: dict[int, PassthroughStream] = field(default_factory=dict)
   stream_by_num: dict[int, PassthroughStream] = field(default_factory=dict)
   loaded_at: float = 0.0
+  _live_streams_bytes_cache: dict[str, bytes] = field(
+    default_factory=dict, init=False, repr=False
+  )
+
+  def get_live_streams_json_bytes(self, category_id: str = "") -> bytes:
+    """Return pre-serialized UTF-8 JSON bytes for `get_live_streams`."""
+    key = category_id.strip()
+    cached = self._live_streams_bytes_cache.get(key)
+    if cached is None:
+      payload = [
+        s.to_player_api_dict()
+        for s in self.streams
+        if not key or s.category_id == key
+      ]
+      cached = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+      self._live_streams_bytes_cache[key] = cached
+    return cached
 
 
 class XtreamExportStore:
@@ -266,6 +284,18 @@ class XtreamExportStore:
         snap.lineup_id,
       )
     return snap
+
+  async def async_get_snapshot(
+    self, *, force_reload: bool = False
+  ) -> XtreamExportSnapshot:
+    """Async-safe snapshot retrieval offloading disk reloads off event
+    loop.
+    """
+    sig = self._signature()
+    prev_snap = self._snapshot
+    if not force_reload and prev_snap is not None and sig == self._last_sig:
+      return prev_snap
+    return await asyncio.to_thread(self.get_snapshot, force_reload=force_reload)
 
   def _load_from_disk(
     self, *, force_reload: bool = False
@@ -322,7 +352,7 @@ class XtreamExportStore:
       stream_by_id.setdefault(stream_id, normalized)
       stream_by_num[rec.num] = normalized
 
-    return XtreamExportSnapshot(
+    snap = XtreamExportSnapshot(
       lineup_id=bundle_data.lineup_id,
       provider=bundle_data.provider,
       market=bundle_data.market,
@@ -338,6 +368,8 @@ class XtreamExportStore:
       stream_by_num=stream_by_num,
       loaded_at=bundle_data.loaded_at,
     )
+    snap.get_live_streams_json_bytes("")
+    return snap
 
 
 class XtreamPassthroughServer:
@@ -395,11 +427,13 @@ class XtreamPassthroughServer:
       store,
       username=config.serve.username,
       password=config.serve.password,
-      host=config.serve.host,
-      port=config.serve.port,
+      host=config.serve.xtream_host,
+      port=config.serve.xtream_port,
       public_host=config.serve.public_host,
       public_port=config.serve.public_port,
       server_protocol=config.serve.server_protocol,
+      trust_proxy_headers=config.serve.trust_proxy_headers,
+      trusted_proxy_ips=config.serve.trusted_proxy_ips,
     )
 
   # ---------------------------------------------------------------------------
@@ -682,13 +716,10 @@ class XtreamPassthroughServer:
   # Handlers
   # ---------------------------------------------------------------------------
   async def _handle_health(self, _request: web.Request) -> web.StreamResponse:
-    snap = self.store.get_snapshot()
+    snap = await self.store.async_get_snapshot()
     return json_response(
       {
         "status": "ok",
-        "lineup_id": snap.lineup_id,
-        "provider": snap.provider,
-        "market": snap.market,
         "category_count": len(snap.categories),
         "channel_count": len(snap.streams),
       }
@@ -707,7 +738,7 @@ class XtreamPassthroughServer:
     if denied is not None:
       return denied
 
-    snap = self.store.get_snapshot()
+    snap = await self.store.async_get_snapshot()
     action = params.get("action", "").strip().lower()
 
     if action == "get_live_categories":
@@ -715,13 +746,8 @@ class XtreamPassthroughServer:
 
     if action == "get_live_streams":
       cat_filter = params.get("category_id", "").strip()
-      return json_response(
-        [
-          s.to_player_api_dict()
-          for s in snap.streams
-          if not cat_filter or s.category_id == cat_filter
-        ]
-      )
+      body_bytes = snap.get_live_streams_json_bytes(cat_filter)
+      return bytes_response(body_bytes, "application/json; charset=utf-8")
 
     if action in {
       "get_vod_categories",
@@ -773,7 +799,7 @@ class XtreamPassthroughServer:
     if denied is not None:
       return denied
 
-    snap = self.store.get_snapshot()
+    snap = await self.store.async_get_snapshot()
     user_info, server_info = self._build_user_and_server_info(
       snap, request.headers
     )
@@ -825,7 +851,7 @@ class XtreamPassthroughServer:
           if callable(close_iter):
             await asyncio.to_thread(close_iter)
 
-    snap = self.store.get_snapshot()
+    snap = await self.store.async_get_snapshot()
     fallback_url = self._resolve_upstream_xmltv_fallback(request, snap)
     if not fallback_url:
       return json_response(
@@ -854,7 +880,7 @@ class XtreamPassthroughServer:
       return denied
 
     stream_key = int(info["sid"])
-    snap = self.store.get_snapshot()
+    snap = await self.store.async_get_snapshot()
     item = snap.stream_by_id.get(stream_key) or snap.stream_by_num.get(
       stream_key
     )
@@ -885,7 +911,7 @@ class XtreamPassthroughServer:
     if denied is not None:
       return denied
 
-    snap = self.store.get_snapshot()
+    snap = await self.store.async_get_snapshot()
     raw_type = params.get("type", default_type).strip().lower()
     is_plus = raw_type in {
       "m3u_plus",

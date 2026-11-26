@@ -4,6 +4,7 @@ hot-reload.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -18,10 +19,17 @@ from bellhop.common.api_contracts import (
 from bellhop.common.api_contracts import (
   PublicChannelDict as PublicChannelDict,
 )
-from bellhop.common.export_bundle import ExportBundleReader
+from bellhop.common.export_bundle import (
+  ExportBundleReader,
+  build_epg_chains_from_pairs,
+  build_epg_lookup_from_pairs,
+)
 from bellhop.epg.constants import EPG_RECENT_FLOOR_SEC
 from bellhop.epg.models import (
   ProgramItem as ProgramItem,
+)
+from bellhop.epg.models import (
+  _compute_raw_guide_fingerprint,
 )
 from bellhop.epg.models import (
   open_xml_stream as open_xml_stream,
@@ -144,41 +152,40 @@ class LineupSnapshot:
   categories: list[GuideCategory] = field(default_factory=list)
   channels: list[WebChannel] = field(default_factory=list)
   channels_by_chno: dict[int, WebChannel] = field(default_factory=dict)
+  _epg_lookup: dict[str, str] | None = field(
+    default=None, init=False, repr=False
+  )
+  _epg_chains: dict[str, tuple[str, ...]] | None = field(
+    default=None, init=False, repr=False
+  )
+  _guide_fingerprint: str = field(default="", init=False, repr=False)
+
+  @property
+  def guide_fingerprint(self) -> str:
+    """Cached SHA-256 fingerprint of channel-to-EPG bindings."""
+    if not self._guide_fingerprint:
+      self._guide_fingerprint = _compute_raw_guide_fingerprint(self)
+    return self._guide_fingerprint
 
   def build_epg_channel_lookup(self) -> dict[str, str]:
     """Build lowercase upstream channel ID -> canonical `epg_channel_id` lookup
     map.
     """
-    lookup: dict[str, str] = {}
-    for ch in self.channels:
-      canonical = ch.epg_channel_id.strip()
-      if canonical:
-        lookup[canonical.lower()] = canonical
-    for ch in self.channels:
-      canonical = ch.epg_channel_id.strip()
-      if not canonical:
-        continue
-      for alias in ch.epg_aliases:
-        cleaned = alias.strip()
-        if cleaned and cleaned.lower() not in lookup:
-          lookup[cleaned.lower()] = canonical
-    return lookup
+    if self._epg_lookup is None:
+      self._epg_lookup = build_epg_lookup_from_pairs(
+        (ch.epg_channel_id, ch.epg_aliases) for ch in self.channels
+      )
+    return self._epg_lookup
 
   def build_epg_candidate_chains(self) -> dict[str, tuple[str, ...]]:
     """Build ordered fallback chains `canonical_epg_id -> (primary_id,
     fallback_alias, ...)`.
     """
-    chains: dict[str, list[str]] = {}
-    for ch in self.channels:
-      canonical = ch.epg_channel_id.strip()
-      if not canonical:
-        continue
-      bucket = chains.setdefault(canonical, [])
-      for cand in (canonical, *ch.epg_aliases):
-        low = cand.strip().lower()
-        if low and low not in bucket:
-          bucket.append(low)
-    return {k: tuple(v) for k, v in chains.items()}
+    if self._epg_chains is None:
+      self._epg_chains = build_epg_chains_from_pairs(
+        (ch.epg_channel_id, ch.epg_aliases) for ch in self.channels
+      )
+    return self._epg_chains
 
 
 class LineupGuideStore:
@@ -257,6 +264,20 @@ class LineupGuideStore:
       )
     return snap
 
+  async def async_get_snapshot(
+    self, *, force_reload: bool = False
+  ) -> LineupSnapshot:
+    """Async-safe snapshot retrieval offloading disk reloads off event
+    loop.
+    """
+    sig = self._compute_signature()
+    prev_snap = self._snapshot
+    if (
+      not force_reload and prev_snap is not None and sig == self._last_signature
+    ):
+      return prev_snap
+    return await asyncio.to_thread(self.get_snapshot, force_reload=force_reload)
+
   def touch_epg_revision(self, *, xmltv_url: str = "") -> None:
     """Bump snapshot revision timestamp after a SQLite EPG commit."""
     snap = self.get_snapshot()
@@ -317,7 +338,7 @@ class LineupGuideStore:
 
     channels.sort(key=lambda c: c.chno)
 
-    return LineupSnapshot(
+    snap = LineupSnapshot(
       lineup_id=bundle_data.lineup_id,
       provider=bundle_data.provider,
       market=bundle_data.market,
@@ -329,3 +350,7 @@ class LineupGuideStore:
       channels=channels,
       channels_by_chno=channels_by_chno,
     )
+    snap.build_epg_channel_lookup()
+    snap.build_epg_candidate_chains()
+    _ = snap.guide_fingerprint
+    return snap

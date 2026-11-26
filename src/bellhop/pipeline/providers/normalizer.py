@@ -1012,20 +1012,21 @@ def populate_sibling_exclusions(channels: list[LineupChannel]) -> None:
     "channel",
   }
 
+  by_prefix: dict[tuple[str, ...], list[tuple[int, tuple[str, ...]]]] = {}
+  for other_ch, other_phrases in per_channel_phrases:
+    for other_toks in other_phrases:
+      for k in range(1, len(other_toks)):
+        if other_toks[k] not in ignorable_suffix_starts:
+          by_prefix.setdefault(other_toks[:k], []).append(
+            (other_ch.chno, other_toks)
+          )
+
   for ch, my_phrases in per_channel_phrases:
     exclusions: set[str] = set()
     for my_toks in my_phrases:
-      n = len(my_toks)
-      for other_ch, other_phrases in per_channel_phrases:
-        if other_ch.chno == ch.chno:
+      for other_chno, other_toks in by_prefix.get(my_toks, ()):
+        if other_chno == ch.chno or other_toks in my_phrases:
           continue
-        for other_toks in other_phrases:
-          if len(other_toks) <= n or other_toks in my_phrases:
-            continue
-          if (
-            other_toks[:n] == my_toks
-            and other_toks[n] not in ignorable_suffix_starts
-          ):
-            exclusions.add(" ".join(other_toks))
+        exclusions.add(" ".join(other_toks))
     if exclusions:
       ch.exclude = sorted(exclusions)

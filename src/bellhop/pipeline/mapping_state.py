@@ -461,19 +461,34 @@ def reconcile_rough_mapping(
   globally_invalid_ids = {
     sid for sid, (st, _pr) in prior_validation.items() if st == "invalid"
   }
+  valid_with_audio = [
+    (sid, pr.audio_languages)
+    for sid, (st, pr) in prior_validation.items()
+    if st == "valid" and pr is not None and pr.audio_languages
+  ]
+  audio_bad_by_lang: dict[str, set[int]] = {}
   invalid_by_chno: dict[int, set[int]] = {}
   for ch in lineup.channels:
-    slot_bad = set(globally_invalid_ids)
     allow_ao = "audio" in ch.group.lower() or "music" in ch.group.lower()
-    if config.validation.check_audio_language and not allow_ao:
-      for sid, (st, pr) in prior_validation.items():
-        if st == "valid" and pr is not None and pr.audio_languages:
+    if (
+      config.validation.check_audio_language
+      and not allow_ao
+      and valid_with_audio
+    ):
+      lang_key = ch.language.strip().lower()
+      slot_bad = audio_bad_by_lang.get(lang_key)
+      if slot_bad is None:
+        slot_bad = set(globally_invalid_ids)
+        for sid, audio_langs in valid_with_audio:
           compat, _ = check_audio_language_compatibility(
-            ch.language, pr.audio_languages, allow_audio_only=False
+            ch.language, audio_langs, allow_audio_only=False
           )
           if not compat:
             slot_bad.add(sid)
-    invalid_by_chno[ch.chno] = slot_bad
+        audio_bad_by_lang[lang_key] = slot_bad
+      invalid_by_chno[ch.chno] = set(slot_bad)
+    else:
+      invalid_by_chno[ch.chno] = set(globally_invalid_ids)
 
   multipass_by_chno = {
     mc_row.channel.chno: mc_row.candidates

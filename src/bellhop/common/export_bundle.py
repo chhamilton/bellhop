@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -88,6 +88,43 @@ def assign_unique_slot_epg_ids(
     claimed_lower.add(cand.lower())
     assigned[chno] = cand
   return assigned
+
+
+def build_epg_lookup_from_pairs(
+  pairs: Iterable[tuple[str, Sequence[str]]],
+) -> dict[str, str]:
+  """Build lowercase channel ID -> canonical `epg_channel_id` lookup map."""
+  lookup: dict[str, str] = {}
+  cleaned_rows: list[tuple[str, Sequence[str]]] = []
+  for raw_canonical, aliases in pairs:
+    canonical = raw_canonical.strip()
+    if not canonical:
+      continue
+    lookup[canonical.lower()] = canonical
+    cleaned_rows.append((canonical, aliases))
+  for canonical, aliases in cleaned_rows:
+    for alias in aliases:
+      cleaned = alias.strip()
+      if cleaned and cleaned.lower() not in lookup:
+        lookup[cleaned.lower()] = canonical
+  return lookup
+
+
+def build_epg_chains_from_pairs(
+  pairs: Iterable[tuple[str, Sequence[str]]],
+) -> dict[str, tuple[str, ...]]:
+  """Build ordered `canonical_epg_id -> (primary, aliases...)` lookup map."""
+  chains: dict[str, list[str]] = {}
+  for raw_canonical, aliases in pairs:
+    canonical = raw_canonical.strip()
+    if not canonical:
+      continue
+    bucket = chains.setdefault(canonical, [])
+    for cand in (canonical, *aliases):
+      low = cand.strip().lower()
+      if low and low not in bucket:
+        bucket.append(low)
+  return {k: tuple(v) for k, v in chains.items()}
 
 
 @dataclass(slots=True)
@@ -495,7 +532,9 @@ class ExportBundleReader:
           custom_sid=str(entry.get("custom_sid") or num),
           tv_archive=int(entry.get("tv_archive") or 0),
           tv_archive_duration=int(entry.get("tv_archive_duration") or 0),
-          language=str(guide.get("language") or ""),
+          language=str(
+            guide.get("language") or entry.get("language") or ""
+          ).strip(),
           quality_tier=str(guide.get("quality_tier") or "unknown"),
           gracenote_station_id=gn_sid,
           direct_source=str(entry.get("direct_source") or "").strip(),

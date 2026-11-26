@@ -547,7 +547,6 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
         schedules_direct=SchedulesDirectConfig(
           username="sd_user",
           password="sd_secret_pw",
-          base_url=sd_base_url,
           auto_add_lineup=True,
         ),
       ),
@@ -574,7 +573,9 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
       app_cfg,
       session_factory=mock.session_factory,
       epg_session_factory=mock.session_factory,
+      sd_base_url=sd_base_url,
     )
+    assert unified.web_app is not None
     unified.web_app._clock = lambda: float(now_ts)
     assert unified.web_app.epg_refresher is not None
     unified.web_app.epg_refresher._clock = lambda: float(now_ts)

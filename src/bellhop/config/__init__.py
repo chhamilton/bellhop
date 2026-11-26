@@ -1,9 +1,21 @@
-"""Declarative two-tier configuration package (`model`, `load`, `public`)."""
+"""Declarative two-tier configuration package (`model`, `load`, `public`,
+`manager`).
+"""
 
 from __future__ import annotations
 
 from bellhop.config.load import load_config
+from bellhop.config.manager import (
+  ConfigManager,
+  clear_config_cache,
+  get_cached_config,
+  get_config_manager,
+)
 from bellhop.config.model import (
+  DEFAULT_BELL_FIBE_MTL_LINEUP_ID,
+  DEFAULT_IPTV_ORG_API_URL,
+  DEFAULT_SD_BASE_URL,
+  DEFAULT_TVGUIDE_BASE_URL,
   AppConfig,
   EpgConfig,
   IptvOrgConfig,
@@ -14,19 +26,18 @@ from bellhop.config.model import (
   ServeWebConfig,
   ServeXtreamConfig,
   StateConfig,
-  TvGuideConfig,
   ValidationConfig,
   XtreamConfig,
 )
 from bellhop.config.public import (
   PublicConfigPayload,
   PublicEpgDict,
+  PublicIptvOrgDict,
   PublicLineupDict,
   PublicMatchingDict,
   PublicOutputDict,
   PublicPipelineDict,
   PublicSchedulesDirectDict,
-  PublicTvGuideDict,
   PublicUpstreamXtreamDict,
   PublicValidationDict,
   apply_public_config_update,
@@ -34,19 +45,24 @@ from bellhop.config.public import (
 )
 
 __all__ = [
+  "DEFAULT_BELL_FIBE_MTL_LINEUP_ID",
+  "DEFAULT_IPTV_ORG_API_URL",
+  "DEFAULT_SD_BASE_URL",
+  "DEFAULT_TVGUIDE_BASE_URL",
   "AppConfig",
+  "ConfigManager",
   "EpgConfig",
   "IptvOrgConfig",
   "LineupConfig",
   "OutputConfig",
   "PublicConfigPayload",
   "PublicEpgDict",
+  "PublicIptvOrgDict",
   "PublicLineupDict",
   "PublicMatchingDict",
   "PublicOutputDict",
   "PublicPipelineDict",
   "PublicSchedulesDirectDict",
-  "PublicTvGuideDict",
   "PublicUpstreamXtreamDict",
   "PublicValidationDict",
   "SchedulesDirectConfig",
@@ -54,10 +70,12 @@ __all__ = [
   "ServeWebConfig",
   "ServeXtreamConfig",
   "StateConfig",
-  "TvGuideConfig",
   "ValidationConfig",
   "XtreamConfig",
   "apply_public_config_update",
+  "clear_config_cache",
   "export_public_config",
+  "get_cached_config",
+  "get_config_manager",
   "load_config",
 ]

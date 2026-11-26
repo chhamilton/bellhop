@@ -106,18 +106,14 @@ pipeline:
     exclude_audio: false
     pinned_streams: {}
     excluded_channels: []
-    tvguide:
-      base_url: "https://backend.tvguide.com/tvschedules/tvguide"
     schedules_direct:
       username: "${SD_USERNAME}"
       password: "${SD_PASSWORD}"
-      base_url: "https://json.schedulesdirect.org/20141201"
       auto_add_lineup: false
     iptv_org:
       # Enriches dynamic lineups with `iptv-org` genres, languages, and `closed`/`replaced_by`
       # transitions using HTTP ETag / Last-Modified conditional caching in `cache/iptv_org/`.
       enabled: true
-      base_url: "https://iptv-org.github.io/api"
       recheck_hours: 24.0
 
   matching:

@@ -11,6 +11,7 @@ from collections.abc import Mapping, MutableMapping
 from io import StringIO
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
@@ -22,28 +23,31 @@ from ruamel.yaml.scalarstring import (
 from bellhop.common.api_contracts import (
   PublicConfigPayload,
   PublicEpgDict,
+  PublicIptvOrgDict,
   PublicLineupDict,
   PublicMatchingDict,
   PublicOutputDict,
   PublicPipelineDict,
   PublicSchedulesDirectDict,
-  PublicTvGuideDict,
   PublicUpstreamXtreamDict,
   PublicValidationDict,
 )
 from bellhop.common.file_utils import PRIVATE_FILE_MODE, ensure_private_dir
-from bellhop.config.load import load_config
+from bellhop.config.load import (
+  build_config_from_raw_dict,
+  find_project_root,
+)
 from bellhop.config.model import AppConfig
 
 __all__ = [
   "PublicConfigPayload",
   "PublicEpgDict",
+  "PublicIptvOrgDict",
   "PublicLineupDict",
   "PublicMatchingDict",
   "PublicOutputDict",
   "PublicPipelineDict",
   "PublicSchedulesDirectDict",
-  "PublicTvGuideDict",
   "PublicUpstreamXtreamDict",
   "PublicValidationDict",
   "apply_public_config_update",
@@ -87,10 +91,12 @@ def export_public_config(config: AppConfig) -> PublicConfigPayload:
           str(k): int(v) for k, v in config.lineup.pinned_streams.items()
         },
         "excluded_channels": sorted(config.lineup.excluded_channels),
-        "tvguide": {"base_url": config.lineup.tvguide.base_url},
         "schedules_direct": {
-          "base_url": config.lineup.schedules_direct.base_url,
           "auto_add_lineup": config.lineup.schedules_direct.auto_add_lineup,
+        },
+        "iptv_org": {
+          "enabled": config.lineup.iptv_org.enabled,
+          "recheck_hours": config.lineup.iptv_org.recheck_hours,
         },
       },
       "matching": {
@@ -106,6 +112,9 @@ def export_public_config(config: AppConfig) -> PublicConfigPayload:
         "min_bytes_to_read": config.validation.min_bytes_to_read,
         "use_ffprobe": config.validation.use_ffprobe,
         "ffprobe_timeout_sec": config.validation.ffprobe_timeout_sec,
+        "detect_black_screen": config.validation.detect_black_screen,
+        "black_sample_sec": config.validation.black_sample_sec,
+        "check_audio_language": config.validation.check_audio_language,
         "max_candidates_per_channel": config.validation.max_candidates_per_channel,
       },
       "epg": {
@@ -140,6 +149,57 @@ def _pos_int(val: Any, field_name: str, *, minimum: int = 1) -> int:
   if num < minimum:
     raise ValueError(f"{field_name} must be >= {minimum}.")
   return num
+
+
+def _validate_xtream_server_url(raw_val: Any) -> str:
+  raw = str(raw_val or "").strip()
+  if not raw:
+    return ""
+  if any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in raw):
+    raise ValueError(
+      "upstream_xtream.server_url must not contain spaces or control characters."
+    )
+  candidate = raw if "://" in raw else f"http://{raw}"
+  try:
+    parsed = urlsplit(candidate)
+  except ValueError as exc:
+    raise ValueError("upstream_xtream.server_url is not a valid URL.") from exc
+  if parsed.scheme.lower() not in {"http", "https"}:
+    raise ValueError("upstream_xtream.server_url must use http:// or https://.")
+  if "@" in parsed.netloc or parsed.username or parsed.password:
+    raise ValueError(
+      "upstream_xtream.server_url must not contain embedded credentials."
+    )
+  if not parsed.hostname:
+    raise ValueError(
+      "upstream_xtream.server_url must contain a valid hostname or IP."
+    )
+  if parsed.query or parsed.fragment:
+    raise ValueError(
+      "upstream_xtream.server_url must not contain a query string or fragment."
+    )
+  return raw
+
+
+def _to_plain_data(val: Any) -> Any:
+  if isinstance(val, Mapping):
+    return {
+      (
+        k if isinstance(k, int) and not isinstance(k, bool) else str(k)
+      ): _to_plain_data(v)
+      for k, v in val.items()
+    }
+  if isinstance(val, list):
+    return [_to_plain_data(item) for item in val]
+  if isinstance(val, bool) or val is None:
+    return val
+  if isinstance(val, int):
+    return int(val)
+  if isinstance(val, float):
+    return float(val)
+  if isinstance(val, str):
+    return str(val)
+  return val
 
 
 _UNSET = object()
@@ -227,6 +287,8 @@ def _set_rt_value(
 def apply_public_config_update(
   config_path: Path,
   updates: Mapping[str, Any],
+  *,
+  before_config: AppConfig | None = None,
 ) -> tuple[AppConfig, bool]:
   """Validate and atomically merge operational settings into two-tier
   `config.yaml`.
@@ -239,6 +301,7 @@ def apply_public_config_update(
   Args:
     config_path: Target `config.yaml` path to update.
     updates: Parsed JSON object matching `PublicConfigPayload` (or a subset).
+    before_config: Optional pre-loaded `AppConfig` to skip initial YAML parse.
 
   Returns:
     Tuple of `(reloaded_config, restart_required)`.
@@ -250,12 +313,24 @@ def apply_public_config_update(
     raise ValueError("Configuration update payload must be a JSON object.")
 
   target = config_path.resolve()
-  before_cfg = (
-    load_config(target)
-    if target.is_file()
-    else AppConfig(project_root=target.parent)
-  )
+  target_exists = target.is_file()
+  root = find_project_root(target if target_exists else None)
   rt_yaml, raw = _load_roundtrip_yaml(target)
+  before_cfg = (
+    before_config
+    if before_config is not None
+    else (
+      build_config_from_raw_dict(
+        _to_plain_data(raw),
+        root=root,
+        base_dir=target.parent,
+        config_file=target,
+        is_explicit=True,
+      )
+      if target_exists
+      else AppConfig(project_root=target.parent)
+    )
+  )
 
   # 1. upstream_xtream (non-secret, non-path fields only)
   u_xt = updates.get("upstream_xtream")
@@ -265,7 +340,7 @@ def apply_public_config_update(
       _set_rt_value(
         xt,
         "server_url",
-        str(u_xt["server_url"] or "").strip(),
+        _validate_xtream_server_url(u_xt["server_url"]),
         current_resolved=before_cfg.xtream.server_url,
       )
     if "stream_format" in u_xt:
@@ -301,7 +376,7 @@ def apply_public_config_update(
         current_resolved=before_cfg.xtream.cache_ttl_hours,
       )
 
-  # 2. pipeline (non-secret, non-path settings only; server properties excluded)
+  # 2. pipeline (non-secret, non-path settings; provider URLs constant)
   u_pipe = updates.get("pipeline")
   if isinstance(u_pipe, dict):
     pipe = _ensure_dict(raw, "pipeline")
@@ -384,6 +459,7 @@ def apply_public_config_update(
             )
             for k, v in raw_pins.items()
           },
+          current_resolved=dict(before_cfg.lineup.pinned_streams),
         )
       if "excluded_channels" in u_lu:
         raw_excl = u_lu["excluded_channels"]
@@ -400,31 +476,37 @@ def apply_public_config_update(
               for c in raw_excl
             }
           ),
-        )
-      if (
-        isinstance(u_lu.get("tvguide"), dict) and "base_url" in u_lu["tvguide"]
-      ):
-        _set_rt_value(
-          _ensure_dict(lu, "tvguide"),
-          "base_url",
-          str(u_lu["tvguide"]["base_url"] or "").strip(),
-          current_resolved=before_cfg.lineup.tvguide.base_url,
+          current_resolved=sorted(before_cfg.lineup.excluded_channels),
         )
       if isinstance(u_lu.get("schedules_direct"), dict):
         sd = _ensure_dict(lu, "schedules_direct")
-        if "base_url" in u_lu["schedules_direct"]:
-          _set_rt_value(
-            sd,
-            "base_url",
-            str(u_lu["schedules_direct"]["base_url"] or "").strip(),
-            current_resolved=before_cfg.lineup.schedules_direct.base_url,
-          )
         if "auto_add_lineup" in u_lu["schedules_direct"]:
           _set_rt_value(
             sd,
             "auto_add_lineup",
             bool(u_lu["schedules_direct"]["auto_add_lineup"]),
             current_resolved=before_cfg.lineup.schedules_direct.auto_add_lineup,
+          )
+      if isinstance(u_lu.get("iptv_org"), dict):
+        u_io = u_lu["iptv_org"]
+        io_d = _ensure_dict(lu, "iptv_org")
+        if "enabled" in u_io:
+          _set_rt_value(
+            io_d,
+            "enabled",
+            bool(u_io["enabled"]),
+            current_resolved=before_cfg.lineup.iptv_org.enabled,
+          )
+        if "recheck_hours" in u_io:
+          _set_rt_value(
+            io_d,
+            "recheck_hours",
+            _pos_float(
+              u_io["recheck_hours"],
+              "pipeline.lineup.iptv_org.recheck_hours",
+              allow_zero=True,
+            ),
+            current_resolved=before_cfg.lineup.iptv_org.recheck_hours,
           )
 
     if (
@@ -451,9 +533,16 @@ def apply_public_config_update(
         "only_changed",
         "ignore_account_limit",
         "use_ffprobe",
+        "detect_black_screen",
+        "check_audio_language",
       ):
         if bkey in u_val:
-          _set_rt_value(val, bkey, bool(u_val[bkey]))
+          _set_rt_value(
+            val,
+            bkey,
+            bool(u_val[bkey]),
+            current_resolved=getattr(before_cfg.validation, bkey),
+          )
       if "concurrency" in u_val:
         _set_rt_value(
           val,
@@ -461,6 +550,7 @@ def apply_public_config_update(
           _pos_int(
             u_val["concurrency"], "pipeline.validation.concurrency", minimum=1
           ),
+          current_resolved=before_cfg.validation.concurrency,
         )
       if "inter_probe_delay_sec" in u_val:
         _set_rt_value(
@@ -471,6 +561,7 @@ def apply_public_config_update(
             "pipeline.validation.inter_probe_delay_sec",
             allow_zero=True,
           ),
+          current_resolved=before_cfg.validation.inter_probe_delay_sec,
         )
       if "http_timeout_sec" in u_val:
         _set_rt_value(
@@ -479,6 +570,7 @@ def apply_public_config_update(
           _pos_float(
             u_val["http_timeout_sec"], "pipeline.validation.http_timeout_sec"
           ),
+          current_resolved=before_cfg.validation.http_timeout_sec,
         )
       if "min_bytes_to_read" in u_val:
         _set_rt_value(
@@ -489,6 +581,7 @@ def apply_public_config_update(
             "pipeline.validation.min_bytes_to_read",
             minimum=512,
           ),
+          current_resolved=before_cfg.validation.min_bytes_to_read,
         )
       if "ffprobe_timeout_sec" in u_val:
         _set_rt_value(
@@ -498,6 +591,22 @@ def apply_public_config_update(
             u_val["ffprobe_timeout_sec"],
             "pipeline.validation.ffprobe_timeout_sec",
           ),
+          current_resolved=before_cfg.validation.ffprobe_timeout_sec,
+        )
+      if "black_sample_sec" in u_val:
+        bs_sec = _pos_float(
+          u_val["black_sample_sec"],
+          "pipeline.validation.black_sample_sec",
+        )
+        if bs_sec < 0.5:
+          raise ValueError(
+            "pipeline.validation.black_sample_sec must be >= 0.5."
+          )
+        _set_rt_value(
+          val,
+          "black_sample_sec",
+          bs_sec,
+          current_resolved=before_cfg.validation.black_sample_sec,
         )
       if "max_candidates_per_channel" in u_val:
         _set_rt_value(
@@ -508,13 +617,19 @@ def apply_public_config_update(
             "pipeline.validation.max_candidates_per_channel",
             minimum=1,
           ),
+          current_resolved=before_cfg.validation.max_candidates_per_channel,
         )
 
     if isinstance(u_pipe.get("epg"), dict):
       u_epg = u_pipe["epg"]
       epg_d = _ensure_dict(pipe, "epg")
       if "verify" in u_epg:
-        _set_rt_value(epg_d, "verify", bool(u_epg["verify"]))
+        _set_rt_value(
+          epg_d,
+          "verify",
+          bool(u_epg["verify"]),
+          current_resolved=before_cfg.epg.verify,
+        )
       if "refresh_hours" in u_epg:
         _set_rt_value(
           epg_d,
@@ -524,6 +639,7 @@ def apply_public_config_update(
             "pipeline.epg.refresh_hours",
             allow_zero=True,
           ),
+          current_resolved=before_cfg.epg.refresh_hours,
         )
 
     if isinstance(u_pipe.get("output"), dict):
@@ -534,11 +650,32 @@ def apply_public_config_update(
           out_d,
           "include_unmatched_comment",
           bool(u_out["include_unmatched_comment"]),
+          current_resolved=before_cfg.output.include_unmatched_comment,
         )
       if "m3u8_enabled" in u_out:
-        _set_rt_value(out_d, "m3u8_enabled", bool(u_out["m3u8_enabled"]))
+        _set_rt_value(
+          out_d,
+          "m3u8_enabled",
+          bool(u_out["m3u8_enabled"]),
+          current_resolved=before_cfg.output.m3u8_enabled,
+        )
       if "xtream_enabled" in u_out:
-        _set_rt_value(out_d, "xtream_enabled", bool(u_out["xtream_enabled"]))
+        _set_rt_value(
+          out_d,
+          "xtream_enabled",
+          bool(u_out["xtream_enabled"]),
+          current_resolved=before_cfg.output.xtream_enabled,
+        )
+
+  validated = build_config_from_raw_dict(
+    _to_plain_data(raw),
+    root=root,
+    base_dir=target.parent,
+    config_file=target,
+    is_explicit=True,
+  )
+  if not validated.serve.web.enabled and not validated.serve.xtream.enabled:
+    raise ValueError("At least one server must remain enabled.")
 
   ensure_private_dir(target.parent)
   tmp_path = target.with_name(f".{target.name}.{secrets.token_hex(6)}.tmp")
@@ -554,14 +691,13 @@ def apply_public_config_update(
       fh.write(buf.getvalue().encode("utf-8"))
     with contextlib.suppress(OSError):
       os.chmod(tmp_path, PRIVATE_FILE_MODE)
-    reloaded = load_config(tmp_path)
-    if not reloaded.serve.web.enabled and not reloaded.serve.xtream.enabled:
-      raise ValueError("At least one server must remain enabled.")
     os.replace(tmp_path, target)
   except BaseException:
     with contextlib.suppress(OSError):
       tmp_path.unlink(missing_ok=True)
     raise
 
-  final_cfg = load_config(target)
-  return final_cfg, False
+  restart_required = bool(
+    validated.xtream.server_url != before_cfg.xtream.server_url
+  )
+  return validated, restart_required

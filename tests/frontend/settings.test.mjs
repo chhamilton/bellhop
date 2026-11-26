@@ -123,9 +123,11 @@ test("createSettingsController loads config, switches tabs, and submits PUT /api
         exclude_audio: false,
         pinned_streams: { "1108": 410108 },
         excluded_channels: [1424],
-        tvguide: { base_url: "https://backend.tvguide.com/tvschedules/tvguide" },
+        iptv_org: {
+          enabled: true,
+          recheck_hours: 24,
+        },
         schedules_direct: {
-          base_url: "https://json.schedulesdirect.org/20141201",
           auto_add_lineup: true,
         },
       },
@@ -141,6 +143,9 @@ test("createSettingsController loads config, switches tabs, and submits PUT /api
         use_ffprobe: true,
         ffprobe_timeout_sec: 12,
         max_candidates_per_channel: 5,
+        detect_black_screen: true,
+        black_sample_sec: 1.5,
+        check_audio_language: true,
       },
       epg: { verify: true, refresh_hours: 6 },
       output: {
@@ -165,12 +170,8 @@ test("createSettingsController loads config, switches tabs, and submits PUT /api
   registerInput("cfg-lu-excl-audio", { checked: false });
   registerInput("cfg-lu-pins", { value: "1108 = 410108\n1205:520105" });
   registerInput("cfg-lu-excl", { value: "1424, 1425" });
-  registerInput("cfg-lu-tvg-url", {
-    value: "https://backend.tvguide.com/tvschedules/tvguide",
-  });
-  registerInput("cfg-lu-sd-url", {
-    value: "https://json.schedulesdirect.org/20141201",
-  });
+  registerInput("cfg-lu-iptv-en", { checked: false });
+  registerInput("cfg-lu-iptv-recheck", { value: "48" });
   registerInput("cfg-lu-sd-autoadd", { checked: true });
   registerInput("cfg-match-hysteresis", { value: "5.5" });
   registerInput("cfg-val-enabled", { checked: true });
@@ -183,6 +184,9 @@ test("createSettingsController loads config, switches tabs, and submits PUT /api
   registerInput("cfg-val-ffprobe", { checked: true });
   registerInput("cfg-val-ffprobe-timeout", { value: "12" });
   registerInput("cfg-val-max-cands", { value: "5" });
+  registerInput("cfg-val-black", { checked: false });
+  registerInput("cfg-val-black-sec", { value: "2.5" });
+  registerInput("cfg-val-audio-lang", { checked: false });
   registerInput("cfg-epg-verify", { checked: true });
   registerInput("cfg-epg-refresh", { value: "6" });
   registerInput("cfg-out-m3u8-en", { checked: true });
@@ -283,6 +287,13 @@ test("createSettingsController loads config, switches tabs, and submits PUT /api
       putRequests[0].pipeline.matching.upgrade_hysteresis_score,
       5.5,
     );
+    assert.deepEqual(putRequests[0].pipeline.lineup.iptv_org, {
+      enabled: false,
+      recheck_hours: 48,
+    });
+    assert.equal(putRequests[0].pipeline.validation.detect_black_screen, false);
+    assert.equal(putRequests[0].pipeline.validation.black_sample_sec, 2.5);
+    assert.equal(putRequests[0].pipeline.validation.check_audio_language, false);
     assert.equal(elSettingsStatus.className, "settings-status is-warn");
 
     // Malformed pinned stream syntax aborts client-side before sending PUT

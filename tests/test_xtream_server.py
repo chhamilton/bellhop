@@ -167,7 +167,7 @@ pipeline:
       async with TestHttpClient(
         base_url=serve_base, timeout=10.0, follow_redirects=False
       ) as client:
-        # Unified /health check (unauthenticated: no active_tuner leak)
+        # Unified /health (unauthenticated: no active_tuner or lineup leak)
         health = (await client.get("/health")).json()
         assert health["status"] == "ok"
         assert health["web_guide_enabled"] is True
@@ -175,6 +175,9 @@ pipeline:
         assert health["category_count"] == 2
         assert health["channel_count"] == 2
         assert health["active_tuner"] is None
+        assert "lineup_id" not in health
+        assert "provider" not in health
+        assert "market" not in health
 
         # Unauthenticated Web Guide routes require login; sign in first
         assert (await client.get("/api/lineup")).status_code == 401
@@ -183,6 +186,11 @@ pipeline:
           json={"username": "web_u", "password": "web_p"},
         )
         assert login_ok.status_code == 200
+
+        authed_health = (await client.get("/health")).json()
+        assert authed_health["lineup_id"] == "CAN-BELLFIBE-MTL-X"
+        assert authed_health["provider"] == "Bell Fibe TV"
+        assert authed_health["market"] == "Montréal, QC"
 
         # --- Web Guide routes on the same port ---
         idx = await client.get("/?cat=2&view=timeline&ch=1108")
@@ -274,6 +282,8 @@ pipeline:
               data={"username": "client_alice", "password": "client_secret_42"},
             )
           assert resp.status_code == 200
+          assert "Access-Control-Allow-Origin" not in resp.headers
+          assert resp.headers.get("Referrer-Policy") == "no-referrer"
           body = resp.json()
           assert "upstream_secret_pw" not in resp.text
           assert body["user_info"]["auth"] == 1
@@ -400,6 +410,8 @@ pipeline:
             params={"username": "client_alice", "password": "client_secret_42"},
           )
           assert xmltv_local.status_code == 200
+          assert "Access-Control-Allow-Origin" not in xmltv_local.headers
+          assert xmltv_local.headers.get("Referrer-Policy") == "no-referrer"
           assert "Le Téléjournal" in xmltv_local.text
           assert "upstream_secret_pw" not in xmltv_local.text
         head_xmltv = await client.head(
@@ -410,6 +422,7 @@ pipeline:
 
         # When SQLite EPG database is empty OR holds only expired listings,
         # /xmltv.php gracefully falls back to 302 upstream redirect!
+        assert unified_srv.web_app is not None
         assert unified_srv.web_app.epg_refresher is not None
         unified_srv.web_app.epg_refresher.db.delete_database()
         xmltv_redir = await client.get(
@@ -1328,6 +1341,7 @@ pipeline:
 
       # Live runtime operational knobs applied immediately; server
       # bind/xtream_server untouched
+      assert srv.web_app is not None
       assert srv.web_app.tuner.settle_sec == pytest.approx(0.18)
       assert srv.web_app.epg_refresher is not None
       assert srv.web_app.epg_refresher.config.refresh_hours == pytest.approx(
@@ -1598,6 +1612,8 @@ async def test_xmltv_head_and_small_chunk_streaming_and_xtream_only_health(
     ),
   )
   unified = UnifiedServeServer.from_config(cfg_xt_only)
+  assert unified.web_app is None
+  assert not (tmp_path / "cache" / "session_secret.key").exists()
   await unified.start()
   try:
     async with TestHttpClient(
@@ -1611,6 +1627,12 @@ async def test_xmltv_head_and_small_chunk_streaming_and_xtream_only_health(
       assert health["shared_listener"] is False
       assert health["active_tuner"] is None
       assert health["channel_count"] == 2
+      assert "lineup_id" not in health
+      assert "provider" not in health
+      assert "market" not in health
+      opt_xt = await client.request("OPTIONS", "/player_api.php")
+      assert opt_xt.status_code == 405
+      assert "Access-Control-Allow-Origin" not in opt_xt.headers
   finally:
     await unified.stop()
 

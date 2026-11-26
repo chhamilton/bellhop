@@ -318,7 +318,6 @@ async def test_iptv_org_etag_conditional_cache_304_revalidation_and_lineup_regro
         refresh_days=30.0,
         iptv_org=IptvOrgConfig(
           enabled=True,
-          base_url=f"{mock.base_url}/iptv-org",
           recheck_hours=24.0,
         ),
       ),

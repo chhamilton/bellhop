@@ -15,6 +15,7 @@ import json
 import logging
 import sqlite3
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -170,6 +171,7 @@ class EpgRefreshService:
     self._task: asyncio.Task[None] | None = None
     self._stop_event = asyncio.Event()
     self._refresh_lock = asyncio.Lock()
+    self._sync_lock = threading.Lock()
     self._in_flight: asyncio.Task[EpgStatusDict] | None = None
 
     self._refreshing: bool = False
@@ -248,15 +250,18 @@ class EpgRefreshService:
     """
     if not self.db.db_path.is_file():
       return
-    cur_mtime = self._current_db_mtime_ns()
-    if cur_mtime != self._seen_db_mtime_ns and not self._refreshing:
-      self._seen_db_mtime_ns = cur_mtime
-      cov = self.db.coverage_stats(now_ts=now_ts)
-      if cov.total_programs > 0:
-        meta = self.db.get_meta()
-        self._apply_meta_dict(meta)
-        if self._state == "idle":
-          self._state = "ok"
+    with self._sync_lock:
+      cur_mtime = self._current_db_mtime_ns()
+      if cur_mtime != self._seen_db_mtime_ns and not self._refreshing:
+        cov = self.db.coverage_stats(now_ts=now_ts)
+        meta: Mapping[str, str] = {}
+        if cov.total_programs > 0:
+          meta = self.db.get_meta()
+        self._seen_db_mtime_ns = cur_mtime
+        if cov.total_programs > 0:
+          self._apply_meta_dict(meta)
+          if self._state == "idle":
+            self._state = "ok"
 
   def _sync_disk_state(self, now_ts: int) -> None:
     """Periodic worker-thread check: recompute active coverage and sync external
@@ -264,15 +269,17 @@ class EpgRefreshService:
     """
     if not self.db.db_path.is_file():
       return
-    cur_mtime = self._current_db_mtime_ns()
-    cov = self.db.coverage_stats(now_ts=now_ts)
-    if cur_mtime != self._seen_db_mtime_ns and not self._refreshing:
-      self._seen_db_mtime_ns = cur_mtime
-      if cov.total_programs > 0:
-        meta = self.db.get_meta()
-        self._apply_meta_dict(meta)
-        if self._state == "idle":
-          self._state = "ok"
+    with self._sync_lock:
+      cur_mtime = self._current_db_mtime_ns()
+      cov = self.db.coverage_stats(now_ts=now_ts)
+      changed = cur_mtime != self._seen_db_mtime_ns and not self._refreshing
+      meta = self.db.get_meta() if (changed and cov.total_programs > 0) else {}
+      if changed:
+        self._seen_db_mtime_ns = cur_mtime
+        if cov.total_programs > 0:
+          self._apply_meta_dict(meta)
+          if self._state == "idle":
+            self._state = "ok"
 
   def hydrate_from_cache(self, *, now_ts: int | None = None) -> int:
     """Validate and prune the persistent SQLite EPG database on startup."""
@@ -647,7 +654,7 @@ class EpgRefreshService:
                 raise ValueError(
                   f"Upstream XMLTV response exceeded {max_bytes} bytes."
                 )
-              out_fh.write(chunk)
+              await asyncio.to_thread(out_fh.write, chunk)
       finally:
         if owns_client:
           await client.close()

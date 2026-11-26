@@ -45,6 +45,7 @@ from bellhop.common.http_utils import (
   default_session_factory,
   detect_device_ip,
   extract_explicit_private_origins,
+  is_trusted_proxy_peer,
   json_response,
   open_upstream_url,
   parse_trusted_proxy_networks,
@@ -591,19 +592,23 @@ class WebGuideApp:
 
   @staticmethod
   def _is_cross_site_mutation(request: web.Request) -> bool:
-    """Reject cross-site state-changing requests (`Sec-Fetch-Site` /
-    `Origin`).
+    """Reject cross-site state-changing requests (`Sec-Fetch-Site` / `Origin` /
+    `Referer`).
     """
     sec_site = (request.headers.get("Sec-Fetch-Site") or "").strip().lower()
-    if sec_site == "cross-site":
+    if sec_site and sec_site not in {"same-origin", "none"}:
       return True
+    req_host = (request.headers.get("Host") or "").strip().lower()
     origin = (request.headers.get("Origin") or "").strip()
     if origin:
       if origin.lower() == "null":
         return True
       origin_host = urlsplit(origin).netloc.strip().lower()
-      req_host = (request.headers.get("Host") or "").strip().lower()
-      if not origin_host or (req_host and origin_host != req_host):
+      return bool(not origin_host or not req_host or origin_host != req_host)
+    referer = (request.headers.get("Referer") or "").strip()
+    if referer:
+      ref_host = urlsplit(referer).netloc.strip().lower()
+      if not ref_host or not req_host or ref_host != req_host:
         return True
     return False
 
@@ -613,18 +618,11 @@ class WebGuideApp:
     """
     if request.secure:
       return True
-    if not self.trust_proxy_headers:
-      return False
-    peer_ip = (request.remote or "").strip()
-    if not peer_ip:
-      return False
-    try:
-      import ipaddress
-
-      parsed_peer = ipaddress.ip_address(peer_ip)
-    except ValueError:
-      return False
-    if not any(parsed_peer in net for net in self._trusted_proxy_networks):
+    if not is_trusted_proxy_peer(
+      request.remote,
+      trust_proxy_headers=self.trust_proxy_headers,
+      trusted_networks=self._trusted_proxy_networks,
+    ):
       return False
     xf_proto = (
       (request.headers.get("X-Forwarded-Proto") or "")
@@ -867,7 +865,8 @@ class WebGuideApp:
         "config_file": None,
       }
       return json_response(unavailable)
-    return json_response(self._config_reader())
+    payload = await asyncio.to_thread(self._config_reader)
+    return json_response(payload)
 
   async def _handle_config_put(
     self, request: web.Request
@@ -889,7 +888,8 @@ class WebGuideApp:
       )
       if not isinstance(updates, dict):
         raise ValueError("Request body must be a JSON object.")
-      return json_response(self._config_writer(updates))
+      saved = await asyncio.to_thread(self._config_writer, updates)
+      return json_response(saved)
     except (json.JSONDecodeError, ValueError) as exc:
       return json_response({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
@@ -900,7 +900,7 @@ class WebGuideApp:
     return EpgRefreshStatus.disabled().to_dict()
 
   async def _handle_health(self, _request: web.Request) -> web.StreamResponse:
-    snap = self.store.get_snapshot()
+    snap = await self.store.async_get_snapshot()
     if self.epg_refresher is not None:
       self.epg_refresher.trigger_background_if_needed(reason_prefix="health")
     now_ts = int(self._clock())
@@ -925,7 +925,7 @@ class WebGuideApp:
     self, _request: web.Request
   ) -> web.StreamResponse:
     if self.epg_refresher is None:
-      self.store.get_snapshot(force_reload=True)
+      await self.store.async_get_snapshot(force_reload=True)
       return json_response(
         {"refreshed": False, "epg_status": self.epg_status()}
       )
@@ -957,7 +957,7 @@ class WebGuideApp:
     return json_response({"released": released})
 
   async def _handle_lineup(self, request: web.Request) -> web.StreamResponse:
-    snap = self.store.get_snapshot()
+    snap = await self.store.async_get_snapshot()
     if self.epg_refresher is not None:
       self.epg_refresher.trigger_background_if_needed(reason_prefix="lineup")
     now_ts = int(self._clock())
@@ -970,81 +970,84 @@ class WebGuideApp:
     )
     require_epg = epg_filter in {"1", "true", "yes", "only"}
     search_q = query.get("q", "").strip().lower()
+    refresher = self.epg_refresher
 
-    by_chno: dict[int, list[ProgramItem]] = {}
-    by_epg_id: dict[str, list[ProgramItem]] = {}
-    if self.epg_refresher is not None:
-      refresher = self.epg_refresher
-
-      def _load_window() -> tuple[
-        dict[int, list[ProgramItem]], dict[str, list[ProgramItem]]
-      ]:
+    def _build_lineup_bytes() -> bytes:
+      by_chno: dict[int, list[ProgramItem]] = {}
+      by_epg_id: dict[str, list[ProgramItem]] = {}
+      if refresher is not None:
         refresher.sync_external_if_needed(now_ts)
-        return refresher.db.query_lineup_window(
+        by_chno, by_epg_id = refresher.db.query_lineup_window(
           min_stop_ts=now_ts - EPG_RECENT_FLOOR_SEC,
           max_start_ts=now_ts + 172800,
           per_channel_limit=48,
         )
 
-      by_chno, by_epg_id = await asyncio.to_thread(_load_window)
-
-    channels_out: list[PublicChannelDict] = []
-    category_channel_count = 0
-    for ch in snap.channels:
-      if (
-        cat_filter
-        and cat_filter != "all"
-        and ch.category_id != cat_filter
-        and ch.category_name.lower() != cat_filter.lower()
-      ):
-        continue
-      category_channel_count += 1
-      if (
-        lang_filter
-        and lang_filter != "all"
-        and ch.language.lower() != lang_filter
-      ):
-        continue
-
-      progs = by_chno.get(ch.chno) or by_epg_id.get(ch.epg_channel_id, [])
-      pub = ch.to_public_dict(progs, now_ts=now_ts, upcoming_limit=48)
-      if require_epg and not (
-        pub["now_playing"] or pub["up_next"] or pub["schedule"]
-      ):
-        continue
-
-      if search_q:
-        now_playing = pub["now_playing"]
-        now_title = (
-          (now_playing.get("title") or "").lower() if now_playing else ""
-        )
-        haystack = (
-          f"{ch.chno} {ch.sd_chno or ''} {ch.name.lower()} "
-          f"{(ch.callsign or '').lower()} {ch.category_name.lower()} {now_title}"
-        )
-        if search_q not in haystack:
+      channels_out: list[PublicChannelDict] = []
+      category_channel_count = 0
+      for ch in snap.channels:
+        if (
+          cat_filter
+          and cat_filter != "all"
+          and ch.category_id != cat_filter
+          and ch.category_name.lower() != cat_filter.lower()
+        ):
+          continue
+        category_channel_count += 1
+        if (
+          lang_filter
+          and lang_filter != "all"
+          and ch.language.lower() != lang_filter
+        ):
           continue
 
-      channels_out.append(pub)
+        progs = by_chno.get(ch.chno) or by_epg_id.get(ch.epg_channel_id, [])
+        pub = ch.to_public_dict(progs, now_ts=now_ts, upcoming_limit=48)
+        if require_epg and not (
+          pub["now_playing"] or pub["up_next"] or pub["schedule"]
+        ):
+          continue
 
-    lineup_payload: LineupApiResponseDict = {
-      "server_timestamp": now_ts,
-      "lineup": {
-        "lineup_id": snap.lineup_id,
-        "provider": snap.provider,
-        "market": snap.market,
-        "postal_prefix": snap.postal_prefix,
-        "timezone": snap.timezone,
-        "lineup_updated_at": snap.loaded_at,
-        "total_channels": len(snap.channels),
-        "category_channels": category_channel_count,
-        "filtered_channels": len(channels_out),
-      },
-      "epg_status": self.epg_status(now_ts=now_ts),
-      "categories": [c.to_dict() for c in snap.categories],
-      "channels": channels_out,
-    }
-    return json_response(lineup_payload)
+        if search_q:
+          now_playing = pub["now_playing"]
+          now_title = (
+            (now_playing.get("title") or "").lower() if now_playing else ""
+          )
+          haystack = (
+            f"{ch.chno} {ch.sd_chno or ''} {ch.name.lower()} "
+            f"{(ch.callsign or '').lower()} {ch.category_name.lower()} {now_title}"
+          )
+          if search_q not in haystack:
+            continue
+
+        channels_out.append(pub)
+
+      epg_st = (
+        refresher.status_dict(now_ts=now_ts)
+        if refresher is not None
+        else EpgRefreshStatus.disabled().to_dict()
+      )
+      lineup_payload: LineupApiResponseDict = {
+        "server_timestamp": now_ts,
+        "lineup": {
+          "lineup_id": snap.lineup_id,
+          "provider": snap.provider,
+          "market": snap.market,
+          "postal_prefix": snap.postal_prefix,
+          "timezone": snap.timezone,
+          "lineup_updated_at": snap.loaded_at,
+          "total_channels": len(snap.channels),
+          "category_channels": category_channel_count,
+          "filtered_channels": len(channels_out),
+        },
+        "epg_status": epg_st,
+        "categories": [c.to_dict() for c in snap.categories],
+        "channels": channels_out,
+      }
+      return json.dumps(lineup_payload, ensure_ascii=False).encode("utf-8")
+
+    payload_bytes = await asyncio.to_thread(_build_lineup_bytes)
+    return bytes_response(payload_bytes, "application/json; charset=utf-8")
 
   async def _handle_channel_epg(
     self, request: web.Request
@@ -1054,7 +1057,7 @@ class WebGuideApp:
       self.epg_refresher.trigger_background_if_needed(
         reason_prefix="channel_epg"
       )
-    snap = self.store.get_snapshot()
+    snap = await self.store.async_get_snapshot()
     ch = snap.channels_by_chno.get(chno)
     if ch is None:
       return json_response(
@@ -1187,7 +1190,7 @@ class WebGuideApp:
   ) -> web.StreamResponse:
     chno = int(request.match_info["chno"])
     client_id = request.query.get("client", "").strip()
-    snap = self.store.get_snapshot()
+    snap = await self.store.async_get_snapshot()
     ch: WebChannel | None = snap.channels_by_chno.get(chno)
     cand_urls = self._candidate_urls_for(ch) if ch is not None else []
     if ch is None or not cand_urls:
@@ -1320,7 +1323,7 @@ class WebGuideApp:
     chno = int(request.match_info["chno"])
     client_id = request.query.get("client", "").strip()
     tune_token = request.query.get("t", "").strip()
-    snap = self.store.get_snapshot()
+    snap = await self.store.async_get_snapshot()
     ch = snap.channels_by_chno.get(chno)
     cand_urls = self._candidate_urls_for(ch) if ch is not None else []
     if ch is None or not cand_urls:
@@ -1460,7 +1463,7 @@ class WebGuideApp:
         status=HTTPStatus.FORBIDDEN,
       )
 
-    ch = self.store.get_snapshot().channels_by_chno.get(chno)
+    ch = (await self.store.async_get_snapshot()).channels_by_chno.get(chno)
     allowed_origins = self._allowed_private_origins_for(ch)
     response: web.StreamResponse | None = None
     try:
