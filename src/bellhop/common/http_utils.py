@@ -59,7 +59,11 @@ __all__ = [
   "format_advertised_base_url",
   "is_trusted_proxy_peer",
   "json_response",
+  "match_public_base_url",
+  "normalize_public_base_url",
+  "normalize_public_base_urls",
   "open_upstream_url",
+  "parse_origin_identity",
   "parse_trusted_proxy_networks",
   "parse_validated_host_header",
   "redact_url_secrets",
@@ -532,6 +536,146 @@ def format_advertised_base_url(
   return f"{server_protocol}://{host_fmt}:{adv_port}"
 
 
+def normalize_public_base_url(raw: str) -> str:
+  """Validate and normalize an explicit external origin for outbound links."""
+  raw_str = str(raw or "")
+  if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw_str):
+    raise ValueError("public_base_url must not contain control characters.")
+  cleaned = raw_str.strip()
+  if not cleaned:
+    raise ValueError("public_base_url must not be empty.")
+  if any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in cleaned):
+    raise ValueError(
+      "public_base_url must not contain whitespace or control chars."
+    )
+  parsed = urlsplit(cleaned)
+  scheme = parsed.scheme.lower()
+  if scheme not in {"http", "https"}:
+    raise ValueError(
+      f"public_base_url must use http or https (got {parsed.scheme!r})."
+    )
+  if parsed.username is not None or parsed.password is not None:
+    raise ValueError("public_base_url must not embed credentials.")
+  hostname = (parsed.hostname or "").strip().lower()
+  if not parsed.netloc or not hostname:
+    raise ValueError("public_base_url must include a valid hostname.")
+  port = parsed.port
+  if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+    raise ValueError(
+      "public_base_url must be a bare origin without a path, query, or "
+      "fragment."
+    )
+  host_fmt = f"[{hostname}]" if ":" in hostname else hostname
+  port_suffix = f":{port}" if port is not None else ""
+  return f"{scheme}://{host_fmt}{port_suffix}"
+
+
+def parse_origin_identity(raw: str) -> tuple[str, str, int] | None:
+  """Extract `(scheme, host, effective_port)` from an HTTP(S) URL or origin."""
+  cleaned = str(raw or "").strip()
+  if not cleaned or any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in cleaned):
+    return None
+  try:
+    parsed = urlsplit(cleaned)
+    port = parsed.port
+  except ValueError:
+    return None
+  scheme = parsed.scheme.lower()
+  if scheme not in {"http", "https"}:
+    return None
+  if parsed.username is not None or parsed.password is not None:
+    return None
+  hostname = (parsed.hostname or "").strip().lower()
+  if not parsed.netloc or not hostname:
+    return None
+  if ":" in hostname:
+    try:
+      hostname = str(ipaddress.ip_address(hostname))
+    except ValueError:
+      return None
+  eff_port = port if port is not None else (443 if scheme == "https" else 80)
+  return scheme, hostname, eff_port
+
+
+def normalize_public_base_urls(
+  entries: Iterable[str] | None,
+) -> tuple[str, ...]:
+  """Validate and deduplicate configured public base URLs preserving order."""
+  if entries is None:
+    return ()
+  normalized: list[str] = []
+  for item in entries:
+    normalized.append(normalize_public_base_url(item))
+  return tuple(dict.fromkeys(normalized))
+
+
+def match_public_base_url(
+  allowed_urls: Sequence[str],
+  *,
+  origin_header: str | None = None,
+  host_header: str | None = None,
+  forwarded_host_header: str | None = None,
+  trust_forwarded_host: bool = False,
+  is_https: bool = False,
+) -> str | None:
+  """Select the matching allowlisted origin for an incoming request."""
+  allowed = normalize_public_base_urls(allowed_urls)
+  if not allowed:
+    return None
+
+  parsed_allowed: list[tuple[str, str, str, int | None, int]] = []
+  for entry in allowed:
+    ident = parse_origin_identity(entry)
+    assert ident is not None
+    explicit_port = urlsplit(entry).port
+    parsed_allowed.append((entry, ident[0], ident[1], explicit_port, ident[2]))
+
+  # 1. Exact `Origin` match when browser sends a valid allowlisted origin.
+  if origin_header:
+    try:
+      norm_origin = normalize_public_base_url(origin_header)
+    except ValueError:
+      norm_origin = ""
+    if norm_origin:
+      origin_id = parse_origin_identity(norm_origin)
+      if origin_id is not None:
+        for entry, scheme, hostname, _explicit_port, eff_port in parsed_allowed:
+          if (scheme, hostname, eff_port) == origin_id:
+            return entry
+
+  # 2. Match validated `X-Forwarded-Host` (if trusted peer) or `Host` header.
+  raw_host = ""
+  if trust_forwarded_host and forwarded_host_header:
+    raw_host = forwarded_host_header.split(",", 1)[0].strip()
+  if not raw_host:
+    raw_host = (host_header or "").strip()
+
+  parsed_hdr = parse_validated_host_header(raw_host)
+  if parsed_hdr is not None:
+    cand_host, cand_port = parsed_hdr
+    cand_host = cand_host.lower()
+    if ":" in cand_host:
+      with_v6 = cand_host.strip("[]")
+      cand_host = str(ipaddress.ip_address(with_v6))
+    req_scheme = "https" if is_https else "http"
+    req_eff_port = (
+      cand_port
+      if cand_port is not None
+      else (443 if req_scheme == "https" else 80)
+    )
+    for entry, scheme, hostname, _explicit_port, eff_port in parsed_allowed:
+      if (scheme, hostname, eff_port) == (req_scheme, cand_host, req_eff_port):
+        return entry
+    for entry, _scheme, hostname, explicit_port, eff_port in parsed_allowed:
+      if cand_port is not None:
+        if hostname == cand_host and eff_port == cand_port:
+          return entry
+      elif hostname == cand_host and explicit_port in (None, 80, 443):
+        return entry
+
+  return allowed[0]
+
+
 # -----------------------------------------------------------------------------
 # Trusted reverse-proxy client IP resolution (`X-Forwarded-For` / `X-Real-IP`)
 # -----------------------------------------------------------------------------
@@ -836,14 +980,16 @@ class LoginRateLimiter:
   _failures: dict[str, list[float]] = field(default_factory=dict, repr=False)
 
   @staticmethod
-  def _bucket_key(ip: str) -> str:
+  def _bucket_key(ip: str, *, scope: str = "") -> str:
     """Normalize client IP strings, bucketing IPv6 peers by `/64` prefix."""
     addr = _parse_ip_addr(ip)
     if addr is None:
-      return (ip or "").strip() or "unknown"
-    if isinstance(addr, ipaddress.IPv6Address):
-      return str(ipaddress.IPv6Network((addr, 64), strict=False))
-    return str(addr)
+      base = (ip or "").strip() or "unknown"
+    elif isinstance(addr, ipaddress.IPv6Address):
+      base = str(ipaddress.IPv6Network((addr, 64), strict=False))
+    else:
+      base = str(addr)
+    return f"{scope}:{base}" if scope else base
 
   def _prune_ip(self, key: str, cutoff: float) -> list[float]:
     timestamps = self._failures.get(key)
@@ -857,12 +1003,12 @@ class LoginRateLimiter:
       self._failures.pop(key, None)
     return fresh
 
-  def check(self, ip: str, *, now: float | None = None) -> int:
+  def check(self, ip: str, *, now: float | None = None, scope: str = "") -> int:
     """Return `0` if allowed, or positive `Retry-After` seconds if throttled."""
     if self.max_failures <= 0 or self.window_sec <= 0:
       return 0
     ts_now = self.clock() if now is None else now
-    key = self._bucket_key(ip)
+    key = self._bucket_key(ip, scope=scope)
     fresh = self._prune_ip(key, ts_now - self.window_sec)
     if len(fresh) < self.max_failures:
       return 0
@@ -870,11 +1016,13 @@ class LoginRateLimiter:
     remaining = (oldest_active + self.window_sec) - ts_now
     return max(1, ceil(remaining))
 
-  def record_failure(self, ip: str, *, now: float | None = None) -> None:
+  def record_failure(
+    self, ip: str, *, now: float | None = None, scope: str = ""
+  ) -> None:
     """Record a failed login attempt for `ip`."""
     if self.max_failures <= 0 or self.window_sec <= 0:
       return
-    key = self._bucket_key(ip)
+    key = self._bucket_key(ip, scope=scope)
     ts_now = self.clock() if now is None else now
     cutoff = ts_now - self.window_sec
     if (
@@ -889,9 +1037,9 @@ class LoginRateLimiter:
     fresh.append(ts_now)
     self._failures[key] = fresh
 
-  def record_success(self, ip: str) -> None:
+  def record_success(self, ip: str, *, scope: str = "") -> None:
     """Clear failed login attempts for `ip` after a successful sign-in."""
-    self._failures.pop(self._bucket_key(ip), None)
+    self._failures.pop(self._bucket_key(ip, scope=scope), None)
 
 
 _STREAM_PATH_SECRET_RE = re.compile(

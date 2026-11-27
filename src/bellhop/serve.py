@@ -23,6 +23,12 @@ from bellhop.common.http_utils import (
   resolve_bind_host,
   start_site,
 )
+from bellhop.common.mailer import (
+  EmailSenderProtocol,
+  MailerConfigError,
+  SmtpConfig,
+  SmtpMailer,
+)
 from bellhop.config import (
   DEFAULT_SD_BASE_URL,
   AppConfig,
@@ -100,6 +106,7 @@ class UnifiedServeServer:
     config_manager: ConfigManager | None = None,
     session_factory: ClientSessionFactory | None = None,
     epg_session_factory: ClientSessionFactory | None = None,
+    email_sender: EmailSenderProtocol | None = None,
     separate_listeners: bool = False,
     sd_base_url: str = DEFAULT_SD_BASE_URL,
   ) -> UnifiedServeServer:
@@ -121,6 +128,26 @@ class UnifiedServeServer:
 
     def _fallback_xmltv_url_provider() -> str:
       return build_passthrough_xmltv_url(mgr.get(), redact_secret=False)
+
+    cached_email_cfg: SmtpConfig | None = None
+    cached_mailer: SmtpMailer | None = None
+
+    def _email_sender_provider() -> EmailSenderProtocol | None:
+      nonlocal cached_email_cfg, cached_mailer
+      cur_cfg = mgr.get().email
+      if not cur_cfg.enabled:
+        return None
+      try:
+        cur_cfg.validate(require_enabled=True)
+      except MailerConfigError:
+        return None
+      if cached_mailer is None or cached_email_cfg != cur_cfg:
+        cached_email_cfg = cur_cfg
+        cached_mailer = SmtpMailer(cur_cfg)
+      return cached_mailer
+
+    def _public_base_urls_provider() -> tuple[str, ...]:
+      return tuple(mgr.get().serve.web.public_base_urls)
 
     shared_reader = ExportBundleReader(
       xtream_dir,
@@ -252,7 +279,15 @@ class UnifiedServeServer:
         xtream_api_enabled=config.serve.xtream.enabled,
         player_base_url_provider=xtream_app.format_public_base_url,
         password_changer=mgr.change_account_web_password,
+        password_resetter=mgr.set_account_web_password,
         stream_creds_regenerator=mgr.regenerate_account_stream_credentials,
+        email_sender=email_sender,
+        email_sender_provider=None
+        if email_sender is not None
+        else _email_sender_provider,
+        public_base_urls=config.serve.web.public_base_urls,
+        public_base_urls_provider=_public_base_urls_provider,
+        server_protocol=config.serve.xtream.server_protocol,
       )
 
     return cls(

@@ -247,6 +247,7 @@ export const initGuideApp = () => {
         elSettingsBackdrop: document.getElementById("settings-backdrop"),
         elSettingsCloseBtn: document.getElementById("close-settings-btn"),
         elSettingsEmailBadge,
+        elSettingsTabs: document.getElementById("settings-tabs"),
         elSettingsBody: document.getElementById("settings-body"),
         elSettingsStatus: document.getElementById("settings-status"),
         elSettingsReloadBtn: document.getElementById("settings-reload-btn"),

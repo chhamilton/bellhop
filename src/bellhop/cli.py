@@ -1,10 +1,11 @@
-"""Streamlined CLI runner (`bellhop run`) configured via `config.yaml`."""
+"""CLI (`bellhop run`, `serve`, & `test-email`) configured via `config.yaml`."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import contextlib
+import html
 import logging
 import os
 import signal
@@ -26,6 +27,7 @@ from rich.table import Table
 
 from bellhop.common.api_contracts import EpgStatusDict
 from bellhop.common.http_utils import build_access_urls, redact_url_secrets
+from bellhop.common.mailer import MailerConfigError, MailerError, SmtpMailer
 from bellhop.config import AppConfig, ConfigManager, load_config
 from bellhop.pipeline.catalog_fetcher import CatalogFetchResult
 from bellhop.pipeline.lineup_loader import CableLineup
@@ -409,7 +411,7 @@ def _add_run_execution_args(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-  """Build the top-level `bellhop` (`run` / `serve`) CLI argument parser."""
+  """Build the `bellhop` (`run` / `serve` / `test-email`) CLI parser."""
   parser = argparse.ArgumentParser(
     prog="bellhop",
     description=(
@@ -445,6 +447,48 @@ def build_parser() -> argparse.ArgumentParser:
     help="Quiet output (suppress startup banner).",
   )
   serve_verbosity.add_argument(
+    "-v",
+    "--verbose",
+    action="store_true",
+    help="Enable verbose debug logging.",
+  )
+
+  p_email = subparsers.add_parser(
+    "test-email",
+    help="Verify SMTP TLS/App Password auth or send a test email.",
+  )
+  p_email.add_argument(
+    "recipient",
+    nargs="?",
+    default=None,
+    help=(
+      "Recipient email address (defaults to primary account email in "
+      "credentials.yaml)."
+    ),
+  )
+  p_email.add_argument(
+    "-c",
+    "--config",
+    type=Path,
+    default=None,
+    help="Path to declarative YAML config file (defaults to ./config.yaml).",
+  )
+  p_email.add_argument(
+    "--dry-run",
+    action="store_true",
+    help=(
+      "Verify SMTP connection, TLS, and App Password auth (NOOP) without "
+      "sending an email."
+    ),
+  )
+  email_verbosity = p_email.add_mutually_exclusive_group()
+  email_verbosity.add_argument(
+    "-q",
+    "--quiet",
+    action="store_true",
+    help="Quiet output (exit code only).",
+  )
+  email_verbosity.add_argument(
     "-v",
     "--verbose",
     action="store_true",
@@ -580,6 +624,15 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
         f"[bold]EPG Database:[/bold]       {epg_cache_label}\n"
       )
 
+    if cfg.email.enabled:
+      email_label = (
+        f"[bold green]Enabled[/bold green] "
+        f"({cfg.email.smtp_host}:{cfg.email.smtp_port} [{cfg.email.tls_mode}], "
+        f"from {cfg.email.effective_from_address})"
+      )
+    else:
+      email_label = "[yellow]Disabled[/yellow] (`email.enabled: false`)"
+
     console.print(
       Panel.fit(
         f"{url_lines}"
@@ -589,6 +642,7 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
         f"[cyan]{len(xt_snap.categories)}[/cyan] lineup categories\n"
         f"[bold]Web Guide UI:[/bold]       {web_label}\n"
         f"[bold]Xtream Codes API:[/bold]   {xtream_label}\n"
+        f"[bold]Outbound Email:[/bold]     {email_label}\n"
         f"{epg_lines}"
         f"[bold]Playlist Source:[/bold]    {server.xtream_app.store.xtream_dir} (auto hot-reloads)",
         title="Bellhop — Unified Web Guide & Xtream API Server (`bellhop serve`)",
@@ -749,13 +803,92 @@ async def _execute_cli_run(args: argparse.Namespace) -> int:
   return 0
 
 
+async def _execute_cli_test_email(args: argparse.Namespace) -> int:
+  log_level = (
+    logging.DEBUG
+    if args.verbose
+    else (logging.ERROR if args.quiet else logging.WARNING)
+  )
+  logging.basicConfig(
+    level=log_level, format="%(levelname)s %(name)s: %(message)s", force=True
+  )
+
+  cfg = load_config(args.config)
+  mailer = SmtpMailer(cfg.email)
+
+  if args.dry_run:
+    verified = await mailer.verify()
+    if not args.quiet:
+      auth_label = verified.authenticated_user or "(unauthenticated)"
+      console.print(
+        Panel.fit(
+          f"[bold]SMTP Server:[/bold]   {verified.smtp_host}:{verified.smtp_port}\n"
+          f"[bold]TLS Mode:[/bold]      {verified.tls_mode}\n"
+          f"[bold]Auth Username:[/bold] {auth_label}\n"
+          f"[bold]Sender (From):[/bold] {verified.from_address}\n"
+          f"[bold green]Result:[/bold green]        TLS + SMTP AUTH + NOOP ({verified.noop_code}) succeeded (no email sent)",
+          title="Bellhop — Outbound Email Verification (`bellhop test-email --dry-run`)",
+          border_style="green",
+        )
+      )
+    return 0
+
+  recipient = (args.recipient or "").strip() or (
+    cfg.accounts[0].email if cfg.accounts else ""
+  )
+  if not recipient:
+    raise MailerConfigError(
+      "No recipient email specified and no accounts configured."
+    )
+
+  subject = "Bellhop — Outbound Email Test"
+  text_body = (
+    "This is a test message from your Bellhop server confirming that "
+    "outbound SMTP email delivery is working.\n\n"
+    f"SMTP Host: {cfg.email.smtp_host}:{cfg.email.smtp_port} ({cfg.email.tls_mode})\n"
+    f"From: {cfg.email.effective_from_address}\n"
+  )
+  html_body = (
+    "<p>This is a test message from your <strong>Bellhop</strong> server "
+    "confirming that outbound SMTP email delivery is working.</p>"
+    f"<p><strong>SMTP Host:</strong> {html.escape(cfg.email.smtp_host)}:"
+    f"{cfg.email.smtp_port} ({html.escape(cfg.email.tls_mode)})<br>"
+    f"<strong>From:</strong> {html.escape(cfg.email.effective_from_address)}</p>"
+  )
+  sent = await mailer.send(
+    to_address=recipient,
+    subject=subject,
+    text_body=text_body,
+    html_body=html_body,
+  )
+  if not args.quiet:
+    console.print(
+      Panel.fit(
+        f"[bold]Recipient:[/bold]   {sent.to_address}\n"
+        f"[bold]From:[/bold]        {sent.from_header}\n"
+        f"[bold]SMTP Server:[/bold] {sent.smtp_host}:{sent.smtp_port}\n"
+        f"[bold]TLS Mode:[/bold]    {sent.tls_mode}\n"
+        f"[bold]Message-ID:[/bold]  {sent.message_id}",
+        title="Bellhop — Outbound Test Email Sent (`bellhop test-email`)",
+        border_style="green",
+      )
+    )
+  return 0
+
+
 def main(argv: list[str] | None = None) -> int:
   """Execute the `bellhop` CLI entry point and return an OS exit status code."""
   os.umask(0o077)
   raw_argv = list(sys.argv[1:] if argv is None else argv)
   # Default to `run` subcommand when invoked as bare `bellhop` or `bellhop
   # --skip validate`
-  if not raw_argv or raw_argv[0] not in {"run", "serve", "-h", "--help"}:
+  if not raw_argv or raw_argv[0] not in {
+    "run",
+    "serve",
+    "test-email",
+    "-h",
+    "--help",
+  }:
     raw_argv = ["run", *raw_argv]
 
   parser = build_parser()
@@ -764,8 +897,15 @@ def main(argv: list[str] | None = None) -> int:
   try:
     if args.command == "serve":
       return asyncio.run(_execute_cli_serve(args))
+    if args.command == "test-email":
+      return asyncio.run(_execute_cli_test_email(args))
     return asyncio.run(_execute_cli_run(args))
-  except (XtreamError, LineupRetrieverError, PipelineConfigError) as exc:
+  except (
+    XtreamError,
+    LineupRetrieverError,
+    PipelineConfigError,
+    MailerError,
+  ) as exc:
     console.print(f"[bold red]Error:[/bold red] {exc}")
     return 2
   except FileNotFoundError as exc:

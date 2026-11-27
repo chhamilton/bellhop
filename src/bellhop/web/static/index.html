@@ -236,6 +236,28 @@
         <button id="close-settings-btn" class="modal-close-btn" type="button" title="Close Account Drawer (Esc)" aria-label="Close account drawer">&times;</button>
       </div>
 
+      <div id="settings-tabs" class="settings-tabs" role="tablist" aria-label="Account sections">
+        <button
+          id="settings-tab-stream"
+          class="settings-tab active"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="settings-pane-stream"
+          data-settings-tab="stream"
+        >Stream &amp; Player Setup</button>
+        <button
+          id="settings-tab-password"
+          class="settings-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="settings-pane-password"
+          tabindex="-1"
+          data-settings-tab="password"
+        >Change Password</button>
+      </div>
+
       <div class="settings-form">
         <div id="settings-body" class="settings-body"></div>
 

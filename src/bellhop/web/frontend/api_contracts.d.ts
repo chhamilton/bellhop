@@ -137,3 +137,16 @@ interface PasswordChangeResponse {
   ok: boolean;
   email: string;
 }
+
+interface ForgotPasswordResponse {
+  ok: boolean;
+  message: string;
+}
+
+interface ResetPasswordResponse {
+  ok: boolean;
+  authenticated: boolean;
+  account_id: string;
+  email: string;
+  expires_at: number;
+}

@@ -25,6 +25,7 @@ web_server:
   port: 8080
   settle_ms: 180
   session_ttl_hours: 168.0
+  public_base_urls: []
   trust_proxy_headers: false
   trusted_proxy_ips:
     - "127.0.0.1"
@@ -85,3 +86,12 @@ pipeline:
 
   output:
     include_unmatched_comment: false
+
+email:
+  enabled: false
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  tls_mode: "starttls"
+  from_name: "Bellhop"
+  from_address: ""
+  timeout_sec: 15.0

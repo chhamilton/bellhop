@@ -15,6 +15,7 @@ type ThemeMode = "dark" | "light";
 type ViewMode = "cards" | "grid";
 type StreamMode = "mpegts" | "hls";
 type SettingsStatusKind = "" | "ok" | "error";
+type SettingsTabId = "stream" | "password";
 
 interface BellhopUiSettings extends JsonObject {
   theme: ThemeMode;

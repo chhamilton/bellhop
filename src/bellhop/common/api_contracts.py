@@ -175,6 +175,23 @@ class PasswordChangeResponseDict(TypedDict):
   email: str
 
 
+class ForgotPasswordResponseDict(TypedDict):
+  """Response payload for `POST /api/auth/forgot-password`."""
+
+  ok: bool
+  message: str
+
+
+class ResetPasswordResponseDict(TypedDict):
+  """Response payload for `POST /api/auth/reset-password`."""
+
+  ok: bool
+  authenticated: bool
+  account_id: str
+  email: str
+  expires_at: int
+
+
 # Ordered mapping from Python TypedDict class -> TypeScript interface name.
 API_CONTRACT_TYPES: tuple[tuple[type[Any], str], ...] = (
   (LineupMetaDict, "LineupMeta"),
@@ -190,6 +207,8 @@ API_CONTRACT_TYPES: tuple[tuple[type[Any], str], ...] = (
   (PlayerUrlsDict, "PlayerUrls"),
   (AccountInfoResponseDict, "AccountInfoResponse"),
   (PasswordChangeResponseDict, "PasswordChangeResponse"),
+  (ForgotPasswordResponseDict, "ForgotPasswordResponse"),
+  (ResetPasswordResponseDict, "ResetPasswordResponse"),
 )
 
 _TS_NAME_BY_CLASS: dict[type[Any], str] = dict(API_CONTRACT_TYPES)

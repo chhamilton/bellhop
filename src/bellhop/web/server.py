@@ -6,13 +6,21 @@ import asyncio
 import contextlib
 import hashlib
 import hmac
+import html as _html
 import json
 import logging
 import mimetypes
 import re
 import secrets
 import time
-from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from collections.abc import (
+  Awaitable,
+  Callable,
+  Collection,
+  Coroutine,
+  Mapping,
+  Sequence,
+)
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from pathlib import Path
@@ -22,16 +30,22 @@ from urllib.parse import parse_qs, quote, urljoin, urlsplit
 import aiohttp
 from aiohttp import web
 
-from bellhop.common.accounts import UserAccount, build_upstream_stream_url
+from bellhop.common.accounts import (
+  UserAccount,
+  build_upstream_stream_url,
+  validate_new_web_password,
+)
 from bellhop.common.api_contracts import (
   AccountInfoResponseDict,
   AuthStatusResponseDict,
   ChannelEpgResponseDict,
   EpgStatusDict,
+  ForgotPasswordResponseDict,
   HealthApiResponseDict,
   LineupApiResponseDict,
   PasswordChangeResponseDict,
   PlayerUrlsDict,
+  ResetPasswordResponseDict,
   TunerActiveInfoDict,
 )
 from bellhop.common.http_utils import (
@@ -49,7 +63,10 @@ from bellhop.common.http_utils import (
   format_advertised_base_url,
   is_trusted_proxy_peer,
   json_response,
+  match_public_base_url,
+  normalize_public_base_urls,
   open_upstream_url,
+  parse_origin_identity,
   parse_trusted_proxy_networks,
   redact_url_secrets,
   redirect_response,
@@ -62,16 +79,20 @@ from bellhop.common.http_utils import (
 from bellhop.common.http_utils import (
   resolve_bind_host as _resolve_bind_host,
 )
+from bellhop.common.mailer import EmailSenderProtocol
 from bellhop.epg.constants import EPG_RECENT_FLOOR_SEC
 from bellhop.epg.refresh import (
   EpgRefreshService,
   EpgRefreshStatus,
 )
 from bellhop.web.auth import (
+  GENERIC_PASSWORD_RESET_MESSAGE,
+  PASSWORD_RESET_TTL_SEC,
   SESSION_COOKIE_NAME,
   SessionInfo,
   WebAuthManager,
   render_login_page_html,
+  render_reset_password_page_html,
   sanitize_next_url,
 )
 from bellhop.web.store import (
@@ -104,6 +125,12 @@ HLS_MAX_ASSETS = 1024
 HLS_SESSION_LEASE_SEC = 20.0
 DEFAULT_WRITE_TIMEOUT_SEC = 10.0
 _PREEMPTED_HLS_TTL_SEC = 120.0
+RESET_REQUEST_IP_MAX = 5
+RESET_REQUEST_IP_WINDOW_SEC = 300.0
+RESET_ACCOUNT_COOLDOWN_SEC = 60.0
+RESET_ACCOUNT_WINDOW_MAX = 3
+RESET_ACCOUNT_WINDOW_SEC = 900.0
+_MAX_ACCOUNT_RESET_TRACKED = 1024
 _REQ_SESSION_KEY: web.RequestKey[SessionInfo] = web.RequestKey(
   "bellhop_session", SessionInfo
 )
@@ -469,7 +496,16 @@ class WebGuideApp:
     xtream_api_enabled: bool = True,
     player_base_url_provider: Callable[[Mapping[str, str]], str] | None = None,
     password_changer: Callable[[str, str, str], UserAccount] | None = None,
+    password_resetter: Callable[[str, str], UserAccount] | None = None,
     stream_creds_regenerator: Callable[[str], UserAccount] | None = None,
+    email_sender: EmailSenderProtocol | None = None,
+    email_sender_provider: Callable[[], EmailSenderProtocol | None]
+    | None = None,
+    public_base_urls: Sequence[str] = (),
+    public_base_urls_provider: Callable[[], Sequence[str]] | None = None,
+    server_protocol: str = "http",
+    password_reset_ttl_sec: int = PASSWORD_RESET_TTL_SEC,
+    reset_request_limiter: LoginRateLimiter | None = None,
     clock: Callable[[], float] = time.time,
     write_timeout_sec: float = DEFAULT_WRITE_TIMEOUT_SEC,
   ) -> None:
@@ -489,6 +525,14 @@ class WebGuideApp:
     self.login_limiter: LoginRateLimiter = login_limiter or LoginRateLimiter(
       clock=clock
     )
+    self.reset_request_limiter: LoginRateLimiter = (
+      reset_request_limiter
+      or LoginRateLimiter(
+        max_failures=RESET_REQUEST_IP_MAX,
+        window_sec=RESET_REQUEST_IP_WINDOW_SEC,
+        clock=clock,
+      )
+    )
     self.trust_proxy_headers = bool(trust_proxy_headers)
     self._trusted_proxy_networks: tuple[IpNetwork, ...] = (
       parse_trusted_proxy_networks(trusted_proxy_ips)
@@ -499,7 +543,21 @@ class WebGuideApp:
     self._xtream_api_enabled = bool(xtream_api_enabled)
     self._player_base_url_provider = player_base_url_provider
     self._password_changer = password_changer
+    self._password_resetter = password_resetter
     self._stream_creds_regenerator = stream_creds_regenerator
+    self._email_sender = email_sender
+    self._email_sender_provider = email_sender_provider
+    self._public_base_urls: tuple[str, ...] = normalize_public_base_urls(
+      public_base_urls
+    )
+    self._public_base_urls_provider = public_base_urls_provider
+    self._server_protocol = (
+      "https" if str(server_protocol).strip().lower() == "https" else "http"
+    )
+    self._password_reset_ttl_sec = max(1, int(password_reset_ttl_sec))
+    self._account_reset_sends: dict[str, list[float]] = {}
+    self._inflight_reset_jtis: set[str] = set()
+    self._bg_tasks: set[asyncio.Task[Any]] = set()
     self._session_factory: ClientSessionFactory = (
       session_factory or default_session_factory
     )
@@ -542,8 +600,23 @@ class WebGuideApp:
     if self.epg_refresher is not None:
       await self.epg_refresher.start()
 
+  async def wait_background_tasks(self) -> None:
+    """Await any pending async tasks (e.g., outbound password-reset email)."""
+    while self._bg_tasks:
+      pending = list(self._bg_tasks)
+      await asyncio.gather(*pending, return_exceptions=True)
+
+  def _spawn_background_task(
+    self, coro: Coroutine[Any, Any, Any]
+  ) -> asyncio.Task[Any]:
+    task = asyncio.create_task(coro)
+    self._bg_tasks.add(task)
+    task.add_done_callback(self._bg_tasks.discard)
+    return task
+
   async def shutdown(self) -> None:
-    """Stop EPG refresher, release all account tuners, and close HTTP client."""
+    """Stop EPG refresher, drain tasks, release tuners, and close client."""
+    await self.wait_background_tasks()
     if self.epg_refresher is not None:
       await self.epg_refresher.stop()
     for tuner in list(self._tuners.values()):
@@ -585,9 +658,12 @@ class WebGuideApp:
 
     # Public authentication endpoints.
     r.add_get("/login", self._handle_login_page)
+    r.add_get("/reset-password", self._handle_reset_password_page)
     r.add_get("/api/auth/status", self._handle_auth_status)
     r.add_post("/api/auth/login", self._handle_auth_login)
     r.add_post("/api/auth/logout", self._handle_auth_logout)
+    r.add_post("/api/auth/forgot-password", self._handle_auth_forgot_password)
+    r.add_post("/api/auth/reset-password", self._handle_auth_reset_password)
 
     # Authenticated UI, APIs & stream relay.
     r.add_get("/", protect(self._handle_index))
@@ -619,27 +695,45 @@ class WebGuideApp:
   # Authentication & CSRF helpers
   # ---------------------------------------------------------------------------
   @staticmethod
-  def _is_cross_site_mutation(request: web.Request) -> bool:
+  def _is_cross_site_mutation(
+    request: web.Request, *, allowed_origins: Sequence[str] = ()
+  ) -> bool:
     """Reject cross-site state-changing requests via fetch/origin headers.
 
-    Validates `Sec-Fetch-Site`, `Origin`, and `Referer` against same-origin.
+    Validates `Sec-Fetch-Site`, `Origin`, and `Referer` against same-origin
+    or the configured `public_base_urls` allowlist.
     """
     sec_site = (request.headers.get("Sec-Fetch-Site") or "").strip().lower()
     if sec_site and sec_site not in {"same-origin", "none"}:
       return True
+    allowed_ids = {
+      ident
+      for ident in (parse_origin_identity(u) for u in allowed_origins)
+      if ident is not None
+    }
     req_host = (request.headers.get("Host") or "").strip().lower()
     origin = (request.headers.get("Origin") or "").strip()
     if origin:
       if origin.lower() == "null":
         return True
       origin_host = urlsplit(origin).netloc.strip().lower()
-      return bool(not origin_host or not req_host or origin_host != req_host)
+      if origin_host and req_host and origin_host == req_host:
+        return False
+      origin_id = parse_origin_identity(origin)
+      return not (origin_id is not None and origin_id in allowed_ids)
     referer = (request.headers.get("Referer") or "").strip()
     if referer:
       ref_host = urlsplit(referer).netloc.strip().lower()
-      if not ref_host or not req_host or ref_host != req_host:
-        return True
+      if ref_host and req_host and ref_host == req_host:
+        return False
+      ref_id = parse_origin_identity(referer)
+      return not (ref_id is not None and ref_id in allowed_ids)
     return False
+
+  def _reject_cross_site(self, request: web.Request) -> bool:
+    return self._is_cross_site_mutation(
+      request, allowed_origins=self._configured_public_base_urls()
+    )
 
   def _is_https_request(self, request: web.Request) -> bool:
     """Return True when `request` used TLS or a trusted HTTPS proxy."""
@@ -710,7 +804,7 @@ class WebGuideApp:
         )
 
       if request.method in ("POST", "PUT", "DELETE", "PATCH") and (
-        self._is_cross_site_mutation(request)
+        self._reject_cross_site(request)
       ):
         return json_response(
           {"error": "Cross-site state mutations are forbidden"},
@@ -741,8 +835,173 @@ class WebGuideApp:
     return _wrapped
 
   # ---------------------------------------------------------------------------
-  # Public handlers
+  # Public & password-reset helpers/handlers
   # ---------------------------------------------------------------------------
+  def _active_email_sender(self) -> EmailSenderProtocol | None:
+    if self._email_sender_provider is not None:
+      return self._email_sender_provider()
+    return self._email_sender
+
+  @property
+  def password_reset_enabled(self) -> bool:
+    """Return `True` when both password persistence and email sender exist."""
+    return (
+      self._password_resetter is not None
+      and self._active_email_sender() is not None
+    )
+
+  def _configured_public_base_urls(self) -> tuple[str, ...]:
+    raw = (
+      self._public_base_urls_provider()
+      if self._public_base_urls_provider is not None
+      else self._public_base_urls
+    )
+    return normalize_public_base_urls(raw)
+
+  def _resolve_reset_base_url(self, request: web.Request) -> str:
+    allowed = self._configured_public_base_urls()
+    if allowed:
+      matched = match_public_base_url(
+        allowed,
+        origin_header=request.headers.get("Origin"),
+        host_header=request.headers.get("Host"),
+        forwarded_host_header=request.headers.get("X-Forwarded-Host"),
+        trust_forwarded_host=is_trusted_proxy_peer(
+          request.remote,
+          trust_proxy_headers=self.trust_proxy_headers,
+          trusted_networks=self._trusted_proxy_networks,
+        ),
+        is_https=self._is_https_request(request),
+      )
+      assert matched is not None
+      return matched
+
+    sock_host = ""
+    sock_port: int | None = None
+    transport = request.transport
+    if transport is not None:
+      sockname = transport.get_extra_info("sockname")
+      if isinstance(sockname, tuple) and len(sockname) >= 2:
+        sock_host = str(sockname[0]).strip("[]").split("%", 1)[0]
+        try:
+          sock_port = int(sockname[1])
+        except (TypeError, ValueError):
+          sock_port = None
+
+    if not sock_host or sock_host in ("0.0.0.0", "::"):
+      adv_host = detect_device_ip() or "127.0.0.1"
+    else:
+      adv_host = sock_host
+    host_fmt = f"[{adv_host}]" if ":" in adv_host else adv_host
+    proto = self._server_protocol
+    default_port = 443 if proto == "https" else 80
+    if sock_port is None:
+      sock_port = 443 if proto == "https" else 8080
+    port_suffix = "" if sock_port == default_port else f":{sock_port}"
+    return f"{proto}://{host_fmt}{port_suffix}"
+
+  def _allow_account_reset_send(self, account_id: str, now: float) -> bool:
+    cutoff = now - RESET_ACCOUNT_WINDOW_SEC
+    prev = self._account_reset_sends.get(account_id)
+    fresh = [ts for ts in prev if ts > cutoff] if prev else []
+    if fresh:
+      self._account_reset_sends[account_id] = fresh
+    else:
+      self._account_reset_sends.pop(account_id, None)
+
+    if fresh and (now - fresh[-1]) < RESET_ACCOUNT_COOLDOWN_SEC:
+      return False
+    if len(fresh) >= RESET_ACCOUNT_WINDOW_MAX:
+      return False
+
+    if (
+      account_id not in self._account_reset_sends
+      and len(self._account_reset_sends) >= _MAX_ACCOUNT_RESET_TRACKED
+    ):
+      for key in list(self._account_reset_sends):
+        kept = [ts for ts in self._account_reset_sends[key] if ts > cutoff]
+        if kept:
+          self._account_reset_sends[key] = kept
+        else:
+          self._account_reset_sends.pop(key, None)
+      if len(self._account_reset_sends) >= _MAX_ACCOUNT_RESET_TRACKED:
+        oldest = next(iter(self._account_reset_sends))
+        self._account_reset_sends.pop(oldest, None)
+
+    fresh.append(now)
+    self._account_reset_sends[account_id] = fresh
+    return True
+
+  async def _send_password_reset_email(
+    self,
+    *,
+    sender: EmailSenderProtocol,
+    to_address: str,
+    reset_url: str,
+    ttl_sec: int,
+  ) -> None:
+    if ttl_sec >= 60:
+      mins = max(1, round(ttl_sec / 60))
+      expiry_label = f"{mins} minute" if mins == 1 else f"{mins} minutes"
+    else:
+      expiry_label = (
+        f"{ttl_sec} second" if ttl_sec == 1 else f"{ttl_sec} seconds"
+      )
+    text_body = (
+      "You requested a password reset for your Bellhop account.\n\n"
+      f"Open the link below within {expiry_label} to choose a new password:\n"
+      f"{reset_url}\n\n"
+      "If you did not request this, you can safely ignore this email — your "
+      "current password will continue working unless you open the link and "
+      "submit a new password.\n"
+    )
+    esc_url = _html.escape(reset_url, quote=True)
+    html_body = (
+      "<p>You requested a password reset for your Bellhop account.</p>"
+      f'<p><a href="{esc_url}">Reset your Bellhop password</a> '
+      f"(expires in {expiry_label}).</p>"
+      "<p>If you did not request this, you can safely ignore this email "
+      "&mdash; your current password will keep working unless you open the "
+      "link and submit a new password.</p>"
+    )
+    try:
+      await sender.send(
+        to_address=to_address,
+        subject="Bellhop password reset",
+        text_body=text_body,
+        html_body=html_body,
+      )
+    except Exception as exc:
+      logger.warning(
+        "Password reset email delivery failed: %s",
+        redact_url_secrets(str(exc)),
+      )
+
+  @staticmethod
+  async def _read_json_object(
+    request: web.Request,
+  ) -> tuple[dict[str, Any] | None, web.Response | None]:
+    if "application/json" not in request.content_type.lower():
+      return None, json_response(
+        {"error": "Content-Type must be application/json."},
+        status=HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+      )
+    body = await request.read()
+    try:
+      payload = (
+        json.loads(body.decode("utf-8", errors="replace")) if body else {}
+      )
+    except json.JSONDecodeError as exc:
+      return None, json_response(
+        {"error": str(exc)}, status=HTTPStatus.BAD_REQUEST
+      )
+    if not isinstance(payload, dict):
+      return None, json_response(
+        {"error": "Request body must be a JSON object."},
+        status=HTTPStatus.BAD_REQUEST,
+      )
+    return payload, None
+
   def _public_asset_handler(self, asset_name: str) -> _Handler:
     async def _handler(_request: web.Request) -> web.StreamResponse:
       return self._static_file_response(self.static_dir / asset_name)
@@ -756,7 +1015,37 @@ class WebGuideApp:
     if self._session_for(request) is not None:
       return redirect_response(next_url)
     return bytes_response(
-      render_login_page_html(next_url=next_url), "text/html; charset=utf-8"
+      render_login_page_html(
+        next_url=next_url,
+        password_reset_enabled=self.password_reset_enabled,
+      ),
+      "text/html; charset=utf-8",
+    )
+
+  async def _handle_reset_password_page(
+    self, request: web.Request
+  ) -> web.StreamResponse:
+    no_ref = {"Referrer-Policy": "no-referrer"}
+    token = request.query.get("token", "").strip()
+    now_ts = int(self._clock())
+    info = (
+      self.auth.verify_password_reset_token(token, now_ts=now_ts)
+      if self.password_reset_enabled and token
+      else None
+    )
+    if info is None:
+      return bytes_response(
+        render_reset_password_page_html(
+          error_message="This password reset link is invalid or has expired."
+        ),
+        "text/html; charset=utf-8",
+        status=HTTPStatus.BAD_REQUEST,
+        headers=no_ref,
+      )
+    return bytes_response(
+      render_reset_password_page_html(token=token, email=info.email),
+      "text/html; charset=utf-8",
+      headers=no_ref,
     )
 
   async def _handle_auth_status(
@@ -775,7 +1064,7 @@ class WebGuideApp:
   async def _handle_auth_login(
     self, request: web.Request
   ) -> web.StreamResponse:
-    if self._is_cross_site_mutation(request):
+    if self._reject_cross_site(request):
       return json_response(
         {"authenticated": False, "error": "Cross-site login is forbidden"},
         status=HTTPStatus.FORBIDDEN,
@@ -821,7 +1110,11 @@ class WebGuideApp:
           headers=retry_hdr,
         )
       return bytes_response(
-        render_login_page_html(next_url=next_url, error_message=msg),
+        render_login_page_html(
+          next_url=next_url,
+          error_message=msg,
+          password_reset_enabled=self.password_reset_enabled,
+        ),
         "text/html; charset=utf-8",
         status=HTTPStatus.TOO_MANY_REQUESTS,
         headers=retry_hdr,
@@ -837,7 +1130,9 @@ class WebGuideApp:
         )
       return bytes_response(
         render_login_page_html(
-          next_url=next_url, error_message="Invalid email or password."
+          next_url=next_url,
+          error_message="Invalid email or password.",
+          password_reset_enabled=self.password_reset_enabled,
         ),
         "text/html; charset=utf-8",
         status=HTTPStatus.UNAUTHORIZED,
@@ -866,7 +1161,7 @@ class WebGuideApp:
   async def _handle_auth_logout(
     self, request: web.Request
   ) -> web.StreamResponse:
-    if self._is_cross_site_mutation(request):
+    if self._reject_cross_site(request):
       return json_response(
         {"error": "Cross-site logout is forbidden"},
         status=HTTPStatus.FORBIDDEN,
@@ -884,6 +1179,172 @@ class WebGuideApp:
       )
     }
     return json_response({"authenticated": False}, headers=extra)
+
+  async def _handle_auth_forgot_password(
+    self, request: web.Request
+  ) -> web.StreamResponse:
+    if self._reject_cross_site(request):
+      return json_response(
+        {"error": "Cross-site password reset is forbidden"},
+        status=HTTPStatus.FORBIDDEN,
+      )
+    if not self.password_reset_enabled:
+      return json_response(
+        {"error": "Password reset via email is not enabled."},
+        status=HTTPStatus.NOT_FOUND,
+      )
+    payload, err_resp = await self._read_json_object(request)
+    if err_resp is not None:
+      return err_resp
+    assert payload is not None
+    raw_email = payload.get("email")
+    if not isinstance(raw_email, str):
+      return json_response(
+        {"error": "`email` must be a string."}, status=HTTPStatus.BAD_REQUEST
+      )
+
+    client_ip = resolve_request_client_ip(
+      request,
+      trust_proxy_headers=self.trust_proxy_headers,
+      trusted_networks=self._trusted_proxy_networks,
+    )
+    now_mono = float(self._clock())
+    retry_after = self.reset_request_limiter.check(client_ip, now=now_mono)
+    if retry_after > 0:
+      return json_response(
+        {
+          "error": (
+            f"Too many password reset requests. Retry in {retry_after}s."
+          )
+        },
+        status=HTTPStatus.TOO_MANY_REQUESTS,
+        headers={"Retry-After": str(retry_after)},
+      )
+    self.reset_request_limiter.record_failure(client_ip, now=now_mono)
+
+    acct = self.auth.account_by_email(raw_email)
+    sender = self._active_email_sender()
+    if (
+      acct is not None
+      and sender is not None
+      and self._allow_account_reset_send(acct.account_id, now_mono)
+    ):
+      reset_tok, _info = self.auth.create_password_reset_token(
+        acct,
+        ttl_sec=self._password_reset_ttl_sec,
+        now_ts=int(now_mono),
+      )
+      base_url = self._resolve_reset_base_url(request).rstrip("/")
+      reset_url = f"{base_url}/reset-password?token={quote(reset_tok, safe='')}"
+      self._spawn_background_task(
+        self._send_password_reset_email(
+          sender=sender,
+          to_address=acct.email,
+          reset_url=reset_url,
+          ttl_sec=self._password_reset_ttl_sec,
+        )
+      )
+    else:
+      self.auth.run_dummy_reset_token_work()
+
+    res_payload: ForgotPasswordResponseDict = {
+      "ok": True,
+      "message": GENERIC_PASSWORD_RESET_MESSAGE,
+    }
+    return json_response(res_payload)
+
+  async def _handle_auth_reset_password(
+    self, request: web.Request
+  ) -> web.StreamResponse:
+    if self._reject_cross_site(request):
+      return json_response(
+        {"error": "Cross-site password reset is forbidden"},
+        status=HTTPStatus.FORBIDDEN,
+      )
+    if not self.password_reset_enabled:
+      return json_response(
+        {"error": "Password reset via email is not enabled."},
+        status=HTTPStatus.NOT_FOUND,
+      )
+    payload, err_resp = await self._read_json_object(request)
+    if err_resp is not None:
+      return err_resp
+    assert payload is not None
+    raw_token = payload.get("token")
+    new_pw = payload.get("new_password")
+    if not isinstance(raw_token, str) or not isinstance(new_pw, str):
+      return json_response(
+        {"error": "`token` and `new_password` must be strings."},
+        status=HTTPStatus.BAD_REQUEST,
+      )
+
+    client_ip = resolve_request_client_ip(
+      request,
+      trust_proxy_headers=self.trust_proxy_headers,
+      trusted_networks=self._trusted_proxy_networks,
+    )
+    rst_scope = "rst"
+    retry_after = self.login_limiter.check(client_ip, scope=rst_scope)
+    if retry_after > 0:
+      return json_response(
+        {
+          "error": (
+            f"Too many password reset attempts. Retry in {retry_after}s."
+          )
+        },
+        status=HTTPStatus.TOO_MANY_REQUESTS,
+        headers={"Retry-After": str(retry_after)},
+      )
+
+    clean_token = raw_token.strip()
+    now_ts = int(self._clock())
+    info = self.auth.verify_password_reset_token(clean_token, now_ts=now_ts)
+    if info is None or info.jti in self._inflight_reset_jtis:
+      self.login_limiter.record_failure(client_ip, scope=rst_scope)
+      return json_response(
+        {"error": "This password reset link is invalid or has expired."},
+        status=HTTPStatus.BAD_REQUEST,
+      )
+
+    try:
+      validate_new_web_password(new_pw)
+    except ValueError as exc:
+      return json_response({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    assert self._password_resetter is not None
+    self._inflight_reset_jtis.add(info.jti)
+    try:
+      updated = await asyncio.to_thread(
+        self._password_resetter, info.account_id, new_pw
+      )
+    except (ValueError, KeyError) as exc:
+      return json_response({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+    finally:
+      self._inflight_reset_jtis.discard(info.jti)
+
+    self.auth.revoke_reset_token_info(
+      info, raw_token=clean_token, now_ts=now_ts
+    )
+    self.login_limiter.record_success(client_ip, scope=rst_scope)
+    self.auth.revoke_session_from_headers(request.headers, now_ts=now_ts)
+    new_session_tok, new_session = self.auth.create_session_token(
+      updated, now_ts=now_ts
+    )
+    res_payload: ResetPasswordResponseDict = {
+      "ok": True,
+      "authenticated": True,
+      "account_id": new_session.account_id,
+      "email": new_session.email,
+      "expires_at": new_session.expires_at,
+    }
+    return json_response(
+      res_payload,
+      headers={
+        "Set-Cookie": self.auth.build_set_cookie_header(
+          new_session_tok, secure=self._is_https_request(request)
+        )
+      },
+    )
 
   # ---------------------------------------------------------------------------
   # Authenticated UI & API handlers
@@ -961,37 +1422,48 @@ class WebGuideApp:
         {"error": "Password updates are not enabled in this mode."},
         status=HTTPStatus.NOT_IMPLEMENTED,
       )
-    if "application/json" not in request.content_type.lower():
+    payload, err_resp = await self._read_json_object(request)
+    if err_resp is not None:
+      return err_resp
+    assert payload is not None
+    current_pw = payload.get("current_password")
+    new_pw = payload.get("new_password")
+    if not isinstance(current_pw, str) or not isinstance(new_pw, str):
       return json_response(
-        {"error": "Content-Type must be application/json."},
-        status=HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+        {"error": "`current_password` and `new_password` must be strings."},
+        status=HTTPStatus.BAD_REQUEST,
       )
-    body = await request.read()
-    try:
-      payload = (
-        json.loads(body.decode("utf-8", errors="replace")) if body else {}
-      )
-      if not isinstance(payload, dict):
-        raise ValueError("Request body must be a JSON object.")
-      current_pw = payload.get("current_password")
-      new_pw = payload.get("new_password")
-      if not isinstance(current_pw, str) or not isinstance(new_pw, str):
-        raise ValueError(
-          "`current_password` and `new_password` must be strings."
-        )
-    except (json.JSONDecodeError, ValueError) as exc:
-      return json_response({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
     session, _account = self._require_request_context(request)
+    client_ip = resolve_request_client_ip(
+      request,
+      trust_proxy_headers=self.trust_proxy_headers,
+      trusted_networks=self._trusted_proxy_networks,
+    )
+    pwd_scope = f"pwd:{session.account_id}"
+    retry_after = self.login_limiter.check(client_ip, scope=pwd_scope)
+    if retry_after > 0:
+      return json_response(
+        {
+          "error": (
+            f"Too many failed password attempts. Retry in {retry_after}s."
+          )
+        },
+        status=HTTPStatus.TOO_MANY_REQUESTS,
+        headers={"Retry-After": str(retry_after)},
+      )
+
     try:
       updated = await asyncio.to_thread(
         self._password_changer, session.account_id, current_pw, new_pw
       )
     except PermissionError as exc:
+      self.login_limiter.record_failure(client_ip, scope=pwd_scope)
       return json_response({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
     except (ValueError, KeyError) as exc:
       return json_response({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    self.login_limiter.record_success(client_ip, scope=pwd_scope)
     now_ts = int(self._clock())
     self.auth.revoke_session_from_headers(request.headers, now_ts=now_ts)
     new_tok, _ = self.auth.create_session_token(updated, now_ts=now_ts)

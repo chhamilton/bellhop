@@ -41,6 +41,7 @@ export class FakeElement {
     this.hidden = false;
     this.disabled = false;
     this.checked = false;
+    this.selected = false;
     this.value = "";
     this.muted = false;
     this.paused = true;
@@ -166,6 +167,7 @@ export class FakeElement {
     else if (key === "title") this.title = decodeHtmlAttr(val);
     else if (key === "type") this.type = val;
     else if (key === "name") this.name = val;
+    else if (key === "value") this.value = decodeHtmlAttr(val);
     else if (key === "src") this.src = decodeHtmlAttr(val);
     else if (key === "tabindex") this.tabIndex = Number(val);
     else if (key === "style") Object.assign(this.style, parseStyleString(val));
@@ -211,6 +213,10 @@ export class FakeElement {
     if (this.ownerDocument) {
       this.ownerDocument.activeElement = this;
     }
+  }
+
+  select() {
+    this.selected = true;
   }
 
   pause() {

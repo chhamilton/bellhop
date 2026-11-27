@@ -845,6 +845,11 @@ def test_wcag_aa_contrast_landmarks_and_keyboard_a11y_contracts() -> None:
     and 'aria-labelledby="settings-title"' in index_html
   )
   assert (
+    'id="settings-tabs"' in index_html
+    and 'role="tablist"' in index_html
+    and 'data-settings-tab="password"' in index_html
+  )
+  assert (
     'id="settings-status" class="settings-status" role="status"' in index_html
   )
   assert 'aria-label="Close player"' in index_html
@@ -856,6 +861,7 @@ def test_wcag_aa_contrast_landmarks_and_keyboard_a11y_contracts() -> None:
   assert "ArrowRight" in compiled_js and "ArrowLeft" in compiled_js
   assert "--tl-col-width" in compiled_js
   assert ".tl-ch-cell:focus-visible" in styles_css
+  assert ".settings-tab:focus-visible" in styles_css
 
   # 3. WCAG 2.1 AA contrast >= 4.5:1 for muted/empty category text in both
   #    themes

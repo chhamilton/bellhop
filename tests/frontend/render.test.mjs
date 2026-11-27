@@ -65,6 +65,10 @@ test("getVisibleFocusable, trapFocusInContainer, and restoreFocus enforce modal 
   hiddenWrap.appendChild(btnNestedHidden);
   const btnDisabled = doc.createElement("button");
   btnDisabled.disabled = true;
+  const btnUnfocusable = doc.createElement("button");
+  btnUnfocusable.setAttribute("tabindex", "-1");
+  const inputHiddenTab = doc.createElement("input");
+  inputHiddenTab.setAttribute("tabindex", "-1");
   const inputVisible = doc.createElement("input");
   inputVisible.id = "inp-visible";
   const btnLast = doc.createElement("button");
@@ -75,6 +79,8 @@ test("getVisibleFocusable, trapFocusInContainer, and restoreFocus enforce modal 
     btnHidden,
     hiddenWrap,
     btnDisabled,
+    btnUnfocusable,
+    inputHiddenTab,
     inputVisible,
     btnLast,
   ]) {

@@ -17,9 +17,9 @@ import {
 } from "./guide_logic.js";
 
 const FOCUSABLE_SELECTOR = [
-  "button:not([disabled])",
+  "button:not([disabled]):not([tabindex='-1'])",
   "[href]",
-  "input:not([disabled]):not([type='hidden'])",
+  "input:not([disabled]):not([type='hidden']):not([tabindex='-1'])",
   "select:not([disabled])",
   "textarea:not([disabled])",
   "video[controls]",

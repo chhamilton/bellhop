@@ -23,6 +23,8 @@ __all__ = [
   "SCRYPT_R",
   "STREAM_CREDENTIAL_ALPHABET",
   "STREAM_CREDENTIAL_LENGTH",
+  "MAX_WEB_PASSWORD_BYTES",
+  "MAX_WEB_PASSWORD_CHARS",
   "UserAccount",
   "build_upstream_stream_url",
   "build_upstream_xmltv_url",
@@ -35,6 +37,7 @@ __all__ = [
   "select_pipeline_accounts",
   "validate_accounts_collection",
   "validate_email",
+  "validate_new_web_password",
   "validate_stream_credential",
   "verify_dummy_web_password",
   "verify_web_password",
@@ -42,6 +45,9 @@ __all__ = [
 
 STREAM_CREDENTIAL_LENGTH: int = 8
 STREAM_CREDENTIAL_ALPHABET: str = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+MAX_WEB_PASSWORD_CHARS: int = 256
+MAX_WEB_PASSWORD_BYTES: int = 1024
 
 SCRYPT_N: int = 16384
 SCRYPT_R: int = 8
@@ -136,10 +142,32 @@ def generate_stream_credential(*, exclude: Collection[str] = ()) -> str:
       return token
 
 
+def validate_new_web_password(password: str) -> None:
+  """Enforce minimum and maximum character/byte limits on new web passwords."""
+  if not password or len(password.strip()) < 8:
+    raise ValueError(
+      "New password must contain at least 8 non-space characters."
+    )
+  if (
+    len(password) > MAX_WEB_PASSWORD_CHARS
+    or len(password.encode("utf-8")) > MAX_WEB_PASSWORD_BYTES
+  ):
+    raise ValueError(
+      f"New password must not exceed {MAX_WEB_PASSWORD_CHARS} characters."
+    )
+
+
 def hash_web_password(password: str) -> str:
   """Hash a plaintext Web Guide password with `hashlib.scrypt`."""
   if not password or not password.strip():
     raise ValueError("Web password must not be empty or whitespace-only.")
+  if (
+    len(password) > MAX_WEB_PASSWORD_CHARS
+    or len(password.encode("utf-8")) > MAX_WEB_PASSWORD_BYTES
+  ):
+    raise ValueError(
+      f"Web password must not exceed {MAX_WEB_PASSWORD_CHARS} characters."
+    )
   salt = secrets.token_bytes(_SCRYPT_SALT_BYTES)
   dk = hashlib.scrypt(
     password.encode("utf-8"),
@@ -188,7 +216,11 @@ def is_valid_password_hash(encoded: str) -> bool:
 
 def verify_web_password(password: str, encoded_hash: str) -> bool:
   """Verify `password` against a `scrypt$` envelope in constant time."""
-  if not password:
+  if (
+    not password
+    or len(password) > MAX_WEB_PASSWORD_CHARS
+    or len(password.encode("utf-8")) > MAX_WEB_PASSWORD_BYTES
+  ):
     return False
   parsed = _parse_scrypt_hash(encoded_hash)
   if parsed is None:
@@ -211,7 +243,8 @@ def verify_web_password(password: str, encoded_hash: str) -> bool:
 
 def verify_dummy_web_password(password: str) -> None:
   """Run constant-cost dummy scrypt work when no account matched an email."""
-  verify_web_password(password or "dummy", _DUMMY_SCRYPT_HASH)
+  bounded = (password or "dummy")[:MAX_WEB_PASSWORD_CHARS]
+  verify_web_password(bounded, _DUMMY_SCRYPT_HASH)
 
 
 def password_hash_version(encoded_hash: str) -> str:

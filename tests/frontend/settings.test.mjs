@@ -1,93 +1,73 @@
 /**
- * Unit tests for Bellhop's Account & Player Setup drawer (`settings.js`).
+ * Unit tests for Bellhop's two-tab Account & Player Setup drawer (`settings.js`).
  */
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { FakeDocument } from "./_dom_stub.mjs";
 import { createSettingsController } from "../../src/bellhop/web/static/settings.js";
 
-function makeFakeElement(tag = "div", id = "") {
-  const listeners = new Map();
-  const classes = new Set();
-  const attrs = new Map();
-  return {
-    tagName: tag.toUpperCase(),
-    id,
-    type: "text",
-    hidden: false,
-    disabled: false,
-    checked: false,
-    value: "",
-    textContent: "",
-    title: "",
-    innerHTML: "",
-    dataset: {},
-    style: { overflow: "" },
-    className: "",
-    selected: false,
-    classList: {
-      toggle(cls, force) {
-        if (force === undefined) {
-          if (classes.has(cls)) classes.delete(cls);
-          else classes.add(cls);
-        } else if (force) {
-          classes.add(cls);
-        } else {
-          classes.delete(cls);
-        }
-      },
-      contains(cls) {
-        return classes.has(cls);
-      },
-    },
-    setAttribute(k, v) {
-      attrs.set(k, String(v));
-    },
-    getAttribute(k) {
-      return attrs.get(k) ?? null;
-    },
-    addEventListener(type, fn) {
-      if (!listeners.has(type)) listeners.set(type, []);
-      listeners.get(type).push(fn);
-    },
-    async dispatch(type, ev = {}) {
-      const fns = listeners.get(type) || [];
-      for (const fn of fns) {
-        await fn({ preventDefault() {}, ...ev });
-      }
-    },
-    focus() {},
-    select() {
-      this.selected = true;
-    },
-    querySelectorAll() {
-      return [];
-    },
-  };
-}
-
-test("createSettingsController loads /api/account, toggles password, copies URLs, regenerates creds, and updates web password", async () => {
-  const elementsById = new Map();
-  const regInput = (id, value = "", type = "text") => {
-    const el = makeFakeElement("input", id);
-    el.value = value;
-    el.type = type;
-    elementsById.set(id, el);
-    return el;
-  };
-
-  const elPlayerOverlay = makeFakeElement("div");
+test("createSettingsController manages tabs, stream creds, and 3-box password change flow", async () => {
+  const doc = new FakeDocument();
+  const elPlayerOverlay = doc.createElement("div");
   elPlayerOverlay.hidden = true;
-  const elSettingsBtn = makeFakeElement("button");
+  const elSettingsBtn = doc.createElement("button");
+  elSettingsBtn.id = "settings-btn";
   elSettingsBtn.hidden = true;
-  const elSettingsOverlay = makeFakeElement("div");
+  const elSettingsOverlay = doc.createElement("div");
+  elSettingsOverlay.id = "settings-overlay";
   elSettingsOverlay.hidden = true;
-  const elSettingsBackdrop = makeFakeElement("div");
-  const elSettingsCloseBtn = makeFakeElement("button");
-  const elSettingsEmailBadge = makeFakeElement("span");
-  const elSettingsBody = makeFakeElement("div");
-  const elSettingsStatus = makeFakeElement("div");
-  const elSettingsReloadBtn = makeFakeElement("button");
+  const elSettingsBackdrop = doc.createElement("div");
+  elSettingsBackdrop.id = "settings-backdrop";
+  const elSettingsCloseBtn = doc.createElement("button");
+  elSettingsCloseBtn.id = "close-settings-btn";
+  const elSettingsEmailBadge = doc.createElement("span");
+  elSettingsEmailBadge.id = "settings-email-badge";
+  const elSettingsTabs = doc.createElement("div");
+  elSettingsTabs.id = "settings-tabs";
+  elSettingsTabs.setAttribute("role", "tablist");
+  elSettingsTabs.innerHTML = `
+    <button
+      id="settings-tab-stream"
+      class="settings-tab active"
+      type="button"
+      role="tab"
+      aria-selected="true"
+      aria-controls="settings-pane-stream"
+      data-settings-tab="stream"
+    >Stream &amp; Player Setup</button>
+    <button
+      id="settings-tab-password"
+      class="settings-tab"
+      type="button"
+      role="tab"
+      aria-selected="false"
+      aria-controls="settings-pane-password"
+      tabindex="-1"
+      data-settings-tab="password"
+    >Change Password</button>
+  `;
+  const elSettingsBody = doc.createElement("div");
+  elSettingsBody.id = "settings-body";
+  const elSettingsStatus = doc.createElement("div");
+  elSettingsStatus.id = "settings-status";
+  const elSettingsReloadBtn = doc.createElement("button");
+  elSettingsReloadBtn.id = "settings-reload-btn";
+
+  for (const el of [
+    elPlayerOverlay,
+    elSettingsBtn,
+    elSettingsOverlay,
+  ]) {
+    doc.body.appendChild(el);
+  }
+  elSettingsOverlay.appendChild(elSettingsBackdrop);
+  elSettingsOverlay.appendChild(elSettingsCloseBtn);
+  elSettingsOverlay.appendChild(elSettingsEmailBadge);
+  elSettingsOverlay.appendChild(elSettingsTabs);
+  elSettingsOverlay.appendChild(elSettingsBody);
+  elSettingsOverlay.appendChild(elSettingsStatus);
+  elSettingsOverlay.appendChild(elSettingsReloadBtn);
 
   const accountSample = {
     account_id: "alice",
@@ -102,22 +82,6 @@ test("createSettingsController loads /api/account, toggles password, copies URLs
     },
   };
 
-  const xtPassInput = regInput("acct-xt-pass", accountSample.xtream_password, "password");
-  const m3uInput = regInput("player-m3u-ts", accountSample.player_urls.m3u_url);
-  const pwdCurrent = regInput("pwd-current", "", "password");
-  const pwdNew = regInput("pwd-new", "", "password");
-  const pwdConfirm = regInput("pwd-confirm", "", "password");
-  const pwdSaveBtn = makeFakeElement("button", "pwd-save-btn");
-
-  const pwdForm = makeFakeElement("form", "password-change-form");
-  pwdForm.querySelector = (sel) => {
-    if (sel === "#pwd-current") return pwdCurrent;
-    if (sel === "#pwd-new") return pwdNew;
-    if (sel === "#pwd-confirm") return pwdConfirm;
-    if (sel === "#pwd-save-btn") return pwdSaveBtn;
-    return null;
-  };
-
   let confirmAnswer = true;
   let loginRedirects = 0;
   let copiedTexts = [];
@@ -130,12 +94,7 @@ test("createSettingsController loads /api/account, toggles password, copies URLs
   const origWin = globalThis.window;
   const origNav = globalThis.navigator;
   const origFetch = globalThis.fetch;
-  globalThis.HTMLElement = class FakeHTMLElement {};
-  globalThis.document = {
-    activeElement: null,
-    body: { style: { overflow: "" } },
-    getElementById: (id) => elementsById.get(id) ?? null,
-  };
+  globalThis.document = doc;
   globalThis.window = {
     setTimeout(fn) {
       fn();
@@ -198,6 +157,7 @@ test("createSettingsController loads /api/account, toggles password, copies URLs
       elSettingsBackdrop,
       elSettingsCloseBtn,
       elSettingsEmailBadge,
+      elSettingsTabs,
       elSettingsBody,
       elSettingsStatus,
       elSettingsReloadBtn,
@@ -213,61 +173,111 @@ test("createSettingsController loads /api/account, toggles password, copies URLs
 
     await ctrl.openSettingsDrawer();
     assert.equal(elSettingsOverlay.hidden, false);
-    assert.ok(elSettingsBody.innerHTML.includes("ab12cd34"));
-    assert.ok(elSettingsBody.innerHTML.includes("External Player Setup"));
+
+    const tabStream = doc.getElementById("settings-tab-stream");
+    const tabPassword = doc.getElementById("settings-tab-password");
+    let streamPane = doc.getElementById("settings-pane-stream");
+    let pwdPane = doc.getElementById("settings-pane-password");
+
+    // Stream tab active initially; Password tabpane & reload button states match.
+    assert.equal(tabStream.classList.contains("active"), true);
+    assert.equal(tabStream.getAttribute("aria-selected"), "true");
+    assert.equal(tabPassword.getAttribute("aria-selected"), "false");
+    assert.equal(tabPassword.getAttribute("tabindex"), "-1");
+    assert.equal(streamPane.hidden, false);
+    assert.equal(pwdPane.hidden, true);
+    assert.equal(elSettingsReloadBtn.hidden, false);
+
+    // Readonly Xtream credential inputs opt out of password manager autofill.
+    assert.equal(doc.getElementById("acct-xt-user").getAttribute("autocomplete"), "off");
+    assert.equal(doc.getElementById("acct-xt-pass").getAttribute("autocomplete"), "off");
+
+    // Password form isolates autofill username and renders 3 vertical password inputs.
+    const pwdUsername = doc.getElementById("pwd-username");
+    assert.equal(pwdUsername.value, "alice@example.com");
+    assert.equal(pwdUsername.getAttribute("autocomplete"), "username");
+    assert.equal(pwdUsername.getAttribute("tabindex"), "-1");
 
     const flush = () => new Promise((r) => setTimeout(r, 0));
 
     // Show / Hide Xtream password toggle
-    const toggleBtn = makeFakeElement("button", "toggle-xt-pass-btn");
-    toggleBtn.closest = () => toggleBtn;
+    const toggleBtn = doc.getElementById("toggle-xt-pass-btn");
     await elSettingsBody.dispatch("click", { target: toggleBtn });
-    assert.equal(xtPassInput.type, "text");
+    assert.equal(doc.getElementById("acct-xt-pass").type, "text");
     assert.equal(toggleBtn.textContent, "Hide");
     await elSettingsBody.dispatch("click", { target: toggleBtn });
-    assert.equal(xtPassInput.type, "password");
+    assert.equal(doc.getElementById("acct-xt-pass").type, "password");
     assert.equal(toggleBtn.textContent, "Show");
 
     // Copy button uses clipboard API cleanly
-    const copyBtn = makeFakeElement("button");
-    copyBtn.textContent = "Copy";
-    copyBtn.dataset.copyTarget = "player-m3u-ts";
-    copyBtn.closest = () => copyBtn;
+    const copyBtn = elSettingsBody.querySelector('[data-copy-target="player-m3u-ts"]');
     await elSettingsBody.dispatch("click", { target: copyBtn });
     await flush();
-    assert.deepEqual(copiedTexts, [m3uInput.value]);
+    assert.deepEqual(copiedTexts, [accountSample.player_urls.m3u_url]);
     assert.equal(elSettingsStatus.className, "settings-status is-ok");
 
     // Copy password input without clipboard API falls back to select() safely
     const origClip = globalThis.navigator.clipboard;
     globalThis.navigator.clipboard = undefined;
-    const copyPassBtn = makeFakeElement("button");
-    copyPassBtn.textContent = "Copy";
-    copyPassBtn.dataset.copyTarget = "acct-xt-pass";
-    copyPassBtn.closest = () => copyPassBtn;
+    const copyPassBtn = elSettingsBody.querySelector('[data-copy-target="acct-xt-pass"]');
     await elSettingsBody.dispatch("click", { target: copyPassBtn });
     await flush();
-    assert.equal(xtPassInput.selected, true);
-    assert.equal(xtPassInput.type, "password");
+    assert.equal(doc.getElementById("acct-xt-pass").selected, true);
+    assert.equal(doc.getElementById("acct-xt-pass").type, "password");
     globalThis.navigator.clipboard = origClip;
 
     // Cancelled regeneration does not hit POST
     confirmAnswer = false;
-    const regenBtn = makeFakeElement("button", "regen-stream-creds-btn");
-    regenBtn.closest = () => regenBtn;
-    await elSettingsBody.dispatch("click", { target: regenBtn });
+    await elSettingsBody.dispatch("click", {
+      target: doc.getElementById("regen-stream-creds-btn"),
+    });
     await flush();
     assert.equal(postedRegen, 0);
 
     // Confirmed regeneration calls POST and re-renders new credentials
     confirmAnswer = true;
-    await elSettingsBody.dispatch("click", { target: regenBtn });
+    await elSettingsBody.dispatch("click", {
+      target: doc.getElementById("regen-stream-creds-btn"),
+    });
     await flush();
     assert.equal(postedRegen, 1);
-    assert.ok(elSettingsBody.innerHTML.includes("zz99yy88"));
+    assert.equal(doc.getElementById("acct-xt-user").value, "zz99yy88");
     assert.equal(elSettingsStatus.className, "settings-status is-ok");
 
-    // Client-side password validation (empty / short / mismatch) aborts before fetch
+    // Click Password tab: clears transient status, toggles panes & hides Refresh btn.
+    await elSettingsTabs.dispatch("click", { target: tabPassword });
+    streamPane = doc.getElementById("settings-pane-stream");
+    pwdPane = doc.getElementById("settings-pane-password");
+    assert.equal(tabPassword.classList.contains("active"), true);
+    assert.equal(tabPassword.getAttribute("aria-selected"), "true");
+    assert.equal(tabPassword.getAttribute("tabindex"), "0");
+    assert.equal(tabStream.getAttribute("aria-selected"), "false");
+    assert.equal(tabStream.getAttribute("tabindex"), "-1");
+    assert.equal(streamPane.hidden, true);
+    assert.equal(pwdPane.hidden, false);
+    assert.equal(elSettingsReloadBtn.hidden, true);
+    assert.equal(elSettingsStatus.textContent, "");
+
+    // ArrowLeft/Home/End/ArrowRight keyboard tab navigation + unrelated key no-op
+    await elSettingsTabs.dispatch("keydown", { key: "Enter" });
+    assert.equal(tabPassword.classList.contains("active"), true);
+    await elSettingsTabs.dispatch("keydown", { key: "ArrowLeft" });
+    assert.equal(tabStream.classList.contains("active"), true);
+    assert.equal(doc.activeElement, tabStream);
+    await elSettingsTabs.dispatch("keydown", { key: "End" });
+    assert.equal(tabPassword.classList.contains("active"), true);
+    assert.equal(doc.activeElement, tabPassword);
+    await elSettingsTabs.dispatch("keydown", { key: "Home" });
+    assert.equal(tabStream.classList.contains("active"), true);
+    await elSettingsTabs.dispatch("keydown", { key: "ArrowRight" });
+    assert.equal(tabPassword.classList.contains("active"), true);
+
+    // Client-side password validation: empty, short, >256 chars, mismatch, unchanged
+    const pwdForm = doc.getElementById("password-change-form");
+    const pwdCurrent = doc.getElementById("pwd-current");
+    const pwdNew = doc.getElementById("pwd-new");
+    const pwdConfirm = doc.getElementById("pwd-confirm");
+
     pwdCurrent.value = "";
     pwdNew.value = "";
     pwdConfirm.value = "";
@@ -284,6 +294,13 @@ test("createSettingsController loads /api/account, toggles password, copies URLs
     assert.equal(postedPasswordBodies.length, 0);
     assert.equal(elSettingsStatus.className, "settings-status is-error");
 
+    pwdNew.value = "a".repeat(257);
+    pwdConfirm.value = "a".repeat(257);
+    await elSettingsBody.dispatch("submit", { target: pwdForm });
+    await flush();
+    assert.equal(postedPasswordBodies.length, 0);
+    assert.match(elSettingsStatus.textContent, /256/);
+
     pwdNew.value = "newpassword1";
     pwdConfirm.value = "mismatch123";
     await elSettingsBody.dispatch("submit", { target: pwdForm });
@@ -291,7 +308,15 @@ test("createSettingsController loads /api/account, toggles password, copies URLs
     assert.equal(postedPasswordBodies.length, 0);
     assert.equal(elSettingsStatus.className, "settings-status is-error");
 
-    // Valid password update submits POST and clears inputs
+    pwdNew.value = "oldpassword1";
+    pwdConfirm.value = "oldpassword1";
+    await elSettingsBody.dispatch("submit", { target: pwdForm });
+    await flush();
+    assert.equal(postedPasswordBodies.length, 0);
+    assert.match(elSettingsStatus.textContent, /different/);
+
+    // Valid 3-box password update submits POST and clears inputs
+    pwdNew.value = "newpassword1";
     pwdConfirm.value = "newpassword1";
     await elSettingsBody.dispatch("submit", { target: pwdForm });
     await flush();
@@ -305,7 +330,7 @@ test("createSettingsController loads /api/account, toggles password, copies URLs
     assert.equal(pwdConfirm.value, "");
     assert.equal(elSettingsStatus.className, "settings-status is-ok");
 
-    // Server 403 on wrong password surfaces API error message
+    // Server 403 & 429 surface API error message cleanly
     pwdCurrent.value = "wrongpass";
     pwdNew.value = "anotherpass1";
     pwdConfirm.value = "anotherpass1";
@@ -316,21 +341,31 @@ test("createSettingsController loads /api/account, toggles password, copies URLs
     assert.equal(elSettingsStatus.textContent, "Current password is incorrect.");
     assert.equal(elSettingsStatus.className, "settings-status is-error");
 
+    nextPasswordStatus = 429;
+    nextPasswordBody = {
+      error: "Too many failed password attempts. Retry in 60s.",
+    };
+    await elSettingsBody.dispatch("submit", { target: pwdForm });
+    await flush();
+    assert.match(elSettingsStatus.textContent, /Too many failed/);
+
     // Session expiry (`401`) on password change triggers redirectToLogin()
-    pwdCurrent.value = "newpassword1";
-    pwdNew.value = "anotherpass1";
-    pwdConfirm.value = "anotherpass1";
     nextPasswordStatus = 401;
     await elSettingsBody.dispatch("submit", { target: pwdForm });
     await flush();
     assert.equal(loginRedirects, 1);
 
-    // Reload button & close/backdrop actions work cleanly
+    // Clicking Stream tab restores stream pane and reload button; opening with
+    // explicit "password" initialTab selects Change Password immediately.
+    await elSettingsTabs.dispatch("click", { target: tabStream });
+    assert.equal(elSettingsReloadBtn.hidden, false);
     await elSettingsReloadBtn.dispatch("click");
     await flush();
     await elSettingsBackdrop.dispatch("click");
     assert.equal(elSettingsOverlay.hidden, true);
-    await ctrl.openSettingsDrawer();
+    await ctrl.openSettingsDrawer("password");
+    assert.equal(doc.getElementById("settings-pane-password").hidden, false);
+    assert.equal(elSettingsReloadBtn.hidden, true);
     await elSettingsCloseBtn.dispatch("click");
     assert.equal(elSettingsOverlay.hidden, true);
   } finally {
@@ -347,21 +382,21 @@ test("createSettingsController loads /api/account, toggles password, copies URLs
 });
 
 test("createSettingsController renders disabled notice when xtream_server_url is empty", async () => {
-  const elPlayerOverlay = makeFakeElement("div");
+  const doc = new FakeDocument();
+  const elPlayerOverlay = doc.createElement("div");
   elPlayerOverlay.hidden = true;
-  const elSettingsOverlay = makeFakeElement("div");
+  const elSettingsOverlay = doc.createElement("div");
   elSettingsOverlay.hidden = true;
-  const elSettingsBody = makeFakeElement("div");
-  const elSettingsStatus = makeFakeElement("div");
+  const elSettingsBody = doc.createElement("div");
+  const elSettingsStatus = doc.createElement("div");
+  elSettingsOverlay.appendChild(elSettingsBody);
+  elSettingsOverlay.appendChild(elSettingsStatus);
+  doc.body.appendChild(elPlayerOverlay);
+  doc.body.appendChild(elSettingsOverlay);
 
   const origDoc = globalThis.document;
   const origFetch = globalThis.fetch;
-  globalThis.HTMLElement = class FakeHTMLElement {};
-  globalThis.document = {
-    activeElement: null,
-    body: { style: { overflow: "" } },
-    getElementById: () => null,
-  };
+  globalThis.document = doc;
   globalThis.fetch = async () => ({
     ok: true,
     status: 200,
@@ -382,7 +417,7 @@ test("createSettingsController renders disabled notice when xtream_server_url is
   try {
     const ctrl = createSettingsController({
       elPlayerOverlay,
-      elSettingsBtn: makeFakeElement("button"),
+      elSettingsBtn: doc.createElement("button"),
       elSettingsOverlay,
       elSettingsBackdrop: null,
       elSettingsCloseBtn: null,
@@ -393,7 +428,7 @@ test("createSettingsController renders disabled notice when xtream_server_url is
       redirectToLogin: () => {},
     });
     await ctrl.openSettingsDrawer();
-    assert.ok(elSettingsBody.innerHTML.includes("player-xtream-disabled-note"));
+    assert.ok(doc.getElementById("player-xtream-disabled-note") !== null);
   } finally {
     globalThis.document = origDoc;
     globalThis.fetch = origFetch;

@@ -12,6 +12,7 @@ export interface SettingsControllerDeps {
   elSettingsBackdrop: HTMLElement | null;
   elSettingsCloseBtn: HTMLElement | null;
   elSettingsEmailBadge: HTMLElement | null;
+  elSettingsTabs?: HTMLElement | null;
   elSettingsBody: HTMLElement | null;
   elSettingsStatus: HTMLElement | null;
   elSettingsReloadBtn: HTMLElement | null;
@@ -20,10 +21,14 @@ export interface SettingsControllerDeps {
 }
 
 export interface SettingsController {
-  openSettingsDrawer(): Promise<void>;
+  openSettingsDrawer(initialTab?: SettingsTabId): Promise<void>;
   closeSettingsDrawer(): void;
   checkSettingsAvailability(): Promise<void>;
+  setActiveTab(tab: SettingsTabId): void;
 }
+
+const MAX_PASSWORD_CHARS = 256;
+const MAX_PASSWORD_BYTES = 1024;
 
 const errorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
@@ -44,6 +49,7 @@ export const createSettingsController = (
     elSettingsBackdrop,
     elSettingsCloseBtn,
     elSettingsEmailBadge,
+    elSettingsTabs = null,
     elSettingsBody,
     elSettingsStatus,
     elSettingsReloadBtn,
@@ -53,6 +59,7 @@ export const createSettingsController = (
 
   let lastFocusedBeforeSettings: HTMLElement | null = null;
   let revealPassword = false;
+  let activeTab: SettingsTabId = "stream";
 
   const setSettingsStatus = (
     msg: string,
@@ -61,6 +68,49 @@ export const createSettingsController = (
     if (!elSettingsStatus) return;
     elSettingsStatus.textContent = msg;
     elSettingsStatus.className = `settings-status${kind ? ` is-${kind}` : ""}`;
+  };
+
+  const syncTabDom = (): void => {
+    if (elSettingsTabs) {
+      elSettingsTabs
+        .querySelectorAll<HTMLButtonElement>("[data-settings-tab]")
+        .forEach((btn) => {
+          const isMatch = btn.dataset["settingsTab"] === activeTab;
+          btn.classList.toggle("active", isMatch);
+          btn.setAttribute("aria-selected", isMatch ? "true" : "false");
+          btn.setAttribute("tabindex", isMatch ? "0" : "-1");
+        });
+    }
+    if (elSettingsBody) {
+      const streamPane = elSettingsBody.querySelector<HTMLElement>(
+        "#settings-pane-stream",
+      );
+      const pwdPane = elSettingsBody.querySelector<HTMLElement>(
+        "#settings-pane-password",
+      );
+      if (streamPane) streamPane.hidden = activeTab !== "stream";
+      if (pwdPane) pwdPane.hidden = activeTab !== "password";
+    }
+    if (elSettingsReloadBtn) {
+      elSettingsReloadBtn.hidden = activeTab === "password";
+    }
+  };
+
+  const setActiveTab = (
+    nextTab: SettingsTabId,
+    opts: { focusTab?: boolean; clearStatus?: boolean } = {},
+  ): void => {
+    activeTab = nextTab === "password" ? "password" : "stream";
+    syncTabDom();
+    if (opts.focusTab && elSettingsTabs) {
+      const targetBtn = elSettingsTabs.querySelector<HTMLButtonElement>(
+        `[data-settings-tab="${activeTab}"]`,
+      );
+      targetBtn?.focus();
+    }
+    if (opts.clearStatus !== false) {
+      setSettingsStatus("");
+    }
   };
 
   const renderCopyField = (
@@ -82,7 +132,7 @@ export const createSettingsController = (
     <div class="settings-field${span2 ? " span-2" : ""}">
       <label for="${id}">${escapeHtml(label)}</label>
       <div class="copy-row">
-        <input id="${id}" type="${inputType}" value="${escapeHtml(value)}" readonly />
+        <input id="${id}" type="${inputType}" value="${escapeHtml(value)}" autocomplete="off" spellcheck="false" readonly />
         ${
           toggleReveal
             ? `<button id="toggle-xt-pass-btn" class="modal-btn" type="button">${inputType === "password" ? "Show" : "Hide"}</button>`
@@ -117,48 +167,64 @@ export const createSettingsController = (
       `;
 
     elSettingsBody.innerHTML = `
-      <div class="settings-group">
-        <h3>Bellhop Xtream Stream Credentials</h3>
-        <div class="settings-grid">
-          ${renderCopyField("acct-xt-user", "Xtream Username", info.xtream_username)}
-          ${renderCopyField("acct-xt-pass", "Xtream Password", info.xtream_password, {
-            inputType: revealPassword ? "text" : "password",
-            toggleReveal: true,
-          })}
+      <section id="settings-pane-stream" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-stream"${activeTab === "stream" ? "" : " hidden"}>
+        <div class="settings-group">
+          <h3>Bellhop Xtream Stream Credentials</h3>
+          <div class="settings-grid">
+            ${renderCopyField("acct-xt-user", "Xtream Username", info.xtream_username)}
+            ${renderCopyField("acct-xt-pass", "Xtream Password", info.xtream_password, {
+              inputType: revealPassword ? "text" : "password",
+              toggleReveal: true,
+            })}
+          </div>
+          <div class="settings-actions-row">
+            <span class="field-hint">Used by external IPTV players (TiviMate, VLC, IPTV Smarters) on your dedicated tuner.</span>
+            <button id="regen-stream-creds-btn" class="modal-btn" type="button">Regenerate Stream Credentials</button>
+          </div>
         </div>
-        <div class="settings-actions-row">
-          <span class="field-hint">Used by external IPTV players (TiviMate, VLC, IPTV Smarters) on your dedicated tuner.</span>
-          <button id="regen-stream-creds-btn" class="modal-btn" type="button">Regenerate Stream Credentials</button>
-        </div>
-      </div>
 
-      <div class="settings-group">
-        <h3>External Player Setup</h3>
-        ${urlsSection}
-      </div>
+        <div class="settings-group">
+          <h3>External Player Setup</h3>
+          ${urlsSection}
+        </div>
+      </section>
 
-      <form id="password-change-form" class="settings-group">
-        <h3>Change Web Password</h3>
-        <div class="settings-grid">
-          <div class="settings-field span-2">
-            <label for="pwd-current">Current Password</label>
-            <input id="pwd-current" type="password" autocomplete="current-password" required />
+      <section id="settings-pane-password" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-password"${activeTab === "password" ? "" : " hidden"}>
+        <form id="password-change-form" class="settings-group">
+          <h3>Change Web Password</h3>
+          <input
+            id="pwd-username"
+            class="sr-only"
+            type="email"
+            name="username"
+            value="${escapeHtml(info.email)}"
+            autocomplete="username"
+            readonly
+            tabindex="-1"
+            aria-hidden="true"
+          />
+          <div class="settings-stack">
+            <div class="settings-field">
+              <label for="pwd-current">Current Password</label>
+              <input id="pwd-current" type="password" autocomplete="current-password" maxlength="${MAX_PASSWORD_CHARS}" required />
+            </div>
+            <div class="settings-field">
+              <label for="pwd-new">New Password</label>
+              <input id="pwd-new" type="password" autocomplete="new-password" minlength="8" maxlength="${MAX_PASSWORD_CHARS}" required />
+            </div>
+            <div class="settings-field">
+              <label for="pwd-confirm">Confirm New Password</label>
+              <input id="pwd-confirm" type="password" autocomplete="new-password" minlength="8" maxlength="${MAX_PASSWORD_CHARS}" required />
+            </div>
           </div>
-          <div class="settings-field">
-            <label for="pwd-new">New Password</label>
-            <input id="pwd-new" type="password" autocomplete="new-password" minlength="8" required />
+          <div class="settings-actions-row">
+            <span class="field-hint">8–${MAX_PASSWORD_CHARS} characters. Other signed-in web browsers will be signed out.</span>
+            <button id="pwd-save-btn" class="modal-btn primary-btn" type="submit">Update Password</button>
           </div>
-          <div class="settings-field">
-            <label for="pwd-confirm">Confirm New Password</label>
-            <input id="pwd-confirm" type="password" autocomplete="new-password" minlength="8" required />
-          </div>
-        </div>
-        <div class="settings-actions-row">
-          <span class="field-hint">Minimum 8 non-space characters.</span>
-          <button id="pwd-save-btn" class="modal-btn primary-btn" type="submit">Update Password</button>
-        </div>
-      </form>
+        </form>
+      </section>
     `;
+    syncTabDom();
   };
 
   const loadAccountIntoDrawer = async (): Promise<void> => {
@@ -183,9 +249,13 @@ export const createSettingsController = (
     }
   };
 
-  const openSettingsDrawer = async (): Promise<void> => {
+  const openSettingsDrawer = async (
+    initialTab: SettingsTabId = "stream",
+  ): Promise<void> => {
     if (!elSettingsOverlay) return;
     lastFocusedBeforeSettings = document.activeElement as HTMLElement | null;
+    activeTab = initialTab === "password" ? "password" : "stream";
+    syncTabDom();
     elSettingsOverlay.hidden = false;
     elSettingsCloseBtn?.focus();
     await loadAccountIntoDrawer();
@@ -304,8 +374,25 @@ export const createSettingsController = (
       );
       return;
     }
+    if (
+      newPassword.length > MAX_PASSWORD_CHARS ||
+      new TextEncoder().encode(newPassword).length > MAX_PASSWORD_BYTES
+    ) {
+      setSettingsStatus(
+        `New password must not exceed ${MAX_PASSWORD_CHARS} characters.`,
+        "error",
+      );
+      return;
+    }
     if (newPassword !== confirmPassword) {
       setSettingsStatus("New password and confirmation do not match.", "error");
+      return;
+    }
+    if (newPassword === currentPassword) {
+      setSettingsStatus(
+        "New password must be different from your current password.",
+        "error",
+      );
       return;
     }
 
@@ -364,6 +451,38 @@ export const createSettingsController = (
       void loadAccountIntoDrawer();
     });
   }
+  if (elSettingsTabs) {
+    elSettingsTabs.addEventListener("click", (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      const btn = target
+        ? target.closest<HTMLButtonElement>("[data-settings-tab]")
+        : null;
+      const tab = btn?.dataset["settingsTab"];
+      if (tab === "stream" || tab === "password") {
+        setActiveTab(tab);
+      }
+    });
+    elSettingsTabs.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (
+        e.key !== "ArrowRight" &&
+        e.key !== "ArrowLeft" &&
+        e.key !== "Home" &&
+        e.key !== "End"
+      ) {
+        return;
+      }
+      e.preventDefault();
+      if (e.key === "Home") {
+        setActiveTab("stream", { focusTab: true });
+      } else if (e.key === "End") {
+        setActiveTab("password", { focusTab: true });
+      } else {
+        setActiveTab(activeTab === "stream" ? "password" : "stream", {
+          focusTab: true,
+        });
+      }
+    });
+  }
   if (elSettingsBody) {
     elSettingsBody.addEventListener("click", (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
@@ -402,5 +521,6 @@ export const createSettingsController = (
     openSettingsDrawer,
     closeSettingsDrawer,
     checkSettingsAvailability,
+    setActiveTab,
   };
 };

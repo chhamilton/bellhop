@@ -659,9 +659,13 @@ upstream_xtream:
     await app_ro.shutdown()
 
   # 2. Full ConfigManager-backed self-service account lifecycle
+  from bellhop.common.http_utils import LoginRateLimiter
+
+  limiter = LoginRateLimiter(max_failures=2, window_sec=60.0)
   app = WebGuideApp(
     LineupGuideStore(xt_dir),
     auth=auth,
+    login_limiter=limiter,
     upstream_server_url="http://upstream.example",
     player_base_url_provider=lambda _hdrs: (
       f"http://{cfg.serve.public_host or 'bellhop.lan'}:{cfg.serve.web_port}"
@@ -673,12 +677,21 @@ upstream_xtream:
   await app.startup()
   runner, port = await start_site(app.build_app(), "127.0.0.1", 0)
   try:
-    async with new_test_session(f"http://127.0.0.1:{port}") as client:
+    async with (
+      new_test_session(f"http://127.0.0.1:{port}") as client,
+      new_test_session(f"http://127.0.0.1:{port}") as other_client,
+    ):
       async with client.post(
         "/api/auth/login",
         json={"email": "primary@example.com", "password": "initial_secret_pw"},
       ) as login_r:
         assert login_r.status == 200
+
+      async with other_client.post(
+        "/api/auth/login",
+        json={"email": "primary@example.com", "password": "initial_secret_pw"},
+      ) as other_login_r:
+        assert other_login_r.status == 200
 
       async with client.get("/api/config") as old_cfg:
         assert old_cfg.status == 404
@@ -697,17 +710,31 @@ upstream_xtream:
         assert "initxt01" in info["player_urls"]["m3u_url"]
         assert "initxtpw" in info["player_urls"]["xmltv_url"]
 
-      # Wrong current password -> 403
+      # Wrong current password -> 403 twice, then 429 with Retry-After
+      for _ in range(2):
+        async with client.post(
+          "/api/account/password",
+          json={
+            "current_password": "wrong_current_pw",
+            "new_password": "new_strong_password_2",
+          },
+        ) as wrong_pw:
+          assert wrong_pw.status == 403
+
       async with client.post(
         "/api/account/password",
         json={
-          "current_password": "wrong_current_pw",
+          "current_password": "initial_secret_pw",
           "new_password": "new_strong_password_2",
         },
-      ) as wrong_pw:
-        assert wrong_pw.status == 403
+      ) as throttled_pw:
+        assert throttled_pw.status == 429
+        assert int(throttled_pw.headers.get("Retry-After", "0")) >= 1
 
-      # Too-short new password -> 400
+      # Reset limiter bucket after testing 429 behavior
+      limiter.record_success("127.0.0.1", scope="pwd:primary")
+
+      # Too-short, oversized, or unchanged new password -> 400
       async with client.post(
         "/api/account/password",
         json={
@@ -717,7 +744,25 @@ upstream_xtream:
       ) as short_pw:
         assert short_pw.status == 400
 
-      # Valid password change rotates session cookie and persists scrypt hash
+      async with client.post(
+        "/api/account/password",
+        json={
+          "current_password": "initial_secret_pw",
+          "new_password": "x" * 300,
+        },
+      ) as long_pw:
+        assert long_pw.status == 400
+
+      async with client.post(
+        "/api/account/password",
+        json={
+          "current_password": "initial_secret_pw",
+          "new_password": "initial_secret_pw",
+        },
+      ) as same_pw:
+        assert same_pw.status == 400
+
+      # Valid password change rotates current cookie & revokes other_client
       async with client.post(
         "/api/account/password",
         json={
@@ -730,6 +775,12 @@ upstream_xtream:
         assert pw_body["ok"] is True
         assert pw_body["email"] == "primary@example.com"
         assert "bellhop_session=" in ok_pw.headers.get("Set-Cookie", "")
+
+      async with client.get("/api/account") as active_after:
+        assert active_after.status == 200
+
+      async with other_client.get("/api/account") as revoked_other:
+        assert revoked_other.status == 401
 
       # Regenerate Bellhop Xtream credentials (8-char [a-z0-9])
       async with client.post(

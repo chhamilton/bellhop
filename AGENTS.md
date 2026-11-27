@@ -1,13 +1,13 @@
 # AGENTS.md — Bellhop Workspace Guide
 
 ## Project Overview
-This repository implements **Bellhop**, installed via a single `bellhop` CLI (`bellhop run` & `bellhop serve`) from `pyproject.toml` and organized into layered domain subpackages under `src/bellhop/`:
-- **`bellhop.common` (`src/bellhop/common/`)** — Foundational owner-only file permissions (`file_utils.py`), shared multi-user account/scrypt helpers (`accounts.py`), shared HTTP `TypedDict` contracts & TypeScript codegen (`api_contracts.py`), `aiohttp` factories/middleware/rate-limiting (`http_utils.py`), and cached `ExportBundleReader` (`export_bundle.py`).
+This repository implements **Bellhop**, installed via a single `bellhop` CLI (`bellhop run`, `bellhop serve`, & `bellhop test-email`) from `pyproject.toml` and organized into layered domain subpackages under `src/bellhop/`:
+- **`bellhop.common` (`src/bellhop/common/`)** — Foundational owner-only file permissions (`file_utils.py`), shared multi-user account/scrypt helpers (`accounts.py`), stdlib SMTP outbound mailer (`mailer.py`), shared HTTP `TypedDict` contracts & TypeScript codegen (`api_contracts.py`), `aiohttp` factories/middleware/rate-limiting (`http_utils.py`), and cached `ExportBundleReader` (`export_bundle.py`).
 - **`bellhop.config` (`src/bellhop/config/`)** — Strict file-backed YAML configuration & credential normalization (`model.py`, `load.py`, `manager.py`).
 - **`bellhop.epg` (`src/bellhop/epg/`)** — Embedded WAL-mode SQLite 3 EPG & Schedules Direct backing store (`db.py`, `cache/epg.sqlite3`), shared `SchedulesDirectSession` (`sd_client.py`), SD-JSON MD5 differential fetcher (`sd_epg.py`), XMLTV parser/verifier (`xmltv.py`), background refresher (`refresh.py`), and pipeline sync adapter (`sync.py`).
 - **`bellhop.pipeline` (`src/bellhop/pipeline/`)** — Declarative, stateful 5-phase pipeline (`runner.py`) mapping raw Xtream catalogs onto official cable/fiber TV lineups (`providers/`: `tvguide`, `schedules_direct`, `yaml`), multi-signal `ChannelMatcher` (`matcher.py` + `matcher_vocab.py`), candidate-only `StreamValidator` (`validator.py`), diagnostics reports (`playlist.py`), and **Xtream JSON** exports (`xtream_exporter.py`).
 - **`bellhop.xtream` (`src/bellhop/xtream/`)** — Upstream `player_api.php` client (`client.py`) and local multi-account `XtreamPassthroughServer` (`server.py`, serving SQLite-backed XMLTV/short-EPG, on-demand dynamic M3U8 playlists via `/get.php`, and per-user `302` stream passthroughs).
-- **`bellhop.web` (`src/bellhop/web/`)** — Decoupled `aiohttp.web` TV Guide UI (`server.py`, `store.py`, `auth.py`), strict ES2022 TypeScript frontend (`frontend/` → `static/`), self-service Account & Player Setup drawer (`/api/account*`), and **per-account single-tuner relay** (`TunerSessionManager`), co-hosted with `bellhop.xtream` by `UnifiedServeServer` (`src/bellhop/serve.py`).
+- **`bellhop.web` (`src/bellhop/web/`)** — Decoupled `aiohttp.web` TV Guide UI (`server.py`, `store.py`, `auth.py`), strict ES2022 TypeScript frontend (`frontend/` → `static/`), two-tab Account & Player Setup drawer (`/api/account*`), optional email password reset (`/reset-password`, `/api/auth/forgot-password`, `/api/auth/reset-password`), and **per-account single-tuner relay** (`TunerSessionManager`), co-hosted with `bellhop.xtream` by `UnifiedServeServer` (`src/bellhop/serve.py`).
 
 Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persistent service with internal scheduling**, explicit sync controls, **multi-lineup / multi-playlist support**, and optional proxied stream relay.
 
@@ -22,9 +22,9 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
    - Never bypass `effective_concurrency()` or `TunerSessionManager`'s settle delay (`180ms`–`350ms` between closing one stream and opening the next).
 
 2. **File-Backed Declarative Configuration (`config.yaml` + `credentials.yaml`, No CLI Configuration Bloat)**
-   - **All** persistent settings live in `config.yaml`, and **all** user accounts (`email`, `web_password_hash`, `xtream_username`/`xtream_password`, `upstream_username`/`upstream_password`, `pipeline`) and optional `schedules_direct` secrets live in `credentials.yaml`. Env vars do not override YAML secrets or pipeline settings (`TZ`/`PUID`/`PGID`/`BELLHOP_PORT`/`BELLHOP_CONFIG*`/`BELLHOP_*_DIR` are for container/process paths only).
+   - **All** persistent settings live in `config.yaml`, and **all** user accounts (`email`, `web_password_hash`, `xtream_username`/`xtream_password`, `upstream_username`/`upstream_password`, `pipeline`) and optional `schedules_direct` / `email` SMTP secrets live in `credentials.yaml`. Env vars do not override YAML secrets or pipeline settings (`TZ`/`PUID`/`PGID`/`BELLHOP_PORT`/`BELLHOP_CONFIG*`/`BELLHOP_*_DIR` are for container/process paths only).
    - Plaintext `web_password` entries in `credentials.yaml` are auto-hashed with `hashlib.scrypt` on load and removed in-place; missing `xtream_username`/`xtream_password` auto-generate 8-char `[a-z0-9]` credentials (`STREAM_CREDENTIAL_LENGTH = 8`). Startup fails fast on cross-account `email`, `xtream_username`, or `upstream_username` collisions.
-   - Pipeline/server configuration is file-only (no `/api/config`); authenticated users manage only their own web password, rotatable Bellhop Xtream credentials, and external player URLs in the **Account & Player Setup** drawer (`/api/account*`).
+   - Pipeline/server configuration is file-only (no `/api/config`); authenticated users manage only their own web password (`Change Password` tab), rotatable Bellhop Xtream credentials, and external player URLs in the **Account & Player Setup** drawer (`/api/account*`). When outbound `email:` is configured, unauthenticated users can initiate rate-limited single-use email password resets restricted to `web_server.public_base_urls` (or local socket fallback).
    - Do **not** add configuration flags back to the `bellhop` CLI. CLI arguments are strictly reserved for ephemeral execution control (`--config`, `--phase`, `--skip`, `--dry-run`, `--force-refresh`, `--reprobe-all`, `--reset-mapping`, `--quiet`, `--verbose`).
 
 3. **Credentials, Dynamic Playlists & Git Hygiene**
@@ -47,7 +47,7 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
 
 ```text
 .
-├── config.example.yaml          # Two-tier documented template for config.yaml
+├── config.example.yaml          # Documented template for config.yaml
 ├── credentials.example.yaml     # Documented template for credentials.yaml
 ├── requirements.lock            # Pinned runtime dependency lockfile for reproducible builds
 ├── data/
@@ -55,9 +55,9 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
 │   └── official_logos.json              # 339 verified tv-logo/tv-logos transparent PNG URLs
 ├── src/
 │   └── bellhop/
-│       ├── cli.py               # `bellhop run` & `bellhop serve` CLI
+│       ├── cli.py               # `bellhop run`, `bellhop serve`, & `bellhop test-email` CLI
 │       ├── serve.py             # `UnifiedServeServer` co-hosting Web Guide + Xtream API (shared or split ports)
-│       ├── common/              # Tier 0: `accounts`, `file_utils`, `api_contracts`, `http_utils`, cached `export_bundle`
+│       ├── common/              # Tier 0: `accounts`, `file_utils`, `mailer`, `api_contracts`, `http_utils`, cached `export_bundle`
 │       ├── config/              # Tier 1: File-backed config & credential manager (`model.py`, `load.py`, `manager.py`)
 │       ├── epg/                 # Tier 2: `constants`, WAL SQLite `db`, `models`, `sd_client`, `sd_epg`, `xmltv`, `refresh`, `sync`
 │       ├── pipeline/            # Tier 3a: 5-phase `runner`, `lineup_loader`, `dial_grouping`, `iptv_org`, `lineup_retriever`, `providers/`, `catalog_fetcher`, `matcher`, `matcher_vocab`, `mapping_state`, `validator`, `playlist`, `xtream_exporter`
@@ -66,7 +66,7 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
 ├── Dockerfile                   # Multi-stage Alpine container (`node:22-alpine` -> `python:3.13-alpine`)
 ├── docker/                      # `entrypoint.sh`, `bellhop-shim.sh` (`PUID`/`PGID`), `config.docker.yaml`, `credentials.docker.yaml`
 ├── docker-compose.example.yml   # Example Docker Compose stack with `/config`, `/data/{state,cache,output}`
-├── .env.example                 # Example environment variables (container runtime + surfaced credentials)
+├── .env.example                 # Example container runtime environment variables (TZ, PUID, PGID, BELLHOP_PORT)
 ├── tsconfig.json                # Strict ES2022 TypeScript compiler config (`frontend/*.ts` -> `static/*.js`)
 ├── package.json                 # Dev-only TypeScript toolchain manifest (`npm ci` locked via `package-lock.json`)
 └── tests/                       # Unit, contract, Node & Docker E2E suite (`pytest`, `pytest-cov >= 85%`)
@@ -104,6 +104,10 @@ Long-term direction: evolve `PipelineRunner` + `bellhop serve` into a **persiste
 
 # Launch unified Bellhop Web Guide + Passthrough Xtream API server (0.0.0.0:8080):
 .venv/bin/bellhop serve
+
+# Verify SMTP TLS & App Password auth (NOOP) or send a test email:
+.venv/bin/bellhop test-email --dry-run
+.venv/bin/bellhop test-email
 ```
 
 For full historical context, verified metrics, upstream provider quirks, and the persistent-daemon roadmap, read [.agents/HANDOFF_STATE.md](./.agents/HANDOFF_STATE.md).

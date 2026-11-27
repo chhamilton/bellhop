@@ -4,9 +4,9 @@
  */
 import { TIMELINE_SLOT_COUNT, TIMELINE_SLOT_SEC, TIMELINE_STICKY_COL_DEFAULT_PX, computeTimelineGeometry, escapeHtml, formatTime, makeInitials, qualityBadgeClass, } from "./guide_logic.js";
 const FOCUSABLE_SELECTOR = [
-    "button:not([disabled])",
+    "button:not([disabled]):not([tabindex='-1'])",
     "[href]",
-    "input:not([disabled]):not([type='hidden'])",
+    "input:not([disabled]):not([type='hidden']):not([tabindex='-1'])",
     "select:not([disabled])",
     "textarea:not([disabled])",
     "video[controls]",

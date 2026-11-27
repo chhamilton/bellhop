@@ -13,10 +13,12 @@ from bellhop.common.api_contracts import (
   AccountInfoResponseDict,
   AuthStatusResponseDict,
   ChannelEpgResponseDict,
+  ForgotPasswordResponseDict,
   HealthApiResponseDict,
   LineupApiResponseDict,
   PasswordChangeResponseDict,
   PlayerUrlsDict,
+  ResetPasswordResponseDict,
   build_api_json_schemas,
   validate_typed_dict_payload,
 )
@@ -25,6 +27,10 @@ from bellhop.serve import UnifiedServeServer
 from bellhop.web.store import ProgramItem
 from tests.conftest import TEST_PASSWORD_HASH, TEST_WEB_PASSWORD
 from tests.http_mock import TestHttpClient
+from tests.test_password_reset import (
+  DummyEmailSender,
+  _extract_reset_url_and_token,
+)
 
 
 def test_json_schema_generation_and_validator_negative_cases() -> None:
@@ -236,3 +242,29 @@ xtream_server:
       validate_typed_dict_payload(pw_r.json(), PasswordChangeResponseDict)
   finally:
     await srv.stop()
+
+  dummy_sender = DummyEmailSender()
+  srv_reset = UnifiedServeServer.from_config(cfg, email_sender=dummy_sender)
+  assert srv_reset.web_app is not None
+  await srv_reset.start()
+  try:
+    async with TestHttpClient(
+      base_url=f"http://127.0.0.1:{srv_reset.bound_port}", timeout=5.0
+    ) as client:
+      forgot_r = await client.post(
+        "/api/auth/forgot-password", json={"email": "contract@example.com"}
+      )
+      assert forgot_r.status_code == 200
+      validate_typed_dict_payload(forgot_r.json(), ForgotPasswordResponseDict)
+      await srv_reset.web_app.wait_background_tasks()
+      assert len(dummy_sender.sent) == 1
+      _url, tok = _extract_reset_url_and_token(dummy_sender.sent[0])
+
+      reset_r = await client.post(
+        "/api/auth/reset-password",
+        json={"token": tok, "new_password": "reset_contract_password"},
+      )
+      assert reset_r.status_code == 200
+      validate_typed_dict_payload(reset_r.json(), ResetPasswordResponseDict)
+  finally:
+    await srv_reset.stop()

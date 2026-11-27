@@ -7,6 +7,7 @@ mutations for an account's web password and Bellhop Xtream credentials.
 
 from __future__ import annotations
 
+import hmac
 import os
 import threading
 from collections.abc import MutableMapping
@@ -20,6 +21,7 @@ from bellhop.common.accounts import (
   UserAccount,
   generate_stream_credential,
   hash_web_password,
+  validate_new_web_password,
   verify_web_password,
 )
 from bellhop.common.file_utils import write_private_text
@@ -181,6 +183,20 @@ class ConfigManager:
     ryaml.dump(doc, buf)
     write_private_text(path, buf.getvalue())
 
+  def _persist_account_web_password_locked(
+    self, account_id: str, creds_path: Path, new_password: str
+  ) -> UserAccount:
+    new_hash = hash_web_password(new_password)
+    ryaml, doc, entry = self._load_account_entry(creds_path, account_id)
+    entry["web_password_hash"] = DoubleQuotedScalarString(new_hash)
+    entry.pop("web_password", None)
+    entry.pop("password", None)
+    self._write_ruamel(ryaml, doc, creds_path)
+    reloaded = self._reload_locked()
+    updated = reloaded.account_by_id(account_id)
+    assert updated is not None
+    return updated
+
   def change_account_web_password(
     self, account_id: str, current_password: str, new_password: str
   ) -> UserAccount:
@@ -190,27 +206,39 @@ class ConfigManager:
 
     Raises:
       PermissionError: If `current_password` fails verification.
-      ValueError: If `new_password` is shorter than 8 non-space characters.
+      ValueError: If `new_password` fails length rules or matches current.
       KeyError: If `account_id` does not exist.
     """
     with self._lock:
       _cfg, acct, creds_path = self._require_account_and_creds_path(account_id)
       if not verify_web_password(current_password, acct.web_password_hash):
         raise PermissionError("Current password is incorrect.")
-      if not new_password or len(new_password.strip()) < 8:
+      validate_new_web_password(new_password)
+      if hmac.compare_digest(
+        new_password.encode("utf-8"), current_password.encode("utf-8")
+      ):
         raise ValueError(
-          "New password must contain at least 8 non-space characters."
+          "New password must be different from your current password."
         )
-      new_hash = hash_web_password(new_password)
-      ryaml, doc, entry = self._load_account_entry(creds_path, account_id)
-      entry["web_password_hash"] = DoubleQuotedScalarString(new_hash)
-      entry.pop("web_password", None)
-      entry.pop("password", None)
-      self._write_ruamel(ryaml, doc, creds_path)
-      reloaded = self._reload_locked()
-      updated = reloaded.account_by_id(account_id)
-      assert updated is not None
-      return updated
+      return self._persist_account_web_password_locked(
+        account_id, creds_path, new_password
+      )
+
+  def set_account_web_password(
+    self, account_id: str, new_password: str
+  ) -> UserAccount:
+    """Validate and store a new `scrypt$` hash after reset verification.
+
+    Raises:
+      ValueError: If `new_password` fails length rules.
+      KeyError: If `account_id` does not exist.
+    """
+    with self._lock:
+      _cfg, _acct, creds_path = self._require_account_and_creds_path(account_id)
+      validate_new_web_password(new_password)
+      return self._persist_account_web_password_locked(
+        account_id, creds_path, new_password
+      )
 
   def regenerate_account_stream_credentials(
     self, account_id: str

@@ -29,6 +29,10 @@ web_server:
   # Sliding session cookie lifetime (hours; default 168h = 7 days).
   # Signing secret is auto-generated at `cache/session_secret.key` (delete it live to revoke all sessions).
   session_ttl_hours: 168.0
+  # Optional allowlist of external/internal base URLs for outbound email links and reverse proxies
+  # (e.g. ["https://tv.yourdomain.com", "http://192.168.1.50:8080"]).
+  # Matched per-request with fallback to the first entry (or the bound LAN address when empty).
+  public_base_urls: []
   # Reverse-proxy client IP handling:
   trust_proxy_headers: false
   trusted_proxy_ips:
@@ -99,3 +103,16 @@ pipeline:
 
   output:
     include_unmatched_comment: false
+
+email:
+  # Outbound SMTP email (Google Workspace / Gmail App Password or generic SMTP)
+  # Put SMTP username + 16-char App Password under `email:` in credentials.yaml.
+  enabled: false
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  # "starttls" (port 587), "ssl" (port 465), or "none" (loopback relay only)
+  tls_mode: "starttls"
+  from_name: "Bellhop"
+  # Defaults to `email.username` from credentials.yaml when empty
+  from_address: ""
+  timeout_sec: 15.0

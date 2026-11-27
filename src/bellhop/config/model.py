@@ -12,6 +12,7 @@ from bellhop.common.accounts import (
   validate_accounts_collection,
 )
 from bellhop.common.http_utils import DEFAULT_TRUSTED_PROXY_IPS
+from bellhop.common.mailer import SmtpConfig
 
 DEFAULT_BELL_FIBE_MTL_LINEUP_ID = "CAN-BELLFIBE-MTL-X"
 DEFAULT_SD_BASE_URL = "https://json.schedulesdirect.org/20141201"
@@ -127,6 +128,7 @@ class ServeWebConfig:
   port: int | None = None
   settle_ms: int = 180
   session_ttl_hours: float = 168.0
+  public_base_urls: list[str] = field(default_factory=list)
   trust_proxy_headers: bool = False
   trusted_proxy_ips: list[str] = field(
     default_factory=lambda: list(DEFAULT_TRUSTED_PROXY_IPS)
@@ -195,6 +197,9 @@ class ServeConfig:
     return self.web.trusted_proxy_ips
 
 
+EmailConfig = SmtpConfig
+
+
 @dataclass(slots=True)
 class AppConfig:
   """Complete validated application configuration for `bellhop`."""
@@ -211,6 +216,7 @@ class AppConfig:
   epg: EpgConfig = field(default_factory=EpgConfig)
   output: OutputConfig = field(default_factory=OutputConfig)
   serve: ServeConfig = field(default_factory=ServeConfig)
+  email: EmailConfig = field(default_factory=EmailConfig)
 
   def __post_init__(self) -> None:
     if self.cache_dir == Path("cache") and self.xtream.cache_dir != Path(
@@ -335,6 +341,7 @@ class AppConfig:
           "port": self.serve.web.port,
           "settle_ms": self.serve.web.settle_ms,
           "session_ttl_hours": self.serve.web.session_ttl_hours,
+          "public_base_urls": list(self.serve.web.public_base_urls),
           "trust_proxy_headers": self.serve.web.trust_proxy_headers,
           "trusted_proxy_ips": list(self.serve.web.trusted_proxy_ips),
         },
@@ -346,5 +353,16 @@ class AppConfig:
           "public_port": self.serve.xtream.public_port,
           "server_protocol": self.serve.xtream.server_protocol,
         },
+      },
+      "email": {
+        "enabled": self.email.enabled,
+        "smtp_host": self.email.smtp_host,
+        "smtp_port": self.email.smtp_port,
+        "tls_mode": self.email.tls_mode,
+        "username": self.email.username,
+        "password": _mask(self.email.password, redact_secrets),
+        "from_name": self.email.from_name,
+        "from_address": self.email.effective_from_address,
+        "timeout_sec": self.email.timeout_sec,
       },
     }

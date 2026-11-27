@@ -23,7 +23,16 @@ from bellhop.common.accounts import (
 from bellhop.common.file_utils import write_private_text
 from bellhop.common.http_utils import (
   DEFAULT_TRUSTED_PROXY_IPS,
+  normalize_public_base_urls,
   parse_trusted_proxy_networks,
+)
+from bellhop.common.mailer import (
+  DEFAULT_SMTP_HOST,
+  DEFAULT_SMTP_PORT,
+  DEFAULT_SMTP_TIMEOUT_SEC,
+  VALID_TLS_MODES,
+  MailerConfigError,
+  SmtpConfig,
 )
 from bellhop.config.model import (
   DEFAULT_BELL_FIBE_MTL_LINEUP_ID,
@@ -428,6 +437,26 @@ def _build_serve_cfg(
     )
   parse_trusted_proxy_networks(web_trusted_proxy_ips)
 
+  if "public_base_url" in web_srv_raw:
+    raise ValueError(
+      "Use `web_server.public_base_urls` (a YAML list) instead of "
+      "`public_base_url`."
+    )
+  raw_public_base_urls = web_srv_raw.get("public_base_urls")
+  if raw_public_base_urls is None:
+    public_base_urls: list[str] = []
+  elif isinstance(raw_public_base_urls, list):
+    for item in raw_public_base_urls:
+      if not isinstance(item, str):
+        raise ValueError(
+          "Each entry in `web_server.public_base_urls` must be a URL string."
+        )
+    public_base_urls = list(normalize_public_base_urls(raw_public_base_urls))
+  else:
+    raise ValueError(
+      "web_server.public_base_urls must be a list of http(s) base URLs."
+    )
+
   xt_port_raw = xt_srv_raw.get("port")
   pub_port_raw = xt_srv_raw.get("public_port")
   return ServeConfig(
@@ -439,6 +468,7 @@ def _build_serve_cfg(
       port=int(web_port_raw) if web_port_raw is not None else None,
       settle_ms=default_settle_ms,
       session_ttl_hours=float(web_srv_raw.get("session_ttl_hours", 168.0)),
+      public_base_urls=public_base_urls,
       trust_proxy_headers=bool(web_srv_raw.get("trust_proxy_headers", False)),
       trusted_proxy_ips=list(web_trusted_proxy_ips),
     ),
@@ -454,6 +484,44 @@ def _build_serve_cfg(
       ).lower(),
     ),
   )
+
+
+def _build_email_cfg(
+  email_raw: Mapping[str, Any],
+  email_creds: Mapping[str, Any],
+) -> SmtpConfig:
+  port_raw = email_raw.get("smtp_port", DEFAULT_SMTP_PORT)
+  if isinstance(port_raw, bool):
+    raise ValueError("`email.smtp_port` must be an integer port.")
+  tls_mode = _first_str(email_raw.get("tls_mode"), default="starttls").lower()
+  raw_pw = email_creds.get("password")
+  if raw_pw is None or str(raw_pw) == "":
+    raw_pw = email_creds.get("app_password")
+  pw = str(raw_pw) if raw_pw is not None else ""
+  raw_from_name = email_raw.get("from_name")
+  from_name = "Bellhop" if raw_from_name is None else str(raw_from_name).strip()
+  cfg = SmtpConfig(
+    enabled=bool(email_raw.get("enabled", False)),
+    smtp_host=_first_str(email_raw.get("smtp_host"), default=DEFAULT_SMTP_HOST),
+    smtp_port=int(port_raw),
+    tls_mode=tls_mode,
+    username=_first_str(email_creds.get("username")),
+    password=pw,
+    from_name=from_name,
+    from_address=_first_str(email_raw.get("from_address")),
+    timeout_sec=float(email_raw.get("timeout_sec", DEFAULT_SMTP_TIMEOUT_SEC)),
+  )
+  if cfg.smtp_port < 1 or cfg.smtp_port > 65535:
+    raise ValueError("`email.smtp_port` must be between 1 and 65535.")
+  if cfg.tls_mode not in VALID_TLS_MODES:
+    allowed = ", ".join(sorted(VALID_TLS_MODES))
+    raise ValueError(f"`email.tls_mode` must be one of {allowed}.")
+  if cfg.enabled:
+    try:
+      cfg.validate(require_enabled=True)
+    except MailerConfigError as exc:
+      raise ValueError(str(exc)) from exc
+  return cfg
 
 
 def build_config_from_raw_dict(
@@ -478,11 +546,13 @@ def build_config_from_raw_dict(
     creds_target, persist_updates=persist_credential_updates
   )
   sd_creds = _subdict(loaded_creds, "schedules_direct")
+  email_creds = _subdict(loaded_creds, "email")
 
   paths_raw = _subdict(raw, "paths")
   web_srv_raw = _subdict(raw, "web_server")
   xt_raw = _subdict(raw, "upstream_xtream")
   xt_srv_raw = _subdict(raw, "xtream_server")
+  email_raw = _subdict(raw, "email")
   pipe_raw = _subdict(raw, "pipeline")
   lu_raw = _subdict(pipe_raw, "lineup")
   match_raw = _subdict(pipe_raw, "matching")
@@ -495,6 +565,7 @@ def build_config_from_raw_dict(
   )
   lineup = _build_lineup_cfg(paths_raw, lu_raw, sd_creds)
   serve = _build_serve_cfg(web_srv_raw, xt_srv_raw)
+  email = _build_email_cfg(email_raw, email_creds)
 
   state_dir_path = Path(_first_str(paths_raw.get("state_dir"), default="state"))
   state = StateConfig(
@@ -561,6 +632,7 @@ def build_config_from_raw_dict(
     epg=epg,
     output=output,
     serve=serve,
+    email=email,
   )
 
 

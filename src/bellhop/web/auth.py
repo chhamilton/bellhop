@@ -36,6 +36,10 @@ from bellhop.common.http_utils import (
 )
 
 SESSION_COOKIE_NAME = "bellhop_session"
+PASSWORD_RESET_TTL_SEC: int = 900
+GENERIC_PASSWORD_RESET_MESSAGE: str = (
+  "If an account with that email exists, we've sent a password reset link."
+)
 
 
 def _b64u_encode(raw: bytes) -> str:
@@ -73,7 +77,12 @@ def sanitize_next_url(raw_next: str | None) -> str:
     or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in decoded_path)
   ):
     return "/"
-  if decoded_path == "/login" or decoded_path.startswith("/login/"):
+  if (
+    decoded_path == "/login"
+    or decoded_path.startswith("/login/")
+    or decoded_path == "/reset-password"
+    or decoded_path.startswith("/reset-password/")
+  ):
     return "/"
   return cleaned
 
@@ -106,6 +115,18 @@ class SessionInfo:
     now = int(time.time()) if now_ts is None else now_ts
     ttl = max(1, self.expires_at - self.issued_at)
     return (now - self.issued_at) >= (ttl // 2)
+
+
+@dataclass(slots=True)
+class PasswordResetTokenInfo:
+  """Verified password-reset token extracted from an emailed reset link."""
+
+  account_id: str
+  email: str
+  issued_at: int
+  expires_at: int
+  jti: str = ""
+  pwd_ver: str = ""
 
 
 class WebAuthManager:
@@ -219,6 +240,17 @@ class WebAuthManager:
         return acct
     return None
 
+  def account_by_email(self, email: str) -> UserAccount | None:
+    """Look up an active account by normalized email in constant time."""
+    norm_email = normalize_email(email)
+    if not norm_email:
+      return None
+    matched: UserAccount | None = None
+    for acct in self.accounts():
+      if _safe_compare_str(acct.email, norm_email):
+        matched = acct
+    return matched
+
   @property
   def has_credentials(self) -> bool:
     """Return `True` when at least one authenticated user account exists."""
@@ -299,40 +331,21 @@ class WebAuthManager:
       return candidate
     return None
 
-  def create_session_token(
-    self, account: UserAccount, *, now_ts: int | None = None
-  ) -> tuple[str, SessionInfo]:
-    now = int(self._clock()) if now_ts is None else now_ts
-    exp = now + self.ttl_seconds
-    jti = secrets.token_hex(8)
-    pwd_ver = password_hash_version(account.web_password_hash)
-    payload = {
-      "v": 2,
-      "aid": account.account_id,
-      "eml": account.email,
-      "iat": now,
-      "exp": exp,
-      "pv": pwd_ver,
-      "jti": jti,
-    }
+  def _sign_payload(self, payload: Mapping[str, object]) -> str:
     payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     payload_b64 = _b64u_encode(payload_bytes)
     sig = hmac.new(
       self._get_signing_key(), payload_b64.encode("ascii"), hashlib.sha256
     ).digest()
-    token = f"{payload_b64}.{_b64u_encode(sig)}"
-    return token, SessionInfo(
-      account_id=account.account_id,
-      email=account.email,
-      issued_at=now,
-      expires_at=exp,
-      jti=jti,
-      pwd_ver=pwd_ver,
-    )
+    return f"{payload_b64}.{_b64u_encode(sig)}"
 
-  def verify_session_token(
-    self, token: str, *, now_ts: int | None = None
-  ) -> SessionInfo | None:
+  def _verify_signed_payload(
+    self,
+    token: str,
+    *,
+    expected_types: tuple[str | None, ...],
+    now_ts: int | None = None,
+  ) -> tuple[UserAccount, int, int, str, str] | None:
     if not self.has_credentials or not token or "." not in token:
       return None
     parts = token.split(".", 1)
@@ -356,13 +369,20 @@ class WebAuthManager:
       return None
     if not isinstance(data, dict) or data.get("v") != 2:
       return None
+    raw_typ = data.get("typ")
+    typ = str(raw_typ) if raw_typ is not None else None
+    if typ not in expected_types:
+      return None
 
-    aid = str(data.get("aid") or "").strip()
-    eml = str(data.get("eml") or "").strip().lower()
-    iat = int(data.get("iat") or 0)
-    exp = int(data.get("exp") or 0)
-    pv = str(data.get("pv") or "")
-    jti = str(data.get("jti") or "")
+    try:
+      aid = str(data.get("aid") or "").strip()
+      eml = str(data.get("eml") or "").strip().lower()
+      iat = int(data.get("iat") or 0)
+      exp = int(data.get("exp") or 0)
+      pv = str(data.get("pv") or "")
+      jti = str(data.get("jti") or "")
+    except (TypeError, ValueError):
+      return None
     if not aid or not eml:
       return None
 
@@ -385,7 +405,58 @@ class WebAuthManager:
       return None
     if not _safe_compare_str(pv, password_hash_version(acct.web_password_hash)):
       return None
+    return acct, iat, exp, jti, pv
 
+  def _record_revocation(
+    self, rev_key: str, *, now: int, rev_after: int, expires_at: int
+  ) -> None:
+    self._prune_revoked(now)
+    prev = self._revoked_tokens.get(rev_key)
+    self._revoked_tokens[rev_key] = (
+      min(prev[0], rev_after) if prev is not None else rev_after,
+      max(prev[1], expires_at) if prev is not None else expires_at,
+    )
+    self._save_revocations()
+
+  def create_session_token(
+    self, account: UserAccount, *, now_ts: int | None = None
+  ) -> tuple[str, SessionInfo]:
+    """Mint a signed expiring `bellhop_session` cookie token."""
+    now = int(self._clock()) if now_ts is None else now_ts
+    exp = now + self.ttl_seconds
+    jti = secrets.token_hex(8)
+    pwd_ver = password_hash_version(account.web_password_hash)
+    token = self._sign_payload(
+      {
+        "v": 2,
+        "typ": "session",
+        "aid": account.account_id,
+        "eml": account.email,
+        "iat": now,
+        "exp": exp,
+        "pv": pwd_ver,
+        "jti": jti,
+      }
+    )
+    return token, SessionInfo(
+      account_id=account.account_id,
+      email=account.email,
+      issued_at=now,
+      expires_at=exp,
+      jti=jti,
+      pwd_ver=pwd_ver,
+    )
+
+  def verify_session_token(
+    self, token: str, *, now_ts: int | None = None
+  ) -> SessionInfo | None:
+    """Verify a signed `bellhop_session` cookie token."""
+    verified = self._verify_signed_payload(
+      token, expected_types=(None, "session"), now_ts=now_ts
+    )
+    if verified is None:
+      return None
+    acct, iat, exp, jti, pv = verified
     return SessionInfo(
       account_id=acct.account_id,
       email=acct.email,
@@ -393,6 +464,91 @@ class WebAuthManager:
       expires_at=exp,
       jti=jti,
       pwd_ver=pv,
+    )
+
+  def create_password_reset_token(
+    self,
+    account: UserAccount,
+    *,
+    ttl_sec: int = PASSWORD_RESET_TTL_SEC,
+    now_ts: int | None = None,
+  ) -> tuple[str, PasswordResetTokenInfo]:
+    """Mint a short-lived signed single-use password-reset token."""
+    now = int(self._clock()) if now_ts is None else now_ts
+    exp = now + max(1, int(ttl_sec))
+    jti = secrets.token_hex(12)
+    pwd_ver = password_hash_version(account.web_password_hash)
+    token = self._sign_payload(
+      {
+        "v": 2,
+        "typ": "pwd_reset",
+        "aid": account.account_id,
+        "eml": account.email,
+        "iat": now,
+        "exp": exp,
+        "pv": pwd_ver,
+        "jti": jti,
+      }
+    )
+    return token, PasswordResetTokenInfo(
+      account_id=account.account_id,
+      email=account.email,
+      issued_at=now,
+      expires_at=exp,
+      jti=jti,
+      pwd_ver=pwd_ver,
+    )
+
+  def run_dummy_reset_token_work(self) -> None:
+    """Perform equivalent signing CPU work when no reset email is sent."""
+    dummy_ver = password_hash_version("scrypt$0$0$0")
+    dummy_sig = self._sign_payload(
+      {
+        "v": 2,
+        "typ": "pwd_reset",
+        "aid": "dummy",
+        "eml": "dummy@example.invalid",
+        "iat": 0,
+        "exp": PASSWORD_RESET_TTL_SEC,
+        "pv": dummy_ver,
+        "jti": secrets.token_hex(12),
+      }
+    )
+    _safe_compare_str(dummy_sig, dummy_sig)
+
+  def verify_password_reset_token(
+    self, token: str, *, now_ts: int | None = None
+  ) -> PasswordResetTokenInfo | None:
+    """Verify a password-reset token without consuming or revoking it."""
+    verified = self._verify_signed_payload(
+      token, expected_types=("pwd_reset",), now_ts=now_ts
+    )
+    if verified is None:
+      return None
+    acct, iat, exp, jti, pv = verified
+    return PasswordResetTokenInfo(
+      account_id=acct.account_id,
+      email=acct.email,
+      issued_at=iat,
+      expires_at=exp,
+      jti=jti,
+      pwd_ver=pv,
+    )
+
+  def revoke_reset_token_info(
+    self,
+    info: PasswordResetTokenInfo,
+    *,
+    raw_token: str = "",
+    now_ts: int | None = None,
+  ) -> None:
+    """Persist revocation for an already-verified reset token's `jti`."""
+    now = int(self._clock()) if now_ts is None else now_ts
+    rev_key = info.jti or (self._token_digest(raw_token) if raw_token else "")
+    if not rev_key:
+      return
+    self._record_revocation(
+      rev_key, now=now, rev_after=now, expires_at=info.expires_at
     )
 
   def revoke_token(
@@ -405,15 +561,13 @@ class WebAuthManager:
     info = self.verify_session_token(token, now_ts=now)
     if info is None:
       return
-    self._prune_revoked(now)
     rev_key = info.jti or self._token_digest(token)
-    rev_after = now + max(0, int(grace_sec))
-    prev = self._revoked_tokens.get(rev_key)
-    self._revoked_tokens[rev_key] = (
-      min(prev[0], rev_after) if prev is not None else rev_after,
-      info.expires_at,
+    self._record_revocation(
+      rev_key,
+      now=now,
+      rev_after=now + max(0, int(grace_sec)),
+      expires_at=info.expires_at,
     )
-    self._save_revocations()
 
   def revoke_session_from_headers(
     self,
@@ -488,37 +642,30 @@ class WebAuthManager:
     return f"/login?next={quote(safe, safe='')}"
 
 
-def render_login_page_html(
-  *, next_url: str = "/", error_message: str = ""
-) -> bytes:
-  """Render a standalone dark-themed login page matching the Web Guide."""
-  safe_next = sanitize_next_url(next_url)
-  esc_next = (
-    safe_next.replace("&", "&amp;")
+def _escape_html(raw: str) -> str:
+  return (
+    raw.replace("&", "&amp;")
     .replace('"', "&quot;")
     .replace("'", "&#39;")
     .replace("<", "&lt;")
     .replace(">", "&gt;")
-  )
-  esc_err = (
-    error_message.replace("&", "&amp;")
-    .replace('"', "&quot;")
-    .replace("'", "&#39;")
-    .replace("<", "&lt;")
-    .replace(">", "&gt;")
-  )
-  err_block = (
-    f'<div id="login-error" class="login-error">{esc_err}</div>'
-    if esc_err
-    else '<div id="login-error" class="login-error" hidden></div>'
   )
 
+
+def _render_auth_page_shell(
+  *,
+  title: str,
+  subtitle: str,
+  body_html: str,
+) -> bytes:
+  esc_title = _escape_html(title)
+  esc_subtitle = _escape_html(subtitle)
   html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sign In — Bellhop</title>
+  <title>{esc_title}</title>
   <link rel="icon" type="image/svg+xml" href="/static/bellhop-logo.svg" />
   <link rel="alternate icon" href="/favicon.ico" />
   <script src="/static/prefs.js"></script>
@@ -552,9 +699,55 @@ def render_login_page_html(
     <div class="brand">
       <img class="brand-logo" src="/static/bellhop-logo.svg" alt="Bellhop" width="76" height="76" />
       <h1>Bell<span>hop</span></h1>
-      <p>Sign in to access your live TV guide &amp; player</p>
+      <p id="login-subtitle">{esc_subtitle}</p>
     </div>
-    {err_block}
+    {body_html}
+  </main>
+  <script src="/static/login.js"></script>
+</body>
+</html>
+"""
+  return html.encode("utf-8")
+
+
+def render_login_page_html(
+  *,
+  next_url: str = "/",
+  error_message: str = "",
+  password_reset_enabled: bool = False,
+) -> bytes:
+  """Render a standalone themed login page matching the Web Guide."""
+  esc_next = _escape_html(sanitize_next_url(next_url))
+  esc_err = _escape_html(error_message)
+  err_block = (
+    f'<div id="login-error" class="login-error">{esc_err}</div>'
+    if esc_err
+    else '<div id="login-error" class="login-error" hidden></div>'
+  )
+  forgot_trigger = (
+    '<div class="login-aux-row">'
+    '<button id="forgot-password-link" class="login-link-btn" type="button">'
+    "Forgot password?</button></div>"
+    if password_reset_enabled
+    else ""
+  )
+  forgot_form = (
+    """
+    <form id="forgot-password-form" method="post" action="/api/auth/forgot-password" hidden>
+      <div class="field">
+        <label for="forgot-email">Email</label>
+        <input id="forgot-email" name="email" type="email" autocomplete="email" required />
+      </div>
+      <button id="forgot-submit" class="submit-btn" type="submit">Send Reset Link</button>
+      <div class="login-aux-row">
+        <button id="back-to-login-link" class="login-link-btn" type="button">Back to sign in</button>
+      </div>
+    </form>"""
+    if password_reset_enabled
+    else ""
+  )
+  body_html = f"""{err_block}
+    <div id="login-notice" class="login-notice" hidden></div>
     <form id="login-form" method="post" action="/api/auth/login">
       <input type="hidden" name="next" value="{esc_next}" />
       <div class="field">
@@ -566,10 +759,57 @@ def render_login_page_html(
         <input id="password" name="password" type="password" autocomplete="current-password" required />
       </div>
       <button id="login-submit" class="submit-btn" type="submit">Sign In</button>
-    </form>
-  </main>
-  <script src="/static/login.js"></script>
-</body>
-</html>
-"""
-  return html.encode("utf-8")
+      {forgot_trigger}
+    </form>{forgot_form}"""
+  return _render_auth_page_shell(
+    title="Sign In — Bellhop",
+    subtitle="Sign in to access your live TV guide & player",
+    body_html=body_html,
+  )
+
+
+def render_reset_password_page_html(
+  *,
+  token: str = "",
+  email: str = "",
+  error_message: str = "",
+) -> bytes:
+  """Render the password-reset form page (`GET /reset-password`)."""
+  esc_err = _escape_html(error_message)
+  err_block = (
+    f'<div id="login-error" class="login-error">{esc_err}</div>'
+    if esc_err
+    else '<div id="login-error" class="login-error" hidden></div>'
+  )
+  if token and not error_message:
+    esc_token = _escape_html(token)
+    esc_email = _escape_html(email)
+    form_block = f"""
+    <form id="reset-password-form" method="post" action="/api/auth/reset-password">
+      <input type="hidden" id="reset-token" name="token" value="{esc_token}" />
+      <input id="reset-username" class="sr-only" type="email" name="username" value="{esc_email}" autocomplete="username" readonly tabindex="-1" aria-hidden="true" />
+      <div class="field">
+        <label for="reset-new-password">New Password</label>
+        <input id="reset-new-password" name="new_password" type="password" autocomplete="new-password" minlength="8" maxlength="256" required autofocus />
+      </div>
+      <div class="field">
+        <label for="reset-confirm-password">Confirm New Password</label>
+        <input id="reset-confirm-password" name="confirm_password" type="password" autocomplete="new-password" minlength="8" maxlength="256" required />
+      </div>
+      <button id="reset-submit" class="submit-btn" type="submit">Reset Password</button>
+      <div class="login-aux-row">
+        <a class="login-link-btn" href="/login">Back to sign in</a>
+      </div>
+    </form>"""
+  else:
+    form_block = """
+    <div class="login-aux-row">
+      <a class="login-link-btn" href="/login">Back to sign in</a>
+    </div>"""
+  body_html = f"""{err_block}
+    <div id="login-notice" class="login-notice" hidden></div>{form_block}"""
+  return _render_auth_page_shell(
+    title="Reset Password — Bellhop",
+    subtitle="Choose a new password for your Bellhop account",
+    body_html=body_html,
+  )
