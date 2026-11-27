@@ -1,16 +1,26 @@
-"""Two-tier YAML loader for `config.yaml`, `credentials.yaml`, and `.env`."""
+"""File-backed YAML loader for `config.yaml` and `credentials.yaml`."""
 
 from __future__ import annotations
 
 import os
-import re
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
 import yaml
-from dotenv import load_dotenv
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
+from bellhop.common.accounts import (
+  UserAccount,
+  generate_stream_credential,
+  hash_web_password,
+  validate_accounts_collection,
+  validate_email,
+)
+from bellhop.common.file_utils import write_private_text
 from bellhop.common.http_utils import (
   DEFAULT_TRUSTED_PROXY_IPS,
   parse_trusted_proxy_networks,
@@ -30,19 +40,6 @@ from bellhop.config.model import (
   ValidationConfig,
   XtreamConfig,
 )
-
-ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-
-
-def interpolate_env(value: Any) -> Any:
-  """Recursively substitute `${VAR}` placeholders from `os.environ`."""
-  if isinstance(value, str):
-    return ENV_VAR_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
-  if isinstance(value, dict):
-    return {k: interpolate_env(v) for k, v in value.items()}
-  if isinstance(value, list):
-    return [interpolate_env(v) for v in value]
-  return value
 
 
 def _subdict(mapping: Mapping[str, Any], *keys: str) -> dict[str, Any]:
@@ -69,30 +66,24 @@ def _opt_str(val: Any) -> str | None:
   return s if s else None
 
 
-def _pick_bool(*values: Any, default: bool = False) -> bool:
-  for val in values:
-    if val is None:
-      continue
-    if isinstance(val, str):
-      s = val.strip().lower()
-      if not s:
-        continue
-      if s in {"1", "true", "yes", "on"}:
-        return True
-      if s in {"0", "false", "no", "off"}:
-        return False
-    return bool(val)
-  return default
+def _make_ruamel() -> YAML:
+  ryaml = YAML()
+  ryaml.preserve_quotes = True
+  ryaml.indent(mapping=2, sequence=4, offset=2)
+  ryaml.width = 4096
+  return ryaml
 
 
-def _load_yaml_dict(path: Path, *, interpolate: bool = False) -> dict[str, Any]:
+def _load_yaml_dict(path: Path) -> dict[str, Any]:
   if not path.is_file():
-    return {}
+    raise FileNotFoundError(f"Configuration file not found: {path}")
   with path.open("r", encoding="utf-8") as fh:
-    loaded = yaml.safe_load(fh) or {}
-  if not isinstance(loaded, dict):
+    loaded = yaml.safe_load(fh)
+  if loaded is None:
     return {}
-  return interpolate_env(loaded) if interpolate else loaded
+  if not isinstance(loaded, dict):
+    raise ValueError(f"Expected a YAML mapping in {path}.")
+  return loaded
 
 
 def find_project_root(config_path: Path | None = None) -> Path:
@@ -125,7 +116,7 @@ def resolve_config_targets(
   """Resolve `(root, explicit_cfg, yaml_target, base_dir)` for config loading.
 
   Raises:
-    FileNotFoundError: When an explicit `config_path` does not exist.
+    FileNotFoundError: When `config.yaml` (explicit or default) does not exist.
   """
   raw_cfg_path = config_path or os.environ.get("BELLHOP_CONFIG") or None
   explicit_cfg = Path(raw_cfg_path).resolve() if raw_cfg_path else None
@@ -136,74 +127,192 @@ def resolve_config_targets(
   yaml_target = (
     explicit_cfg if explicit_cfg is not None else (root / "config.yaml")
   )
-  base_dir = yaml_target.parent if yaml_target.is_file() else root
+  if not yaml_target.is_file():
+    raise FileNotFoundError(f"Configuration file not found: {yaml_target}")
+  base_dir = yaml_target.parent
   return root, explicit_cfg, yaml_target, base_dir
 
 
-def resolve_dependency_paths(
+def resolve_credentials_path(
   pre_raw: Mapping[str, Any],
   *,
   root: Path,
   base_dir: Path,
-  env_path: Path | str | None = None,
   credentials_path: Path | str | None = None,
-) -> tuple[Path, Path]:
-  """Resolve `(dotenv_target, creds_target)` from an uninterpolated dict."""
-  cfg_env_file = pre_raw.get("env_file")
-  dotenv_target = (
-    Path(env_path)
-    if env_path
-    else ((base_dir / str(cfg_env_file)) if cfg_env_file else (root / ".env"))
+) -> Path:
+  """Resolve the backing `credentials.yaml` path from `config.yaml`."""
+  if credentials_path is not None:
+    return Path(credentials_path)
+  raw_creds_val = str(
+    pre_raw.get("credentials_file") or "credentials.yaml"
+  ).strip()
+  cfg_creds_ref = Path(raw_creds_val or "credentials.yaml")
+  creds_target = (
+    cfg_creds_ref if cfg_creds_ref.is_absolute() else (base_dir / cfg_creds_ref)
   )
-  raw_creds_val = pre_raw.get("credentials_file") or "credentials.yaml"
-  creds_ref_str = (
-    str(interpolate_env(raw_creds_val) or "credentials.yaml")
-    if isinstance(raw_creds_val, str)
-    else str(raw_creds_val)
-  )
-  cfg_creds_ref = Path(creds_ref_str)
-  if credentials_path:
-    creds_target = Path(credentials_path)
+  if not creds_target.is_file() and not cfg_creds_ref.is_absolute():
+    alt_target = root / cfg_creds_ref
+    if alt_target.is_file():
+      return alt_target
+  return creds_target
+
+
+def _parse_and_normalize_account_entry(
+  raw_id: str,
+  entry: MutableMapping[str, Any],
+  *,
+  reserved_xt_users: set[str],
+) -> tuple[UserAccount, bool]:
+  dirty = False
+  aid = str(raw_id).strip()
+  if not aid:
+    raise ValueError("Account key under `accounts:` cannot be empty.")
+
+  raw_plain = entry.get("web_password")
+  if raw_plain is None and "password" in entry:
+    raw_plain = entry.get("password")
+  plain_pw = str(raw_plain) if raw_plain is not None else ""
+  if plain_pw.strip():
+    pw_hash = hash_web_password(plain_pw)
+    entry["web_password_hash"] = DoubleQuotedScalarString(pw_hash)
+    entry.pop("web_password", None)
+    entry.pop("password", None)
+    dirty = True
   else:
-    creds_target = (
-      cfg_creds_ref
-      if cfg_creds_ref.is_absolute()
-      else (base_dir / cfg_creds_ref)
+    if "web_password" in entry:
+      entry.pop("web_password", None)
+      dirty = True
+    if "password" in entry:
+      entry.pop("password", None)
+      dirty = True
+    pw_hash = str(entry.get("web_password_hash") or "").strip()
+
+  xt_user = str(entry.get("xtream_username") or "").strip()
+  if not xt_user:
+    xt_user = generate_stream_credential(exclude=reserved_xt_users)
+    reserved_xt_users.add(xt_user)
+    entry["xtream_username"] = DoubleQuotedScalarString(xt_user)
+    dirty = True
+
+  xt_pass = str(entry.get("xtream_password") or "").strip()
+  if not xt_pass:
+    xt_pass = generate_stream_credential()
+    entry["xtream_password"] = DoubleQuotedScalarString(xt_pass)
+    dirty = True
+
+  raw_email = str(entry.get("email") or "").strip()
+  norm_email = validate_email(raw_email, account_id=aid)
+  if raw_email != norm_email:
+    entry["email"] = DoubleQuotedScalarString(norm_email)
+    dirty = True
+
+  raw_lineup = entry.get("lineup_id")
+  lineup_id = _opt_str(raw_lineup)
+  return (
+    UserAccount(
+      account_id=aid,
+      email=norm_email,
+      web_password_hash=pw_hash,
+      xtream_username=xt_user,
+      xtream_password=xt_pass,
+      upstream_username=str(entry.get("upstream_username") or "").strip(),
+      upstream_password=str(entry.get("upstream_password") or ""),
+      pipeline=bool(entry.get("pipeline", False)),
+      lineup_id=lineup_id,
+    ),
+    dirty,
+  )
+
+
+def load_and_normalize_credentials(
+  creds_path: Path, *, persist_updates: bool = True
+) -> tuple[dict[str, Any], tuple[UserAccount, ...]]:
+  """Load `credentials.yaml`, auto-hashing passwords & filling stream creds.
+
+  Any plaintext `web_password` field is hashed into `web_password_hash` and
+  deleted cleanly while preserving YAML comments and unrelated keys. Missing
+  `xtream_username` or `xtream_password` fields are auto-populated with fresh
+  8-character lowercase alphanumeric credentials. All uniqueness/collision
+  checks run before persisting updates back to `creds_path` (`0600`).
+
+  Args:
+    creds_path: Path to `credentials.yaml`.
+    persist_updates: When `True`, rewrite `creds_path` atomically if normalized.
+
+  Returns:
+    Tuple `(raw_creds_dict, validated_accounts)`.
+
+  Raises:
+    FileNotFoundError: When `creds_path` does not exist.
+    ValueError: On malformed YAML, missing required fields, or account
+      collisions (`email`, `xtream_username`, `upstream_username`).
+  """
+  if not creds_path.is_file():
+    raise FileNotFoundError(f"Credentials file not found: {creds_path}")
+
+  ryaml = _make_ruamel()
+  raw_text = creds_path.read_text(encoding="utf-8")
+  doc = ryaml.load(raw_text)
+  if doc is None:
+    doc = CommentedMap()
+  if not isinstance(doc, MutableMapping):
+    raise ValueError(f"Expected a YAML mapping in {creds_path}.")
+
+  raw_accounts = doc.get("accounts")
+  if not isinstance(raw_accounts, MutableMapping) or not raw_accounts:
+    raise ValueError(
+      f"{creds_path}: missing required non-empty `accounts:` mapping."
     )
-    if not creds_target.is_file():
-      creds_target = root / cfg_creds_ref
-  return dotenv_target, creds_target
+
+  reserved_xt_users: set[str] = {
+    str(entry.get("xtream_username") or "").strip()
+    for entry in raw_accounts.values()
+    if isinstance(entry, Mapping) and str(entry.get("xtream_username") or "")
+  }
+
+  dirty = False
+  parsed_accounts: list[UserAccount] = []
+  for raw_id, raw_entry in raw_accounts.items():
+    if not isinstance(raw_entry, MutableMapping):
+      raise ValueError(
+        f"{creds_path}: account {raw_id!r} must be a YAML mapping."
+      )
+    acct, entry_dirty = _parse_and_normalize_account_entry(
+      str(raw_id), raw_entry, reserved_xt_users=reserved_xt_users
+    )
+    dirty = dirty or entry_dirty
+    parsed_accounts.append(acct)
+
+  validated = validate_accounts_collection(
+    parsed_accounts, require_non_empty=True
+  )
+
+  if dirty and persist_updates:
+    buf = StringIO()
+    ryaml.dump(doc, buf)
+    write_private_text(creds_path, buf.getvalue())
+
+  plain_dict = yaml.safe_load(raw_text) if not dirty else None
+  if plain_dict is None:
+    buf_plain = StringIO()
+    ryaml.dump(doc, buf_plain)
+    plain_dict = yaml.safe_load(buf_plain.getvalue()) or {}
+  if not isinstance(plain_dict, dict):
+    plain_dict = {}
+  return plain_dict, validated
 
 
 def _build_xtream_and_validation_cfg(
   paths_raw: Mapping[str, Any],
   xt_raw: Mapping[str, Any],
-  xt_creds: Mapping[str, Any],
   val_raw: Mapping[str, Any],
 ) -> tuple[Path, XtreamConfig, ValidationConfig]:
   cache_dir_path = Path(_first_str(paths_raw.get("cache_dir"), default="cache"))
   seed_json_raw = paths_raw.get("seed_json")
   xtream = XtreamConfig(
-    server_url=_first_str(
-      xt_raw.get("server_url"),
-      xt_creds.get("server_url"),
-      xt_creds.get("url"),
-      os.environ.get("XTREAM_SERVER_URL"),
-    ),
-    username=_first_str(
-      xt_raw.get("username"),
-      xt_creds.get("username"),
-      os.environ.get("XTREAM_USERNAME"),
-    ),
-    password=_first_str(
-      xt_raw.get("password"),
-      xt_creds.get("password"),
-      os.environ.get("XTREAM_PASSWORD"),
-    ),
+    server_url=_first_str(xt_raw.get("server_url")),
     stream_format=_first_str(
       xt_raw.get("stream_format"),
-      xt_creds.get("stream_format"),
-      os.environ.get("XTREAM_STREAM_FORMAT"),
       default="ts",
     ).lstrip("."),
     request_timeout_sec=float(xt_raw.get("request_timeout_sec", 90.0)),
@@ -271,20 +380,18 @@ def _build_lineup_cfg(
     },
     schedules_direct=SchedulesDirectConfig(
       username=_first_str(
-        sd_cfg_raw.get("username"),
         sd_creds.get("username"),
-        os.environ.get("SD_USERNAME"),
+        sd_cfg_raw.get("username"),
       ),
       password=_first_str(
-        sd_cfg_raw.get("password"),
         sd_creds.get("password"),
-        os.environ.get("SD_PASSWORD"),
+        sd_cfg_raw.get("password"),
       ),
-      auto_add_lineup=_pick_bool(
-        sd_cfg_raw.get("auto_add_lineup"),
-        sd_creds.get("auto_add_lineup"),
-        os.environ.get("SD_AUTO_ADD_LINEUP"),
-        default=False,
+      auto_add_lineup=bool(
+        sd_cfg_raw.get(
+          "auto_add_lineup",
+          sd_creds.get("auto_add_lineup", False),
+        )
       ),
     ),
     iptv_org=IptvOrgConfig(
@@ -296,9 +403,7 @@ def _build_lineup_cfg(
 
 def _build_serve_cfg(
   web_srv_raw: Mapping[str, Any],
-  web_srv_creds: Mapping[str, Any],
   xt_srv_raw: Mapping[str, Any],
-  xt_srv_creds: Mapping[str, Any],
 ) -> ServeConfig:
   web_host_raw = _opt_str(web_srv_raw.get("host"))
   web_port_raw = web_srv_raw.get("port")
@@ -333,22 +438,7 @@ def _build_serve_cfg(
       host=web_host_raw,
       port=int(web_port_raw) if web_port_raw is not None else None,
       settle_ms=default_settle_ms,
-      username=_first_str(
-        web_srv_raw.get("username"),
-        web_srv_creds.get("username"),
-        os.environ.get("BELLHOP_WEB_USERNAME"),
-      ),
-      password=_first_str(
-        web_srv_raw.get("password"),
-        web_srv_creds.get("password"),
-        os.environ.get("BELLHOP_WEB_PASSWORD"),
-      ),
       session_ttl_hours=float(web_srv_raw.get("session_ttl_hours", 168.0)),
-      session_secret=_first_str(
-        web_srv_raw.get("session_secret"),
-        web_srv_creds.get("session_secret"),
-        os.environ.get("BELLHOP_WEB_SESSION_SECRET"),
-      ),
       trust_proxy_headers=bool(web_srv_raw.get("trust_proxy_headers", False)),
       trusted_proxy_ips=list(web_trusted_proxy_ips),
     ),
@@ -356,16 +446,6 @@ def _build_serve_cfg(
       enabled=bool(xt_srv_raw.get("enabled", True)),
       host=_opt_str(xt_srv_raw.get("host")),
       port=int(xt_port_raw) if xt_port_raw is not None else None,
-      username=_first_str(
-        xt_srv_raw.get("username"),
-        xt_srv_creds.get("username"),
-        os.environ.get("BELLHOP_SERVE_USERNAME"),
-      ),
-      password=_first_str(
-        xt_srv_raw.get("password"),
-        xt_srv_creds.get("password"),
-        os.environ.get("BELLHOP_SERVE_PASSWORD"),
-      ),
       public_host=_opt_str(xt_srv_raw.get("public_host")),
       public_port=int(pub_port_raw) if pub_port_raw is not None else None,
       server_protocol=_first_str(
@@ -383,27 +463,21 @@ def build_config_from_raw_dict(
   base_dir: Path,
   config_file: Path | None,
   is_explicit: bool = False,
-  env_path: Path | str | None = None,
   credentials_path: Path | str | None = None,
+  persist_credential_updates: bool = True,
 ) -> AppConfig:
-  """Validate and construct an `AppConfig` from a pre-parsed YAML dict."""
-  pre_dict = dict(pre_raw)
-  dotenv_target, creds_target = resolve_dependency_paths(
-    pre_dict,
+  """Validate and construct an `AppConfig` from a parsed `config.yaml` dict."""
+  raw = dict(pre_raw)
+  creds_target = resolve_credentials_path(
+    raw,
     root=root,
     base_dir=base_dir,
-    env_path=env_path,
     credentials_path=credentials_path,
   )
-  if dotenv_target.is_file():
-    load_dotenv(dotenv_target, override=False)
-
-  raw = interpolate_env(pre_dict)
-  loaded_creds = _load_yaml_dict(creds_target, interpolate=True)
+  loaded_creds, accounts = load_and_normalize_credentials(
+    creds_target, persist_updates=persist_credential_updates
+  )
   sd_creds = _subdict(loaded_creds, "schedules_direct")
-  web_srv_creds = _subdict(loaded_creds, "web_server")
-  xt_srv_creds = _subdict(loaded_creds, "xtream_server")
-  xt_creds = _subdict(loaded_creds, "upstream_xtream", "xtream") or loaded_creds
 
   paths_raw = _subdict(raw, "paths")
   web_srv_raw = _subdict(raw, "web_server")
@@ -417,10 +491,10 @@ def build_config_from_raw_dict(
   out_raw = _subdict(pipe_raw, "output")
 
   cache_dir_path, xtream, validation = _build_xtream_and_validation_cfg(
-    paths_raw, xt_raw, xt_creds, val_raw
+    paths_raw, xt_raw, val_raw
   )
   lineup = _build_lineup_cfg(paths_raw, lu_raw, sd_creds)
-  serve = _build_serve_cfg(web_srv_raw, web_srv_creds, xt_srv_raw, xt_srv_creds)
+  serve = _build_serve_cfg(web_srv_raw, xt_srv_raw)
 
   state_dir_path = Path(_first_str(paths_raw.get("state_dir"), default="state"))
   state = StateConfig(
@@ -444,20 +518,12 @@ def build_config_from_raw_dict(
   )
 
   output = OutputConfig(
-    m3u8_enabled=bool(out_raw.get("m3u8_enabled", True)),
-    playlist_path=Path(
-      _first_str(
-        paths_raw.get("m3u8_playlist_path"),
-        default="output/bellhop.m3u8",
-      )
-    ),
     report_path=Path(
       _first_str(
-        paths_raw.get("m3u8_report_path"),
+        paths_raw.get("report_path"),
         default="output/lineup_report.json",
       )
     ),
-    xtream_enabled=bool(out_raw.get("xtream_enabled", True)),
     xtream_dir=Path(
       _first_str(
         paths_raw.get("xtream_output_dir"),
@@ -487,6 +553,7 @@ def build_config_from_raw_dict(
     config_file=config_file,
     credentials_file=creds_target,
     cache_dir=cache_dir_path,
+    accounts=accounts,
     xtream=xtream,
     validation=validation,
     lineup=lineup,
@@ -499,34 +566,36 @@ def build_config_from_raw_dict(
 
 def load_config(
   config_path: Path | str | None = None,
-  env_path: Path | str | None = None,
+  *,
   credentials_path: Path | str | None = None,
+  persist_credential_updates: bool = True,
 ) -> AppConfig:
-  """Load two-tier settings from `config.yaml`, `credentials.yaml`, & `.env`.
+  """Load configuration and accounts from `config.yaml` and `credentials.yaml`.
 
   Args:
     config_path: Explicit `config.yaml` path (defaults to `$BELLHOP_CONFIG` or
       `<project_root>/config.yaml`).
-    env_path: Optional explicit `.env` file path.
-    credentials_path: Optional explicit `credentials.yaml` path override.
+    credentials_path: Optional explicit `credentials.yaml` override path.
+    persist_credential_updates: When `True`, hash any plaintext `web_password`
+      entries and generate missing 8-char Xtream credentials on disk.
 
   Returns:
     Validated `AppConfig` instance.
 
   Raises:
-    FileNotFoundError: When an explicit `config_path` does not exist.
-    ValueError: When `trusted_proxy_ips` or numeric fields are invalid.
+    FileNotFoundError: When `config.yaml` or `credentials.yaml` does not exist.
+    ValueError: On invalid YAML values or account collisions.
   """
   root, explicit_cfg, yaml_target, base_dir = resolve_config_targets(
     config_path
   )
-  pre_raw = _load_yaml_dict(yaml_target, interpolate=False)
+  pre_raw = _load_yaml_dict(yaml_target)
   return build_config_from_raw_dict(
     pre_raw,
     root=root,
     base_dir=base_dir,
-    config_file=yaml_target if yaml_target.is_file() else None,
+    config_file=yaml_target,
     is_explicit=explicit_cfg is not None,
-    env_path=env_path,
     credentials_path=credentials_path,
+    persist_credential_updates=persist_credential_updates,
   )

@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 import yaml
 
+from bellhop.common.accounts import STREAM_CREDENTIAL_LENGTH
 from bellhop.common.http_utils import UPSTREAM_ERRORS
 from bellhop.config import load_config
 from tests.fake_xtream_server import (
@@ -64,9 +65,7 @@ def _detect_container_cli() -> str | None:
   return None
 
 
-def test_dockerfile_compose_and_env_contract(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_dockerfile_compose_and_env_contract(tmp_path: Path) -> None:
   dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
   assert "FROM node:22-alpine AS frontend-builder" in dockerfile
   assert "FROM python:3.13-alpine AS runtime" in dockerfile
@@ -144,7 +143,7 @@ def test_dockerfile_compose_and_env_contract(
   assert "find " in entrypoint_text
   assert "refusing to run as root" in entrypoint_text
 
-  # Validate docker-compose.example.yml structure & surfaced credentials/mounts.
+  # Validate docker-compose.example.yml structure & runtime env (no secrets).
   compose: dict[str, Any] = yaml.safe_load(
     (REPO_ROOT / "docker-compose.example.yml").read_text(encoding="utf-8")
   )
@@ -155,6 +154,14 @@ def test_dockerfile_compose_and_env_contract(
     "TZ",
     "PUID",
     "PGID",
+    "BELLHOP_CONFIG_DIR",
+    "BELLHOP_STATE_DIR",
+    "BELLHOP_CACHE_DIR",
+    "BELLHOP_OUTPUT_DIR",
+    "BELLHOP_CONFIG",
+  ):
+    assert key in env_map, f"Missing {key} in docker-compose.example.yml"
+  for legacy_key in (
     "BELLHOP_WEB_USERNAME",
     "BELLHOP_WEB_PASSWORD",
     "BELLHOP_SERVE_USERNAME",
@@ -163,7 +170,9 @@ def test_dockerfile_compose_and_env_contract(
     "XTREAM_USERNAME",
     "XTREAM_PASSWORD",
   ):
-    assert key in env_map, f"Missing {key} in docker-compose.example.yml"
+    assert legacy_key not in env_map, (
+      f"Legacy secret env var {legacy_key} must not exist in docker-compose.example.yml"
+    )
 
   volumes = svc["volumes"]
   for target in (":/config", ":/data/state", ":/data/cache", ":/data/output"):
@@ -171,44 +180,48 @@ def test_dockerfile_compose_and_env_contract(
       f"Missing {target} mount in docker-compose.example.yml"
     )
 
-  # Validate .env.example exposes all container + login credentials.
+  # Validate .env.example exposes ONLY runtime settings (zero secrets).
   env_example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
-  for key in (
-    "TZ=",
-    "PUID=",
-    "PGID=",
-    "BELLHOP_PORT=",
-    "BELLHOP_WEB_USERNAME=",
-    "BELLHOP_WEB_PASSWORD=",
-    "BELLHOP_SERVE_USERNAME=",
-    "BELLHOP_SERVE_PASSWORD=",
-    "XTREAM_SERVER_URL=",
-    "XTREAM_USERNAME=",
-    "XTREAM_PASSWORD=",
-  ):
+  for key in ("TZ=", "PUID=", "PGID=", "BELLHOP_PORT="):
     assert key in env_example, f"Missing {key} in .env.example"
-  assert "without cookie login" not in env_example
+  for legacy_key in (
+    "BELLHOP_WEB_USERNAME",
+    "BELLHOP_WEB_PASSWORD",
+    "BELLHOP_SERVE_USERNAME",
+    "BELLHOP_SERVE_PASSWORD",
+    "XTREAM_SERVER_URL",
+    "XTREAM_USERNAME",
+    "XTREAM_PASSWORD",
+  ):
+    assert legacy_key not in env_example, (
+      f"Legacy secret env var {legacy_key} must not exist in .env.example"
+    )
 
-  # Validate docker/config.docker.yaml loads cleanly with env credentials.
-  monkeypatch.setenv("BELLHOP_WEB_USERNAME", "docker_admin")
-  monkeypatch.setenv("BELLHOP_WEB_PASSWORD", "docker_web_pw")
-  monkeypatch.setenv("BELLHOP_SERVE_USERNAME", "docker_xt")
-  monkeypatch.setenv("BELLHOP_SERVE_PASSWORD", "docker_xt_pw")
-  monkeypatch.setenv("XTREAM_SERVER_URL", "http://upstream.local:8080")
-  monkeypatch.setenv("XTREAM_USERNAME", "up_u")
-  monkeypatch.setenv("XTREAM_PASSWORD", "up_p")
-
+  # Validate docker/config.docker.yaml + credentials.docker.yaml seed cleanly.
+  seeded_creds = tmp_path / "credentials.yaml"
+  seeded_creds.write_text(
+    (REPO_ROOT / "docker" / "credentials.docker.yaml").read_text(
+      encoding="utf-8"
+    ),
+    encoding="utf-8",
+  )
   seeded_cfg = tmp_path / "config.yaml"
   seeded_cfg.write_text(
-    (REPO_ROOT / "docker" / "config.docker.yaml").read_text(encoding="utf-8"),
+    (REPO_ROOT / "docker" / "config.docker.yaml")
+    .read_text(encoding="utf-8")
+    .replace('"/config/credentials.yaml"', f'"{seeded_creds}"'),
     encoding="utf-8",
   )
   cfg = load_config(seeded_cfg)
-  assert cfg.serve.web.username == "docker_admin"
-  assert cfg.serve.web.password == "docker_web_pw"
-  assert cfg.serve.xtream.username == "docker_xt"
-  assert cfg.serve.xtream.password == "docker_xt_pw"
-  assert cfg.xtream.server_url == "http://upstream.local:8080"
+  assert len(cfg.accounts) == 1
+  acct = cfg.accounts[0]
+  assert acct.account_id == "admin"
+  assert acct.email == "admin@example.com"
+  assert acct.web_password_hash.startswith("scrypt$")
+  assert "change_me_web" not in seeded_creds.read_text(encoding="utf-8")
+  assert len(acct.xtream_username) == STREAM_CREDENTIAL_LENGTH
+  assert len(acct.xtream_password) == STREAM_CREDENTIAL_LENGTH
+  assert cfg.xtream.server_url == "http://provider.example:8080"
   assert str(cfg.state.state_dir) == "/data/state"
   assert str(cfg.xtream.cache_dir) == "/data/cache"
   assert str(cfg.output.xtream_dir) == "/data/output/xtream"
@@ -244,13 +257,13 @@ def test_requirements_lock_and_vendored_player_provenance() -> None:
   for required_pkg in (
     "aiohttp",
     "pyyaml",
-    "python-dotenv",
     "rich",
     "ruamel-yaml",
   ):
     assert required_pkg in locked, (
       f"Missing top-level runtime dependency {required_pkg} in requirements.lock"
     )
+  assert "python-dotenv" not in locked
 
   vendor_dir = REPO_ROOT / "src" / "bellhop" / "web" / "static" / "vendor"
   versions_md = (vendor_dir / "VERSIONS.md").read_text(encoding="utf-8")
@@ -359,13 +372,14 @@ channels:
         f'"{lineup_yaml}"',
       )
       .replace(
-        '"/data/output/bellhop.m3u8"', f'"{output_dir / "bellhop.m3u8"}"'
-      )
-      .replace(
         '"/data/output/lineup_report.json"',
         f'"{output_dir / "lineup_report.json"}"',
       )
       .replace('"/data/output/xtream"', f'"{output_dir / "xtream"}"')
+      .replace(
+        '"http://provider.example:8080"',
+        f'"{fake_xtream.base_url}"',
+      )
       .replace(
         '  host: "0.0.0.0"\n  port: 8080',
         f'  host: "127.0.0.1"\n  port: {port}',
@@ -373,6 +387,22 @@ channels:
       .replace('backend: "auto"', 'backend: "yaml"')
     )
     default_tpl.write_text(tpl_text, encoding="utf-8")
+
+    default_creds_tpl = tmp_path / "credentials.docker.test.yaml"
+    default_creds_tpl.write_text(
+      """\
+accounts:
+  e2e_admin:
+    email: "e2e_admin@example.com"
+    web_password: "e2e_web_password"
+    xtream_username: "e2e_xt_user"
+    xtream_password: "e2e_xt_password"
+    upstream_username: "up_user"
+    upstream_password: "up_secret"
+    pipeline: true
+""",
+      encoding="utf-8",
+    )
 
     venv_bin = str(Path(sys.executable).parent)
     env = os.environ.copy()
@@ -386,20 +416,14 @@ channels:
         "BELLHOP_OUTPUT_DIR": str(output_dir),
         "BELLHOP_CONFIG": str(cfg_dir / "config.yaml"),
         "BELLHOP_DEFAULT_CONFIG": str(default_tpl),
-        "BELLHOP_WEB_USERNAME": "e2e_admin",
-        "BELLHOP_WEB_PASSWORD": "e2e_web_password",
-        "BELLHOP_SERVE_USERNAME": "e2e_xt_user",
-        "BELLHOP_SERVE_PASSWORD": "e2e_xt_password",
-        "XTREAM_SERVER_URL": fake_xtream.base_url,
-        "XTREAM_USERNAME": "up_user",
-        "XTREAM_PASSWORD": "up_secret",
+        "BELLHOP_DEFAULT_CREDENTIALS": str(default_creds_tpl),
       }
     )
 
     entrypoint = str(REPO_ROOT / "docker" / "entrypoint.sh")
 
-    # 1. First invocation seeds /config/config.yaml and runs pipeline via
-    #    entrypoint.
+    # 1. First invocation seeds /config/{config,credentials}.yaml and runs
+    #    pipeline via entrypoint.
     run_proc = await asyncio.to_thread(
       subprocess.run,
       [entrypoint, "bellhop", "run", "--skip", "validate", "--quiet"],
@@ -414,9 +438,14 @@ channels:
       f"entrypoint bellhop run failed:\n{run_proc.stdout}\n{run_proc.stderr}"
     )
     assert (cfg_dir / "config.yaml").is_file()
+    assert (cfg_dir / "credentials.yaml").is_file()
+    assert "e2e_web_password" not in (cfg_dir / "credentials.yaml").read_text(
+      encoding="utf-8"
+    )
     assert (state_dir / "channel_mapping.json").is_file()
-    assert (output_dir / "bellhop.m3u8").is_file()
+    assert (output_dir / "lineup_report.json").is_file()
     assert (output_dir / "xtream" / "bellhop_xtream_playlist.json").is_file()
+    assert not (output_dir / "bellhop.m3u8").exists()
 
     # 2. Launch `entrypoint.sh` with default CMD (`bellhop serve`) and verify
     #    HTTP E2E.
@@ -457,14 +486,22 @@ channels:
       assert (await client.get("/favicon.ico")).status_code == 200
       assert (await client.get("/static/prefs.js")).status_code == 200
 
-      # Authenticate using the surfaced BELLHOP_WEB_USERNAME / PASSWORD env
-      # vars.
+      # Authenticate with seeded credentials.yaml account.
       login_r = await client.post(
         "/api/auth/login",
-        json={"username": "e2e_admin", "password": "e2e_web_password"},
+        json={
+          "email": "e2e_admin@example.com",
+          "password": "e2e_web_password",
+        },
       )
       assert login_r.status_code == 200
       assert login_r.json()["authenticated"] is True
+      assert login_r.json()["email"] == "e2e_admin@example.com"
+
+      acct_r = await client.get("/api/account")
+      assert acct_r.status_code == 200
+      assert acct_r.json()["xtream_username"] == "e2e_xt_user"
+      assert (await client.get("/api/config")).status_code == 404
 
       lineup_r = await client.get("/api/lineup")
       assert lineup_r.status_code == 200
@@ -482,14 +519,24 @@ channels:
             break
         assert first_chunk[0] == 0x47
 
-      # Passthrough Xtream API honors surfaced BELLHOP_SERVE_USERNAME /
-      # PASSWORD.
+      # Passthrough Xtream API honors credentials.yaml & dynamic M3U8.
       xt_r = await client.get(
         "/player_api.php",
         params={"username": "e2e_xt_user", "password": "e2e_xt_password"},
       )
       assert xt_r.status_code == 200
       assert xt_r.json()["user_info"]["auth"] == 1
+
+      m3u_r = await client.get(
+        "/get.php",
+        params={
+          "username": "e2e_xt_user",
+          "password": "e2e_xt_password",
+          "type": "m3u_plus",
+        },
+      )
+      assert m3u_r.status_code == 200
+      assert "/live/e2e_xt_user/e2e_xt_password/710101.ts" in m3u_r.text
 
       epg_r = await client.get(
         "/xmltv.php",
@@ -613,20 +660,6 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
         f"PUID={uid}",
         "-e",
         f"PGID={gid}",
-        "-e",
-        "BELLHOP_WEB_USERNAME=container_admin",
-        "-e",
-        "BELLHOP_WEB_PASSWORD=container_pw",
-        "-e",
-        "BELLHOP_SERVE_USERNAME=container_xt",
-        "-e",
-        "BELLHOP_SERVE_PASSWORD=container_xt_pw",
-        "-e",
-        f"XTREAM_SERVER_URL={fake_xtream.base_url}",
-        "-e",
-        "XTREAM_USERNAME=up_user",
-        "-e",
-        "XTREAM_PASSWORD=up_secret",
         "-v",
         f"{cfg_dir}:/config",
         "-v",
@@ -644,16 +677,17 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
     )
     assert start.returncode == 0, f"Container start failed:\n{start.stderr}"
 
+    # Verify auto-seeded config & credentials, PUID/PGID ownership, and TZ
     async with TestHttpClient(
       base_url=f"http://127.0.0.1:{host_port}",
       follow_redirects=False,
       timeout=10.0,
-    ) as client:
+    ) as init_client:
       # 1. Wait for Docker HEALTHCHECK endpoint (/api/auth/status).
       ready = False
       for _ in range(60):
         try:
-          r = await client.get("/api/auth/status")
+          r = await init_client.get("/api/auth/status")
           if r.status_code == 200 and r.json()["auth_required"] is True:
             ready = True
             break
@@ -671,14 +705,56 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
           f"STDOUT:\n{logs.stdout}\nSTDERR:\n{logs.stderr}"
         )
 
-      # 2. Verify auto-seeded config, PUID/PGID ownership, non-root process, and
-      #    TZ.
+      # 2. Verify auto-seeded config.yaml + credentials.yaml, ownership, and TZ.
       seeded = cfg_dir / "config.yaml"
+      seeded_creds = cfg_dir / "credentials.yaml"
       assert seeded.is_file()
-      st = seeded.stat()
-      assert st.st_uid == uid
-      assert st.st_gid == gid
+      assert seeded_creds.is_file()
+      for fpath in (seeded, seeded_creds):
+        st = fpath.stat()
+        assert st.st_uid == uid
+        assert st.st_gid == gid
+      assert "change_me_web" not in seeded_creds.read_text(encoding="utf-8")
 
+      # Initial seeded account logs in via email & checks /api/account
+      # (/api/config -> 404).
+      init_login = await init_client.post(
+        "/api/auth/login",
+        json={"email": "admin@example.com", "password": "change_me_web"},
+      )
+      assert init_login.status_code == 200
+      assert (await init_client.get("/api/account")).status_code == 200
+      assert (await init_client.get("/api/config")).status_code == 404
+
+      # Configure live provider & test credentials in mounted config files.
+      seeded.write_text(
+        seeded.read_text(encoding="utf-8").replace(
+          '"http://provider.example:8080"', f'"{fake_xtream.base_url}"'
+        ),
+        encoding="utf-8",
+      )
+      seeded.chmod(0o600)
+      seeded_creds.write_text(
+        """\
+accounts:
+  container_admin:
+    email: "container_admin@example.com"
+    web_password: "container_pw"
+    xtream_username: "container_xt"
+    xtream_password: "container_xt_pw"
+    upstream_username: "up_user"
+    upstream_password: "up_secret"
+    pipeline: true
+""",
+        encoding="utf-8",
+      )
+      seeded_creds.chmod(0o600)
+
+    async with TestHttpClient(
+      base_url=f"http://127.0.0.1:{host_port}",
+      follow_redirects=False,
+      timeout=10.0,
+    ) as client:
       tz_check = await asyncio.to_thread(
         subprocess.run,
         [container_cli, "exec", container_name, "date", "+%Z"],
@@ -690,7 +766,7 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
       assert tz_check.returncode == 0
       assert tz_check.stdout.strip() in {"EST", "EDT"}
 
-      # 3. Run the 6-phase pipeline via plain `docker exec` (NO `-u` flag!):
+      # 3. Run the 5-phase pipeline via plain `docker exec` (NO `-u` flag!):
       # `docker exec` starts as uid 0, and `/usr/local/bin/bellhop` must
       # auto-drop
       #    privileges to PUID:PGID so volume files are never created as root.
@@ -726,17 +802,19 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
       )
 
       # Verify mounted state & output artifacts exist on host with PUID:PGID
-      # ownership.
+      # ownership (and no legacy static bellhop.m3u8).
       mapping_file = state_dir / "channel_mapping.json"
-      m3u8_file = output_dir / "bellhop.m3u8"
+      report_file = output_dir / "lineup_report.json"
       xt_bundle = output_dir / "xtream" / "bellhop_xtream_playlist.json"
-      for artifact in (mapping_file, m3u8_file, xt_bundle):
+      for artifact in (mapping_file, report_file, xt_bundle):
         assert artifact.is_file(), f"Missing expected artifact {artifact}"
         assert artifact.stat().st_uid == uid
         assert artifact.stat().st_gid == gid
+      assert not (output_dir / "bellhop.m3u8").exists()
+      assert "container_pw" not in seeded_creds.read_text(encoding="utf-8")
 
       # 4. Verify unauthenticated redirect, public brand/favicon/prefs assets,
-      #    and login.
+      #    and email login.
       root_r = await client.get("/")
       assert root_r.status_code == 302
       assert root_r.headers["location"] == "/login"
@@ -749,10 +827,14 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
 
       login_r = await client.post(
         "/api/auth/login",
-        json={"username": "container_admin", "password": "container_pw"},
+        json={
+          "email": "container_admin@example.com",
+          "password": "container_pw",
+        },
       )
       assert login_r.status_code == 200
       assert login_r.json()["authenticated"] is True
+      assert login_r.json()["account_id"] == "container_admin"
 
       index_r = await client.get("/")
       assert index_r.status_code == 200
@@ -777,16 +859,15 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
       assert channels_by_chno[1401]["now_playing"]["title"] == "SportsCentre"
       assert (cache_dir / "epg.sqlite3").is_file()
 
-      # Verify /api/config exposes operational config with zero secrets/paths.
-      cfg_r = await client.get("/api/config")
-      assert cfg_r.status_code == 200
-      cfg_payload = cfg_r.json()
-      assert cfg_payload["available"] is True
-      assert "web_server" not in cfg_payload["config"]
-      assert "xtream_server" not in cfg_payload["config"]
-      assert "paths" not in cfg_payload["config"]
-      assert "container_pw" not in cfg_r.text
-      assert "up_secret" not in cfg_r.text
+      # Verify /api/account hides upstream secrets & /api/config returns 404.
+      assert (await client.get("/api/config")).status_code == 404
+      acct_r = await client.get("/api/account")
+      assert acct_r.status_code == 200
+      acct_payload = acct_r.json()
+      assert acct_payload["email"] == "container_admin@example.com"
+      assert acct_payload["xtream_username"] == "container_xt"
+      assert "container_pw" not in acct_r.text
+      assert "up_secret" not in acct_r.text
 
       # 6. Verify live MPEG-TS streaming + single-tuner HLS preemption through
       #    container.
@@ -813,8 +894,7 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
       assert seg_r.content[0] == 0x47
       assert fake_xtream.connection_limit_violations == 0
 
-      # 7. Verify Passthrough Xtream Codes API with surfaced BELLHOP_SERVE
-      #    credentials.
+      # 7. Verify Passthrough Xtream Codes API & on-demand `/get.php` M3U8.
       xt_auth = await client.get(
         "/player_api.php",
         params={"username": "container_xt", "password": "container_xt_pw"},
@@ -834,6 +914,17 @@ async def test_docker_image_build_and_container_e2e(tmp_path: Path) -> None:
       stream_ids = {int(s["stream_id"]) for s in xt_streams.json()}
       assert 710101 in stream_ids
       assert 710401 in stream_ids
+
+      xt_m3u = await client.get(
+        "/get.php",
+        params={
+          "username": "container_xt",
+          "password": "container_xt_pw",
+          "type": "m3u_plus",
+        },
+      )
+      assert xt_m3u.status_code == 200
+      assert "/live/container_xt/container_xt_pw/710101.ts" in xt_m3u.text
 
       xt_epg = await client.get(
         "/xmltv.php",

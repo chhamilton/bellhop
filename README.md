@@ -4,8 +4,8 @@
 
 It maps a raw **Xtream Codes** live stream catalog onto an official cable/fiber TV lineup (using the bundled sample YAML lineup or any North American provider via **TV Guide**, **Schedules Direct**, or **YAML**), validates **only** candidate streams, and serves both:
 
-1. **Bellhop Web TV Guide & Live Browser Player** (`mpegts.js` + `hls.js`) with a single-tuner relay, 2D sticky Timeline EPG, stateful deep-link URLs, cookie-based login, and a live operational Settings drawer.
-2. **Passthrough Xtream Codes & M3U Server** (`player_api.php`, `player.php`, `panel_api.php`, `get.php`, `xmltv.php`, `/live/...`) presenting curated lineup categories, channel numbers, official logos, and `302` stream/EPG passthroughs to any IPTV client (TiviMate, UHF, VLC, Kodi, Channels).
+1. **Bellhop Web TV Guide & Live Browser Player** (`mpegts.js` + `hls.js`) with per-account isolated single-tuner relays, 2D sticky Timeline EPG, stateful deep-link URLs, email-based scrypt login, and an Account & Player Setup drawer.
+2. **Multi-Account Passthrough Xtream Codes & M3U8 Server** (`player_api.php`, `player.php`, `panel_api.php`, `get.php`, `xmltv.php`, `/live/...`) presenting curated lineup categories, channel numbers, official logos, dynamic per-user M3U8 playlists, and per-account `302` stream passthroughs to any IPTV client (TiviMate, UHF, VLC, Kodi, Channels).
 
 ---
 
@@ -16,11 +16,11 @@ It maps a raw **Xtream Codes** live stream catalog onto an official cable/fiber 
 ./.agents/scripts/bootstrap.sh
 source .venv/bin/activate
 
-# 2. Configure host paths, credentials, and lineup settings:
+# 2. Configure host paths, accounts/credentials, and lineup settings:
 cp credentials.example.yaml credentials.yaml
 cp config.example.yaml config.yaml
 
-# 3. Run the 6-phase pipeline (skip live stream probing if tuner is in use):
+# 3. Run the 5-phase pipeline (skip live stream probing if tuner is in use):
 bellhop run --skip validate
 
 # 4. Launch the unified Bellhop Web Guide + Passthrough Xtream API server (default 0.0.0.0:8080):
@@ -31,7 +31,7 @@ bellhop serve
 
 ## Architecture Overview
 
-### 1. Six-Phase Stateful Pipeline (`bellhop run`)
+### 1. Five-Phase Stateful Pipeline (`bellhop run`)
 Executed by `PipelineRunner` (`src/bellhop/pipeline/runner.py`) and driven exclusively by `config.yaml`:
 
 1. **`lineup` — Multi-Backend Lineup Retrieval & Grouping** *(30-day TTL in `state/lineups/`)*
@@ -44,11 +44,9 @@ Executed by `PipelineRunner` (`src/bellhop/pipeline/runner.py`) and driven exclu
 3. **`match` — Incremental Multi-Signal Channel Matcher**
    - Reconciles `state/channel_mapping.json` with `5.0`-point upgrade hysteresis (or `--reset-mapping` for a clean rebuild), ranking regional feed affinity, callsigns, verified native `epg_channel_id`s, and quality (`4K` > `FHD/60fps` > `HD` > `SD`).
 4. **`validate` — Candidate-Only Live Stream Validation**
-   - Probes **only** matched candidate streams (`only_changed: true` by default), respecting single-tuner `max_connections: 1`, rejecting offline `/black.ts` placeholder redirects, verifying Stage-2 codecs & audio language (`check_audio_language`) via `ffprobe`, and optionally detecting Stage-3 black feeds via `ffmpeg -vf blackdetect` (both pinned to `-protocol_whitelist http,https,tcp,tls,crypto,hls`).
-5. **`m3u8` — Extended M3U8 Playlist & Diagnostics Report**
-   - Writes `output/bellhop.m3u8` and `output/lineup_report.json`.
-6. **`xtream` — Xtream JSON Bundle, Passthrough EPG Verification & SQLite Hydration**
-   - Verifies upstream `xmltv.php` reachability with a lightweight ~4 KB probe, exports `bellhop_xtream_playlist.json`, `get_live_streams.json`, and `get_live_categories.json` to `output/xtream/` (hot-reloaded automatically by running servers), and hydrates the local SQLite EPG database.
+   - Probes **only** matched candidate streams (`only_changed: true` by default) via the configured `pipeline: true` account, respecting `max_connections`, rejecting offline `/black.ts` placeholder redirects, verifying Stage-2 codecs & audio language (`check_audio_language`) via `ffprobe`, and optionally detecting Stage-3 black feeds via `ffmpeg -vf blackdetect` (both pinned to `-protocol_whitelist http,https,tcp,tls,crypto,hls`).
+5. **`export` — Diagnostics Report, Xtream JSON Bundle & SQLite EPG Hydration**
+   - Writes `output/lineup_report.json`, verifies upstream `xmltv.php` reachability with a lightweight ~4 KB probe, exports credential-free `bellhop_xtream_playlist.json`, `get_live_streams.json`, and `get_live_categories.json` to `output/xtream/` (hot-reloaded automatically by running servers; playlists are served dynamically on `/get.php`), and hydrates the local SQLite EPG database.
 
 ### 2. Unified Runtime Server (`bellhop serve`)
 - **Co-Existing or Split `aiohttp.web` Listeners (`src/bellhop/serve.py`):**
@@ -56,29 +54,23 @@ Executed by `PipelineRunner` (`src/bellhop/pipeline/runner.py`) and driven exclu
 - **Bellhop Web TV Guide & Single-Tuner Proxy (`src/bellhop/web/`):**
   - **Views & Filtering:** Category-grouped **Cards** and a 4-hour 2D sticky **Timeline** EPG grid (with continuous `NOW` indicator across category banners), live search, a **With Guide** toggle to hide channels without EPG data, category-relative counts with subtle color cues, and stateful URL query parameters (`?cat=&epg=1&q=&view=timeline&offset=&mode=hls&ch=`).
   - **Theming, Branding & Client Settings (`src/bellhop/web/frontend/`):** Strictly typed ES2022 TypeScript modules (`api_contracts.d.ts`, `types.d.ts`, `prefs.ts`, `login.ts`, `guide_logic.ts`, `render.ts`, `player.ts`, `settings.ts`, `app.ts` compiled to `src/bellhop/web/static/*.js`) featuring the Bellhop Play Bell SVG logo & multi-size favicon, complementary **Dark / Light Mode** with a Sun/Moon toggle on both `/` and `/login`, incremental 30s EPG progress updates, modal focus trapping & Timeline keyboard navigation, and an extensible JSON `localStorage` client settings store (`bellhop.settings` via `window.BellhopSettings`).
-  - **Single-Tuner Stream Relay (`TunerSessionManager`):** Proxies live MPEG-TS (`/api/stream/<chno>.ts` via `Transfer-Encoding: chunked`) and HLS (`/api/hls/<chno>/index.m3u8` with 60s edge-URL affinity and opaque server-side segment tokens via `?u=...`), enforcing settle delays between channel switches and automatic failover across `fallback_sources`. Upstream credentials never leave the server when viewing through the Web Guide.
+  - **Per-Account Single-Tuner Stream Relay (`TunerSessionManager`):** Proxies live MPEG-TS (`/api/stream/<chno>.ts` via `Transfer-Encoding: chunked`) and HLS (`/api/hls/<chno>/index.m3u8` with 60s edge-URL affinity and opaque per-account server-side segment tokens via `?u=...`), enforcing settle delays between channel switches, isolated per-user tuner handoffs, and automatic failover across `fallback_stream_ids` / `fallback_sources`. Upstream credentials never leave the server when viewing through the Web Guide.
   - **Embedded WAL-Mode SQLite EPG Store (`src/bellhop/epg/`):** Syncs Schedules Direct SD-JSON (`20141201` MD5 differential) and upstream `xmltv.php` backfill on demand without consuming the live-stream tuner, persisting indexed schedules in `cache/epg.sqlite3` with incremental auto-vacuum and 14-day retention.
-  - **Authentication & Scoped Settings UI:** Mandatory signed HMAC-SHA256 session cookies (`bellhop_session`) with persistent revocations (`cache/session_revoked.json`, 30s grace window on sliding renewal), constant-time credential verification, IPv6 `/64`-aware failed-login throttling (`429` + `Retry-After`), CSRF validation, strict `Content-Security-Policy` (`script-src 'self' blob:; form-action 'self'`), internal-only `/login?next=...` redirects, and a **Settings** drawer (`GET/PUT /api/config`) preserving YAML comments and `${ENV}` placeholders via `ruamel.yaml` while keeping `web_server`, `xtream_server`, filesystem paths, and credentials strictly server-side.
-- **Passthrough Xtream Codes API (`src/bellhop/xtream/server.py`):**
-  - Supports `/player_api.php`, `/player.php`, `/panel_api.php`, `/get.php` (`m3u` & `m3u_plus`, `ts` & `hls`/`m3u8`, `category_id` filters), `/playlist.m3u`, `/playlist.m3u8`, local SQLite-backed `get_short_epg` / `get_simple_data_table` & chunked `/xmltv.php` (`302` upstream fallback only if SQLite is empty), and HTTP `302` upstream redirects for `/live/<user>/<pass>/<id>[.<ext>]`.
-  - **Security Note on Passthrough Redirects:** While `/player_api.php` strips `direct_source` from JSON listings, the `302` passthrough redirects on `/live/...` necessarily include the upstream provider URL and credentials in the HTTP `Location` header returned to authenticated Xtream clients so video flows directly from the IPTV provider without double-proxying. Use dedicated `xtream_server` client credentials on trusted LANs/VPNs, or use the Web TV Guide for fully server-proxied playback.
+  - **Email Auth (`scrypt`) & Account Setup Drawer:** Mandatory signed HMAC-SHA256 `v2` session cookies (`bellhop_session`, auto-generated secret in `cache/session_secret.key`—delete live to revoke all sessions immediately; persistent `jti` revocations in `cache/session_revoked.json`), scrypt password verification & in-place YAML auto-hashing, IPv6 `/64`-aware failed-login throttling (`429` + `Retry-After`), CSRF validation, strict `Content-Security-Policy` (`script-src 'self' blob:; form-action 'self'`), internal-only `/login?next=...` redirects, and the **Account & Player Setup** drawer (`/api/account*`) for password changes, regenerating 8-char Bellhop Xtream credentials, and copying player URLs.
+- **Multi-Account Passthrough Xtream Codes API (`src/bellhop/xtream/server.py`):**
+  - Supports `/player_api.php`, `/player.php`, `/panel_api.php`, on-demand `/get.php` (`m3u` & `m3u_plus`, `ts` & `hls`/`m3u8`, `category_id` filters), `/playlist.m3u`, `/playlist.m3u8`, local SQLite-backed `get_short_epg` / `get_simple_data_table` & chunked `/xmltv.php` (`302` upstream fallback only if SQLite is empty), and HTTP `302` upstream redirects for `/live/<user>/<pass>/<id>[.<ext>]` routed per-account to each user's own `upstream_username` / `upstream_password`.
+  - **Security Note on Passthrough Redirects:** While `/player_api.php` and exported JSON strips `direct_source` credentials, `302` passthrough redirects on `/live/...` necessarily include that account's upstream provider URL and credentials in the HTTP `Location` header returned to authenticated Xtream clients so video streams directly from the provider without double-proxying. Use dedicated per-account `xtream_username`/`xtream_password` credentials on trusted LANs/VPNs, or use the Web TV Guide for fully server-proxied playback.
 - **Domain Subpackage Layering (`src/bellhop/*`):**
   - `src/bellhop/` is structured into 6 acyclic domain layers (`common`, `config`, `epg`, `pipeline`, `xtream`, `web`) enforced on every test run by `test_bellhop_domain_layer_boundaries`.
 
 ---
 
-## Two-Tier Configuration (`config.yaml` & `credentials.yaml`)
+## Configuration (`config.yaml` & `credentials.yaml`)
 
-All persistent settings belong in `config.yaml` (see [config.example.yaml](config.example.yaml) and [credentials.example.yaml](credentials.example.yaml)):
+All settings live strictly in `config.yaml` and `credentials.yaml` (see [config.example.yaml](config.example.yaml) and [credentials.example.yaml](credentials.example.yaml)):
 
-1. **Infrastructure & Host Settings (config-file only, never exposed to Web UI):**
-   - `credentials_file` — Path to `credentials.yaml`
-   - `paths` — `cache_dir`, `state_dir`, `mapping_path`, `lineup_file`, `m3u8_playlist_path`, `m3u8_report_path`, `xtream_output_dir`, `seed_json`, `xmltv_file`
-   - `web_server` — Bind `host`/`port`, `settle_ms`, `session_ttl_hours`, mandatory Web Guide login credentials, and reverse-proxy `X-Forwarded-For` trust (`trust_proxy_headers` + `trusted_proxy_ips` allowlist)
-   - `xtream_server` — Passthrough Xtream API `enabled`, optional `host`/`port` override, `public_host`/`public_port`, `server_protocol`, and dedicated Xtream client credentials
-2. **Operational Settings (inspectable & editable by authenticated users via the Web UI Settings drawer, excluding credentials):**
-   - `upstream_xtream` — Upstream server URL, `stream_format` (`ts`/`m3u8`), timeout, catalog `refresh_hours`
-   - `pipeline` — `lineup` (backend, lineup ID, postal code, `collapse_sd_dupes`, `exclude_audio`, `pinned_streams`, `excluded_channels`), `matching` (`upgrade_hysteresis_score`), `validation`, `epg`, and `output` toggles
+- **`config.yaml`:** `credentials_file`, `paths` (`cache_dir`, `state_dir`, `mapping_path`, `lineup_file`, `report_path`, `xtream_output_dir`, `seed_json`, `xmltv_file`), `web_server`, `xtream_server`, `upstream_xtream` (`server_url`, `stream_format`, timeouts/TTL), and `pipeline` (`lineup`, `matching`, `validation`, `epg`, `output`).
+- **`credentials.yaml`:** `accounts:` (each entry defines `email`, `web_password` or auto-hashed `scrypt$` `web_password_hash`, `xtream_username`/`xtream_password`, `upstream_username`/`upstream_password`, and optional `pipeline: true`), plus optional `schedules_direct` (`username`, `password`, `auto_add_lineup`).
 
 ---
 
@@ -88,7 +80,7 @@ All persistent state files, exported playlists, and HTTP API payloads are backed
 
 | Artifact / Endpoint | Typed Model / Schema | Key Structure Layout |
 |---|---|---|
-| `config.yaml` + `/api/config` | `AppConfig`, `PublicConfigPayload` ([config/](src/bellhop/config/), [api_contracts.py](src/bellhop/common/api_contracts.py)) | **Tier 1 (file-only):** `credentials_file`, `paths`, `web_server`, `xtream_server`. **Tier 2 (`/api/config`):** `{upstream_xtream, pipeline: {lineup, matching, validation, epg, output}}`. |
+| `config.yaml` + `credentials.yaml` | `AppConfig`, `UserAccount`, `AccountInfoResponseDict` ([config/](src/bellhop/config/), [accounts.py](src/bellhop/common/accounts.py), [api_contracts.py](src/bellhop/common/api_contracts.py)) | File-backed config + multi-account `accounts:` (`email`, `web_password_hash`, `xtream_*`, `upstream_*`, `pipeline`). `/api/account*` exposes only the caller's Xtream credentials, player URLs, and password change. |
 | `state/lineups/<id>.json` | `LineupRetrievalResult`, `CableLineup`, `LineupChannelDict` ([lineup_retriever.py](src/bellhop/pipeline/lineup_retriever.py), [models.py](src/bellhop/pipeline/models.py)) | `{saved_timestamp, lineup_id, backend, last_diff, lineup: {provider, market, channels: [LineupChannelDict]}}`. |
 | `state/catalogs/iptv_catalog_*.json` | `CatalogFetchResult`, `CatalogDiff`, `XtreamStream` ([catalog_fetcher.py](src/bellhop/pipeline/catalog_fetcher.py)) | `{saved_timestamp, account, categories, stream_count, last_diff, streams: [...]}`. |
 | `state/channel_mapping.json` | `MappingDocument`, `ChannelMappingSlot`, `CandidateRecord`, `ProbeResultDict` ([mapping_state.py](src/bellhop/pipeline/mapping_state.py)) | `{schema_version: 1, lineup_id, last_summary, slots: {"<chno>": {preferred_stream_id, preferred_source, change_status, candidates: [...]}}}`. |
@@ -113,7 +105,7 @@ bellhop run --dry-run
 # Run pipeline without probing live streams (safe while watching TV):
 bellhop run --skip validate
 
-# Run specific phase(s) (`export` is shorthand for `m3u8,xtream`):
+# Run specific phase(s) (`lineup`, `catalog`, `match`, `validate`, `export` / `epg`):
 bellhop run --phase lineup,catalog,match
 bellhop run --phase validate --reprobe-all
 bellhop run --phase export
@@ -133,14 +125,15 @@ bellhop serve
 Bellhop ships with a multi-stage Alpine Linux [Dockerfile](Dockerfile) (`node:22-alpine` TypeScript builder → `python:3.13-alpine` runtime with `tzdata`, `su-exec`, `ca-certificates`, and `ffmpeg`/`ffprobe`), an example [.env.example](.env.example), and [docker-compose.example.yml](docker-compose.example.yml).
 
 ```bash
-# 1. Copy example env & compose files and fill in your credentials:
+# 1. Copy example env & compose files, plus config.yaml and credentials.yaml into ./docker-data/config/:
 cp .env.example .env
 cp docker-compose.example.yml docker-compose.yml
+mkdir -p docker-data/config && cp config.example.yaml docker-data/config/config.yaml && cp credentials.example.yaml docker-data/config/credentials.yaml
 
 # 2. Build and start Bellhop (`bellhop serve` on port 8080):
 docker compose up -d --build
 
-# 3. Run the 6-phase pipeline inside the container (skip validate if tuner is in use):
+# 3. Run the 5-phase pipeline inside the container (skip validate if tuner is in use):
 docker compose exec bellhop bellhop run --skip validate
 ```
 
@@ -148,14 +141,13 @@ docker compose exec bellhop bellhop run --skip validate
 
 | Mount Point | Purpose |
 |---|---|
-| `/config` | `config.yaml` (auto-seeded from [docker/config.docker.yaml](docker/config.docker.yaml) on first boot) and optional `credentials.yaml` |
+| `/config` | `config.yaml` and `credentials.yaml` (auto-seeded from [docker/](docker/) templates on first boot) |
 | `/data/state` | Monthly lineup snapshots, daily catalog snapshots, and `channel_mapping.json` |
 | `/data/cache` | Embedded WAL SQLite EPG store (`epg.sqlite3`), SD token (`sd_token.json`), `iptv_org/` metadata cache, persistent session signing key (`session_secret.key`), and revocations (`session_revoked.json`) |
-| `/data/output` | Exported `bellhop.m3u8`, `lineup_report.json`, and `xtream/*.json` bundle |
+| `/data/output` | Diagnostics report (`lineup_report.json`) and exported `xtream/*.json` bundle |
 
 - **`TZ`** (default `UTC`, e.g. `America/New_York` or `America/Toronto`): Configures container timezone via Alpine `tzdata`.
 - **`PUID` / `PGID`** (default `1000` / `1000`): Maps non-root process execution and volume ownership via `su-exec` (both at container boot and automatically on `docker compose exec bellhop bellhop ...` commands).
-- **Surfaced Credentials (`.env` or `credentials.yaml`):** `BELLHOP_WEB_USERNAME`, `BELLHOP_WEB_PASSWORD`, `BELLHOP_WEB_SESSION_SECRET`, `BELLHOP_SERVE_USERNAME`, `BELLHOP_SERVE_PASSWORD`, `XTREAM_SERVER_URL`, `XTREAM_USERNAME`, `XTREAM_PASSWORD`, and optional `SD_USERNAME` / `SD_PASSWORD`.
 
 ---
 
@@ -163,7 +155,7 @@ docker compose exec bellhop bellhop run --skip validate
 
 Run `./.agents/scripts/bootstrap.sh` to create `.venv`, install all Python runtime + dev dependencies, install the TypeScript compiler, build frontend JS, and run the full test suite:
 
-- **Python Runtime (`pyproject.toml` & pinned `requirements.lock`):** Python `>=3.10`, `aiohttp`, `pyyaml`, `ruamel.yaml`, `python-dotenv`, `rich` (plus optional system `ffmpeg`/`ffprobe` for Phase 4 codec probing; skippable in Docker via `--build-arg INSTALL_FFMPEG=0`).
+- **Python Runtime (`pyproject.toml` & pinned `requirements.lock`):** Python `>=3.10`, `aiohttp`, `pyyaml`, `ruamel.yaml`, `rich` (plus optional system `ffmpeg`/`ffprobe` for Phase 4 codec probing; skippable in Docker via `--build-arg INSTALL_FFMPEG=0`).
 - **Python Dev (`pip install -e ".[dev]"`):** `mypy`, `types-PyYAML`, `ruff`, `pytest`, `pytest-asyncio`, `pytest-cov`, `nodejs-wheel` (provides self-contained `node` + `npm` inside `.venv`).
 - **Frontend Dev (`package.json` & `package-lock.json`):** `typescript` (compiles `src/bellhop/web/frontend/*.ts` → `src/bellhop/web/static/*.js`; vendored player versions & SHA-256 digests are recorded in [VERSIONS.md](src/bellhop/web/static/vendor/VERSIONS.md)).
 

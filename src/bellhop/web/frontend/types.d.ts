@@ -2,7 +2,7 @@
  * Browser-local UI, client preferences, and vendored player declarations.
  *
  * All HTTP JSON wire interfaces (`PublicChannel`, `LineupApiResponse`,
- * `PublicConfig`, etc.) are generated directly from Python `TypedDict`s into
+ * `AccountInfoResponse`, etc.) are generated directly from Python `TypedDict`s into
  * `./api_contracts.d.ts` by `bellhop.common.api_contracts`.
  */
 
@@ -14,7 +14,7 @@ type JsonValue = JsonPrimitive | JsonObject | JsonArray;
 type ThemeMode = "dark" | "light";
 type ViewMode = "cards" | "grid";
 type StreamMode = "mpegts" | "hls";
-type SettingsStatusKind = "" | "ok" | "warn" | "error";
+type SettingsStatusKind = "" | "ok" | "error";
 
 interface BellhopUiSettings extends JsonObject {
   theme: ThemeMode;

@@ -41,9 +41,10 @@ from bellhop.pipeline.models import (
   XtreamAccountInfo,
   XtreamStream,
 )
-from bellhop.pipeline.playlist import render_m3u8
 from bellhop.pipeline.validator import StreamValidator
+from bellhop.pipeline.xtream_exporter import build_xtream_export_bundle
 from bellhop.xtream import XtreamCatalog
+from tests.conftest import make_test_account
 from tests.http_mock import MockHttpServer
 
 
@@ -182,10 +183,9 @@ async def test_daily_iptv_fetcher_cadence_and_diff(tmp_path: Path) -> None:
 
   cfg = AppConfig(
     project_root=tmp_path,
+    accounts=(make_test_account(upstream_username="u", upstream_password="p"),),
     xtream=XtreamConfig(
       server_url="http://panel.example",
-      username="u",
-      password="p",
       cache_ttl_hours=24.0,
     ),
     state=StateConfig(state_dir=Path("state")),
@@ -483,9 +483,8 @@ async def test_candidate_only_validation_and_native_epg_m3u8(
 
   cfg = AppConfig(
     project_root=tmp_path,
-    xtream=XtreamConfig(
-      server_url="provider.example", username="u", password="p"
-    ),
+    accounts=(make_test_account(upstream_username="u", upstream_password="p"),),
+    xtream=XtreamConfig(server_url="provider.example"),
     validation=ValidationConfig(
       concurrency=1,
       inter_probe_delay_sec=0.0,
@@ -546,12 +545,14 @@ async def test_candidate_only_validation_and_native_epg_m3u8(
     assert count2 == 0
     assert len(probed_urls) == 2
 
-  # Phase (5): M3U8 uses provider's native epg_channel_id ("ICITeleMontreal.ca")
-  # so xmltv.php binds!
+  # Phase (5): Exported Xtream bundle preserves native epg_channel_id
+  # ("ICITeleMontreal.ca") while omitting raw upstream credentials!
   mapped_list = mapping_document_to_mapped_channels(doc_day2, lineup)
-  m3u8 = render_m3u8(lineup, mapped_list, cfg)
-  assert (
-    'url-tvg="http://provider.example/xmltv.php?username=u&password=p"' in m3u8
-  )
-  assert 'tvg-id="ICITeleMontreal.ca"' in m3u8
-  assert 'tvg-chno="1101"' in m3u8
+  bundle = build_xtream_export_bundle(lineup, mapped_list, cfg)
+  assert [s.num for s in bundle.streams] == [101, 1101]
+  assert bundle.streams[0].epg_channel_id == "ICITeleMontreal.ca.101"
+  assert bundle.streams[1].epg_channel_id == "ICITeleMontreal.ca"
+  assert bundle.streams[0].direct_source == ""
+  assert bundle.streams[1].direct_source == ""
+  assert bundle.streams[0].guide.fallback_stream_ids == [901]
+  assert bundle.server_info["xmltv_url"] == ""

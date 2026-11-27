@@ -9,7 +9,9 @@ STATE_DIR="${BELLHOP_STATE_DIR:-/data/state}"
 CACHE_DIR="${BELLHOP_CACHE_DIR:-/data/cache}"
 OUTPUT_DIR="${BELLHOP_OUTPUT_DIR:-/data/output}"
 CONFIG_FILE="${BELLHOP_CONFIG:-${CONFIG_DIR}/config.yaml}"
+CREDENTIALS_FILE="$(dirname "${CONFIG_FILE}")/credentials.yaml"
 DEFAULT_CONFIG="${BELLHOP_DEFAULT_CONFIG:-/app/docker/config.docker.yaml}"
+DEFAULT_CREDENTIALS="${BELLHOP_DEFAULT_CREDENTIALS:-/app/docker/credentials.docker.yaml}"
 
 export BELLHOP_CONFIG="${CONFIG_FILE}"
 
@@ -21,11 +23,16 @@ mkdir -p \
   "${OUTPUT_DIR}" \
   "${OUTPUT_DIR}/xtream"
 
-# Seed a container-ready config.yaml on first boot if none was mounted.
+# Seed container-ready config.yaml & credentials.yaml on first boot if missing.
 if [ ! -f "${CONFIG_FILE}" ] && [ -f "${DEFAULT_CONFIG}" ]; then
   echo "[bellhop] Seeding default configuration at ${CONFIG_FILE}"
   cp "${DEFAULT_CONFIG}" "${CONFIG_FILE}"
   chmod 600 "${CONFIG_FILE}" 2>/dev/null || true
+fi
+if [ ! -f "${CREDENTIALS_FILE}" ] && [ -f "${DEFAULT_CREDENTIALS}" ]; then
+  echo "[bellhop] Seeding default credentials at ${CREDENTIALS_FILE}"
+  cp "${DEFAULT_CREDENTIALS}" "${CREDENTIALS_FILE}"
+  chmod 600 "${CREDENTIALS_FILE}" 2>/dev/null || true
 fi
 
 # Default to `bellhop serve` when no command arguments are passed.

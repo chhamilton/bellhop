@@ -7,6 +7,7 @@ Used by both `bellhop.pipeline.runner` (`bellhop run`) and `bellhop.serve`
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -89,13 +90,11 @@ class ExportBundleGuideStore:
     self,
     xtream_dir: Path,
     *,
-    m3u8_path: Path | None = None,
     fallback_xmltv_url: str = "",
     bundle_reader: ExportBundleReader | None = None,
   ) -> None:
     self._reader = bundle_reader or ExportBundleReader(
       xtream_dir,
-      m3u8_path=m3u8_path,
       fallback_xmltv_url=fallback_xmltv_url,
     )
     self._overlay_url = ""
@@ -171,6 +170,7 @@ def build_epg_refresher_from_config(
   session_factory: ClientSessionFactory | None = None,
   enabled: bool = True,
   sd_base_url: str = DEFAULT_SD_BASE_URL,
+  xmltv_url_provider: Callable[[], str] | None = None,
 ) -> EpgRefreshService:
   """Construct an `EpgRefreshService` wired to `config`'s SD-JSON & XMLTV.
 
@@ -180,6 +180,7 @@ def build_epg_refresher_from_config(
     session_factory: Optional `aiohttp.ClientSession` factory override.
     enabled: Whether background refresh timers are enabled on startup.
     sd_base_url: Schedules Direct API base URL (overridable in tests).
+    xmltv_url_provider: Optional callable resolving live XMLTV URLs dynamically.
 
   Returns:
     Configured `EpgRefreshService` backed by `cache/epg.sqlite3`.
@@ -193,10 +194,8 @@ def build_epg_refresher_from_config(
   epg_db_file = cache_dir / "epg.sqlite3"
   fallback_xmltv_url = build_passthrough_xmltv_url(config, redact_secret=False)
   if store is None:
-    m3u_cand = config.resolve_path(config.output.playlist_path)
     store = ExportBundleGuideStore(
       config.resolve_path(config.output.xtream_dir),
-      m3u8_path=m3u_cand if m3u_cand.is_file() else None,
       fallback_xmltv_url=fallback_xmltv_url,
     )
 
@@ -218,6 +217,7 @@ def build_epg_refresher_from_config(
       refresh_hours=config.epg.refresh_hours,
       request_timeout_sec=config.xtream.request_timeout_sec,
       xmltv_url=fallback_xmltv_url,
+      xmltv_url_provider=xmltv_url_provider,
       xmltv_file=xmltv_override,
       cache_file=epg_db_file,
       sd_epg=sd_epg_cfg,

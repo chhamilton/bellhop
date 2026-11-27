@@ -1,18 +1,7 @@
 # Bellhop — Declarative Lineup Pipeline & Server Configuration
-# Copy this file to `config.yaml` and customize as needed.
-# Secrets should live in `credentials.yaml` (referenced below) or `.env`.
-#
-# Structure:
-#   Section 1 (Host & Server Infrastructure): filesystem paths, Web Guide server,
-#             and passthrough Xtream Codes API server bind/auth settings.
-#             Configured in this file ONLY (never exposed or modified via the Web UI).
-#   Section 2 (Operational Settings): upstream IPTV source and pipeline behavior.
-#             Inspectable & editable by the authenticated user via Web UI Settings
-#             (usernames & passwords remain strictly excluded from the Web UI).
+# Copy this file to `config.yaml` and `credentials.example.yaml` to `credentials.yaml`.
+# Both files are required; credentials live strictly in `credentials.yaml`.
 
-# =============================================================================
-# 1. HOST & INFRASTRUCTURE (Config file only — NOT editable in Web UI)
-# =============================================================================
 credentials_file: "credentials.yaml"
 
 paths:
@@ -21,17 +10,15 @@ paths:
   mapping_path: "state/channel_mapping.json"
   # Bundled sample YAML definition used when pipeline.lineup.backend="yaml" (or auto with CAN-BELLFIBE-MTL-X)
   lineup_file: "data/lineups/bell_fibe_montreal.yaml"
-  # Phase (5) M3U8 playlist & diagnostics report paths
-  m3u8_playlist_path: "output/bellhop.m3u8"
-  m3u8_report_path: "output/lineup_report.json"
-  # Phase (6) Xtream JSON playlist export directory
+  # Phase (5) diagnostics report & Xtream JSON export directory
+  report_path: "output/lineup_report.json"
   xtream_output_dir: "output/xtream"
   # Optional offline local overrides (primarily for testing)
   seed_json: null
   xmltv_file: null
 
 web_server:
-  # Web Guide UI HTTP server bind address, port, auth, and single-tuner relay
+  # Web Guide UI HTTP server bind address, port, session TTL, and tuner settle delay.
   # "0.0.0.0" binds all interfaces (device LAN IP + localhost); "auto" binds to the detected LAN IP;
   # "127.0.0.1" restricts access to localhost only; or set an explicit IP address.
   enabled: true
@@ -39,48 +26,31 @@ web_server:
   port: 8080
   # Single-tuner settle delay (ms) between closing one live browser stream and opening another
   settle_ms: 180
-  # Web Guide UI login credentials (REQUIRED when web_server.enabled is true; login cannot be disabled)
-  # Can also live under `web_server:` in credentials.yaml or via BELLHOP_WEB_USERNAME / BELLHOP_WEB_PASSWORD
-  username: "${BELLHOP_WEB_USERNAME}"
-  password: "${BELLHOP_WEB_PASSWORD}"
-  # Sliding session cookie lifetime (hours; default 168h = 7 days)
+  # Sliding session cookie lifetime (hours; default 168h = 7 days).
+  # Signing secret is auto-generated at `cache/session_secret.key` (delete it live to revoke all sessions).
   session_ttl_hours: 168.0
-  # Optional static HMAC signing secret (if empty, a 32-byte key is auto-generated & persisted in cache/session_secret.key)
-  session_secret: "${BELLHOP_WEB_SESSION_SECRET}"
-  # Reverse-proxy client IP handling (config-file only, NEVER exposed to Web UI):
-  # Set `trust_proxy_headers: true` behind Nginx/Caddy/Traefik so login rate limiting
-  # inspects `X-Forwarded-For` / `X-Real-IP` ONLY when the TCP connection comes from
-  # an IP or CIDR listed in `trusted_proxy_ips`.
+  # Reverse-proxy client IP handling:
   trust_proxy_headers: false
   trusted_proxy_ips:
     - "127.0.0.1"
     - "::1"
 
 xtream_server:
-  # Passthrough Xtream Codes API server (`bellhop serve`) — config file only
+  # Passthrough Xtream Codes API & dynamic M3U8 server (`bellhop serve`)
   # Leave host/port null to co-exist on the `web_server` listener (0.0.0.0:8080),
   # or set explicit values to bind the Xtream API on a dedicated port/interface.
   enabled: true
   host: null
   port: null
-  # Client credentials required by IPTV players connecting to the Xtream API endpoints
-  # (can also live under `xtream_server:` in credentials.yaml or via BELLHOP_SERVE_USERNAME / BELLHOP_SERVE_PASSWORD)
-  username: "${BELLHOP_SERVE_USERNAME}"
-  password: "${BELLHOP_SERVE_PASSWORD}"
-  # Optional public host/port advertised in Xtream `server_info` (defaults to incoming Host header / LAN IP)
+  # Optional public host/port advertised in Xtream `server_info` and Account & Player Setup UI
   public_host: null
   public_port: null
   server_protocol: "http"
 
-# =============================================================================
-# 2. OPERATIONAL SETTINGS (Editable via Web UI Settings panel; no credentials)
-# =============================================================================
 upstream_xtream:
-  # Upstream Xtream Codes IPTV provider settings (credentials live in credentials.yaml or .env)
-  server_url: "${XTREAM_SERVER_URL}"
-  username: "${XTREAM_USERNAME}"
-  password: "${XTREAM_PASSWORD}"
-  # Stream output format: "ts" (MPEG-TS, lowest latency) or "m3u8" (HLS)
+  # Shared upstream Xtream Codes IPTV provider server URL & transport format
+  # (per-account upstream usernames & passwords live under `accounts:` in credentials.yaml)
+  server_url: "http://provider.example:8080"
   stream_format: "ts"
   request_timeout_sec: 90.0
   # Phase (2) `catalog`: Daily IPTV playlist fetch cadence (hours)
@@ -90,40 +60,26 @@ pipeline:
   lineup:
     # Phase (1) `lineup` Backend: "auto", "tvguide" (free US/CA JSON), "schedules_direct" (SD-JSON), or "yaml"
     backend: "auto"
-    # Examples:
-    #   - "TVG-9100000001"     -> TV Guide provider ID (via TV Guide discovery)
-    #   - "USA-NY10001-X"      -> Schedules Direct / Gracenote headend ID
-    #   - "CAN-BELLFIBE-MTL-X" -> Bundled sample lineup YAML
     lineup_id: "CAN-BELLFIBE-MTL-X"
     postal_code: ""
-    # Monthly cable lineup retrieval cadence (days)
     refresh_days: 30.0
     # Channel numbering mode: "both" (100s SD + 1000s HD), "hd", or "sd"
     numbering_mode: "both"
-    # Collapse SD duplicate slots that have a 1000+ HD version
     collapse_sd_dupes: true
-    # Optional: exclude Music & Audio / Stingray channels
     exclude_audio: false
     pinned_streams: {}
     excluded_channels: []
     schedules_direct:
-      username: "${SD_USERNAME}"
-      password: "${SD_PASSWORD}"
       auto_add_lineup: false
     iptv_org:
-      # Enriches dynamic lineups with `iptv-org` genres, languages, and `closed`/`replaced_by`
-      # transitions using HTTP ETag / Last-Modified conditional caching in `cache/iptv_org/`.
       enabled: true
       recheck_hours: 24.0
 
   matching:
-    # Score advantage needed for a new candidate to replace an existing rough-matched stream
     upgrade_hysteresis_score: 5.0
 
   validation:
-    # Phase (4) `validate`: Candidate-only live stream probing
     enabled: true
-    # Only probe newly added, replaced, upgraded, or previously unvalidated slots (override via --reprobe-all)
     only_changed: true
     concurrency: 2
     ignore_account_limit: false
@@ -138,12 +94,8 @@ pipeline:
     max_candidates_per_channel: 5
 
   epg:
-    # Guide EPG: when `schedules_direct` credentials are configured, `bellhop serve` fetches
-    # authoritative SD-JSON schedules as primary and backfills remaining channels from upstream `xmltv.php`.
     verify: true
     refresh_hours: 6.0
 
   output:
-    m3u8_enabled: true
-    xtream_enabled: true
     include_unmatched_comment: false

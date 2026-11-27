@@ -17,18 +17,22 @@ import hmac
 import json
 import secrets
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
+from bellhop.common.accounts import (
+  UserAccount,
+  normalize_email,
+  password_hash_version,
+  verify_dummy_web_password,
+  verify_web_password,
+)
 from bellhop.common.file_utils import chmod_private_file, write_private_text
 from bellhop.common.http_utils import (
   LoginRateLimiter as LoginRateLimiter,
-)
-from bellhop.common.http_utils import (
-  constant_time_credential_match,
 )
 
 SESSION_COOKIE_NAME = "bellhop_session"
@@ -78,10 +82,9 @@ def sanitize_next_url(raw_next: str | None) -> str:
 class WebAuthConfig:
   """Configuration for `bellhop_session` HMAC-SHA256 cookie authentication."""
 
-  username: str = ""
-  password: str = ""
+  accounts: Sequence[UserAccount] = ()
+  accounts_provider: Callable[[], Sequence[UserAccount]] | None = None
   session_ttl_hours: float = 168.0  # 7 days
-  session_secret: str = ""
   secret_file: Path | None = None
   revocation_file: Path | None = None
   secure_cookie: bool = False
@@ -91,10 +94,12 @@ class WebAuthConfig:
 class SessionInfo:
   """Verified browser session extracted from a signed cookie."""
 
-  username: str
+  account_id: str
+  email: str
   issued_at: int
   expires_at: int
   jti: str = ""
+  pwd_ver: str = ""
 
   def needs_renewal(self, *, now_ts: int | None = None) -> bool:
     """Sliding expiry: renew cookie once past half its total TTL."""
@@ -115,6 +120,7 @@ class WebAuthManager:
     self.config = config
     self._clock = clock
     self._key: bytes | None = None
+    self._secret_sig: tuple[int, int, int] | None = None
     self._revoked_tokens: dict[str, tuple[int, int]] = {}
     self._revoked_sig: tuple[int, int] | None = None
     self._max_revoked = 4096
@@ -199,75 +205,114 @@ class WebAuthManager:
       st = path.stat()
       self._revoked_sig = (int(st.st_mtime_ns), int(st.st_size))
 
+  def accounts(self) -> tuple[UserAccount, ...]:
+    """Return current configured user accounts."""
+    if self.config.accounts_provider is not None:
+      return tuple(self.config.accounts_provider())
+    return tuple(self.config.accounts)
+
+  def account_by_id(self, account_id: str) -> UserAccount | None:
+    """Look up an active user account by immutable `account_id`."""
+    cleaned = account_id.strip()
+    for acct in self.accounts():
+      if acct.account_id == cleaned:
+        return acct
+    return None
+
   @property
   def has_credentials(self) -> bool:
-    """Return `True` when both login username and password are non-empty."""
-    return bool(self.config.username.strip() and self.config.password.strip())
+    """Return `True` when at least one authenticated user account exists."""
+    return bool(self.accounts())
 
   @property
   def enabled(self) -> bool:
-    """Login is mandatory for the Web Guide and cannot be disabled."""
-    return True
+    """Return `True` when account-backed Web Guide login is active."""
+    return self.has_credentials
 
   @property
   def ttl_seconds(self) -> int:
     return max(60, int(round(self.config.session_ttl_hours * 3600.0)))
 
   def _get_signing_key(self) -> bytes:
-    if self._key is not None:
-      return self._key
-
-    if self.config.session_secret:
-      self._key = hashlib.sha256(
-        self.config.session_secret.encode("utf-8")
-      ).digest()
-      return self._key
-
     secret_file = self.config.secret_file
     if secret_file is not None:
       try:
-        if secret_file.is_file():
+        st = secret_file.stat()
+      except OSError:
+        st = None
+
+      if st is not None:
+        sig = (int(st.st_ino), int(st.st_mtime_ns), int(st.st_size))
+        if self._key is not None and self._secret_sig == sig:
+          return self._key
+        try:
           chmod_private_file(secret_file)
           stored = secret_file.read_text(encoding="utf-8").strip()
           if len(stored) >= 32:
             self._key = hashlib.sha256(stored.encode("utf-8")).digest()
+            st_after = secret_file.stat()
+            self._secret_sig = (
+              int(st_after.st_ino),
+              int(st_after.st_mtime_ns),
+              int(st_after.st_size),
+            )
             return self._key
+        except OSError:
+          pass
+
+      try:
         generated = secrets.token_hex(32)
         write_private_text(secret_file, generated + "\n")
+        st_new = secret_file.stat()
+        self._secret_sig = (
+          int(st_new.st_ino),
+          int(st_new.st_mtime_ns),
+          int(st_new.st_size),
+        )
         self._key = hashlib.sha256(generated.encode("utf-8")).digest()
         return self._key
       except OSError:
-        pass
+        self._secret_sig = None
 
-    self._key = secrets.token_bytes(32)
+    if self._key is None:
+      self._key = secrets.token_bytes(32)
     return self._key
 
-  def _credential_fingerprint(self) -> str:
-    """Return short HMAC binding sessions to current credentials.
+  def authenticate(self, email: str, password: str) -> UserAccount | None:
+    """Authenticate an email + password against configured accounts."""
+    norm_email = normalize_email(email)
+    accts = self.accounts()
+    if not accts or not norm_email or not password:
+      if password:
+        verify_dummy_web_password(password)
+      return None
 
-    Password changes automatically invalidate old session cookies.
-    """
-    key = self._get_signing_key()
-    material = f"{self.config.username}\0{self.config.password}".encode()
-    return hmac.new(key, material, hashlib.sha256).hexdigest()[:12]
+    candidate: UserAccount | None = None
+    for acct in accts:
+      if _safe_compare_str(acct.email, norm_email):
+        candidate = acct
 
-  def verify_credentials(self, username: str, password: str) -> bool:
-    matched = constant_time_credential_match(
-      username, password, self.config.username, self.config.password
-    )
-    return bool(self.has_credentials and matched)
+    if candidate is None:
+      verify_dummy_web_password(password)
+      return None
+    if verify_web_password(password, candidate.web_password_hash):
+      return candidate
+    return None
 
   def create_session_token(
-    self, username: str, *, now_ts: int | None = None
+    self, account: UserAccount, *, now_ts: int | None = None
   ) -> tuple[str, SessionInfo]:
     now = int(self._clock()) if now_ts is None else now_ts
     exp = now + self.ttl_seconds
     jti = secrets.token_hex(8)
+    pwd_ver = password_hash_version(account.web_password_hash)
     payload = {
-      "u": username,
+      "v": 2,
+      "aid": account.account_id,
+      "eml": account.email,
       "iat": now,
       "exp": exp,
-      "v": self._credential_fingerprint(),
+      "pv": pwd_ver,
       "jti": jti,
     }
     payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -277,7 +322,12 @@ class WebAuthManager:
     ).digest()
     token = f"{payload_b64}.{_b64u_encode(sig)}"
     return token, SessionInfo(
-      username=username, issued_at=now, expires_at=exp, jti=jti
+      account_id=account.account_id,
+      email=account.email,
+      issued_at=now,
+      expires_at=exp,
+      jti=jti,
+      pwd_ver=pwd_ver,
     )
 
   def verify_session_token(
@@ -304,14 +354,17 @@ class WebAuthManager:
       data = json.loads(_b64u_decode(payload_b64).decode("utf-8"))
     except Exception:
       return None
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or data.get("v") != 2:
       return None
 
-    user = str(data.get("u") or "")
+    aid = str(data.get("aid") or "").strip()
+    eml = str(data.get("eml") or "").strip().lower()
     iat = int(data.get("iat") or 0)
     exp = int(data.get("exp") or 0)
-    ver = str(data.get("v") or "")
+    pv = str(data.get("pv") or "")
     jti = str(data.get("jti") or "")
+    if not aid or not eml:
+      return None
 
     now = int(self._clock()) if now_ts is None else now_ts
     if exp <= now:
@@ -324,12 +377,23 @@ class WebAuthManager:
           rec = self._revoked_tokens.get(key)
           if rec is not None and now >= rec[0]:
             return None
-    if not _safe_compare_str(user, self.config.username):
+
+    acct = self.account_by_id(aid)
+    if acct is None:
       return None
-    if not _safe_compare_str(ver, self._credential_fingerprint()):
+    if not _safe_compare_str(eml, acct.email):
+      return None
+    if not _safe_compare_str(pv, password_hash_version(acct.web_password_hash)):
       return None
 
-    return SessionInfo(username=user, issued_at=iat, expires_at=exp, jti=jti)
+    return SessionInfo(
+      account_id=acct.account_id,
+      email=acct.email,
+      issued_at=iat,
+      expires_at=exp,
+      jti=jti,
+      pwd_ver=pv,
+    )
 
   def revoke_token(
     self, token: str, *, now_ts: int | None = None, grace_sec: int = 0
@@ -494,8 +558,8 @@ def render_login_page_html(
     <form id="login-form" method="post" action="/api/auth/login">
       <input type="hidden" name="next" value="{esc_next}" />
       <div class="field">
-        <label for="username">Username</label>
-        <input id="username" name="username" type="text" autocomplete="username" required autofocus />
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="username" required autofocus />
       </div>
       <div class="field">
         <label for="password">Password</label>

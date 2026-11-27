@@ -246,12 +246,15 @@ async def test_black_screen_rejection_and_slot_relative_audio_language_failover_
     ],
   )
 
+  from tests.conftest import make_test_account
+
   cfg = AppConfig(
     project_root=tmp_path,
+    accounts=(
+      make_test_account(upstream_username="u", upstream_password="secret"),
+    ),
     xtream=XtreamConfig(
       server_url="http://panel.example:8080",
-      username="u",
-      password="secret",
       stream_format="ts",
     ),
     lineup=LineupConfig(lineup_id="TVG-9100000001"),

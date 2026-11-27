@@ -24,13 +24,14 @@ from bellhop.pipeline.models import (
   XtreamAccountInfo,
   XtreamStream,
 )
-from bellhop.pipeline.playlist import build_report_dict, render_m3u8
+from bellhop.pipeline.playlist import build_report_dict, resolve_playback_url
 from bellhop.pipeline.validator import (
   StreamValidator,
   effective_concurrency,
   has_mpegts_sync,
 )
 from bellhop.xtream import fetch_xtream_catalog
+from tests.conftest import TEST_PASSWORD_HASH, make_test_account
 from tests.http_mock import MockHttpServer
 
 
@@ -85,10 +86,13 @@ async def test_fetch_xtream_catalog_and_cache(tmp_path: Path) -> None:
 
   cfg = AppConfig(
     project_root=tmp_path,
+    accounts=(
+      make_test_account(
+        upstream_username="demo", upstream_password="secret_password"
+      ),
+    ),
     xtream=XtreamConfig(
       server_url="http://panel.example:8080",
-      username="demo",
-      password="secret_password",
       cache_dir=Path("cache"),
       cache_ttl_hours=12.0,
     ),
@@ -157,10 +161,9 @@ async def test_validator_candidate_fallback_and_hls(tmp_path: Path) -> None:
 
   cfg = AppConfig(
     project_root=tmp_path,
+    accounts=(make_test_account(upstream_username="u", upstream_password="p"),),
     xtream=XtreamConfig(
       server_url="http://panel.example:8080",
-      username="u",
-      password="p",
       stream_format="ts",
     ),
     validation=ValidationConfig(
@@ -260,58 +263,46 @@ def test_playlist_numbering_modes_and_password_redaction(
     candidates=[MatchCandidate(stream=stream, score=99.0, reasons=["exact"])],
   )
 
+  acct_alice = make_test_account(
+    account_id="alice",
+    email="alice@example.com",
+    upstream_username="alice",
+    upstream_password="super_secret_pw",
+    pipeline=True,
+  )
+  acct_bob = make_test_account(
+    account_id="bob",
+    email="bob@example.com",
+    xtream_username="bobstream",
+    xtream_password="bobstreampw",
+    upstream_username="bob",
+    upstream_password="bobs_other_secret",
+    pipeline=False,
+  )
   cfg = AppConfig(
     project_root=tmp_path,
+    accounts=(acct_alice, acct_bob),
     xtream=XtreamConfig(
       server_url="http://panel.example:8080",
-      username="alice",
-      password="super_secret_pw",
       stream_format="ts",
     ),
     lineup=LineupConfig(numbering_mode="both"),
     output=OutputConfig(),
   )
 
-  m3u8 = render_m3u8(lineup, [mapped], cfg)
-  assert "#EXTM3U url-tvg=" in m3u8
-  assert 'tvg-chno="101"' in m3u8
-  assert 'tvg-chno="1101"' in m3u8
-  assert 'tvg-id="CBFT.ca"' in m3u8
-  assert 'tvg-id="CBFT.ca.101"' in m3u8
-  assert "http://panel.example:8080/live/alice/super_secret_pw/777.ts" in m3u8
-
-  # When serve.xtream credentials are configured, render_m3u8 points
-  # url-tvg / x-tvg-url back to Bellhop's own `/xmltv.php` instead of upstream.
-  from bellhop.config import ServeConfig, ServeXtreamConfig
-
-  cfg_serve = AppConfig(
-    project_root=tmp_path,
-    xtream=cfg.xtream,
-    lineup=cfg.lineup,
-    output=cfg.output,
-    serve=ServeConfig(
-      port=8080,
-      xtream=ServeXtreamConfig(
-        enabled=True,
-        username="bell_user",
-        password="bell_pw",
-        public_host="192.0.2.55",
-      ),
-    ),
-  )
-  m3u8_serve = render_m3u8(lineup, [mapped], cfg_serve)
+  url_alice = resolve_playback_url(mapped, cfg)
   assert (
-    'url-tvg="http://192.0.2.55:8080/xmltv.php?username=bell_user&password=bell_pw"'
-    in m3u8_serve
+    url_alice == "http://panel.example:8080/live/alice/super_secret_pw/777.ts"
   )
+  url_bob = resolve_playback_url(mapped, cfg, account=acct_bob)
   assert (
-    'x-tvg-url="http://192.0.2.55:8080/xmltv.php?username=bell_user&password=bell_pw"'
-    in m3u8_serve
+    url_bob == "http://panel.example:8080/live/bob/bobs_other_secret/777.ts"
   )
 
   report = build_report_dict(lineup, [mapped], cfg, total_catalog_streams=1)
   assert report["summary"]["active_channels_emitted"] == 1
   assert "super_secret_pw" not in json.dumps(report)
+  assert "bobs_other_secret" not in json.dumps(report)
 
 
 def test_cli_build_from_local_json(tmp_path: Path) -> None:
@@ -338,17 +329,33 @@ def test_cli_build_from_local_json(tmp_path: Path) -> None:
     ),
     encoding="utf-8",
   )
-  out_m3u8 = tmp_path / "bell.m3u8"
+  creds_path = tmp_path / "credentials.yaml"
+  creds_path.write_text(
+    f"""\
+accounts:
+  primary:
+    email: "primary@example.com"
+    web_password_hash: "{TEST_PASSWORD_HASH}"
+    xtream_username: "bell1111"
+    xtream_password: "bell2222"
+    upstream_username: "u1"
+    upstream_password: "p1"
+    pipeline: true
+""",
+    encoding="utf-8",
+  )
   out_report = tmp_path / "report.json"
+  xtream_dir = tmp_path / "xtream_build"
   cfg_path = tmp_path / "config.yaml"
   cfg_path.write_text(
     f"""\
+credentials_file: "{creds_path}"
 paths:
+  cache_dir: "{tmp_path / "cache"}"
   state_dir: "{tmp_path / "state"}"
   seed_json: "{sample_json}"
-  m3u8_playlist_path: "{out_m3u8}"
-  m3u8_report_path: "{out_report}"
-  xtream_output_dir: "{tmp_path / "xtream_build"}"
+  report_path: "{out_report}"
+  xtream_output_dir: "{xtream_dir}"
 pipeline:
   lineup:
     numbering_mode: "hd"
@@ -360,10 +367,11 @@ pipeline:
 
   rc = main(["run", "-c", str(cfg_path), "--skip", "validate", "--quiet"])
   assert rc == 0
-  playlist_text = out_m3u8.read_text(encoding="utf-8")
-  assert 'tvg-chno="1101"' in playlist_text
-  assert 'tvg-chno="1103"' in playlist_text
-  assert 'tvg-chno="1402"' in playlist_text
+  streams = json.loads(
+    (xtream_dir / "get_live_streams.json").read_text(encoding="utf-8")
+  )
+  emitted_chnos = {int(s["num"]) for s in streams}
+  assert {1101, 1103, 1402}.issubset(emitted_chnos)
 
 
 def test_collapse_sd_dupes_keeps_hd_and_sd_only_channels(
@@ -388,18 +396,34 @@ def test_collapse_sd_dupes_keeps_hd_and_sd_only_channels(
     ),
     encoding="utf-8",
   )
-  out_full = tmp_path / "bell_full.m3u8"
-  out_collapsed = tmp_path / "bell_collapsed.m3u8"
+  creds_path = tmp_path / "credentials.yaml"
+  creds_path.write_text(
+    f"""\
+accounts:
+  primary:
+    email: "primary@example.com"
+    web_password_hash: "{TEST_PASSWORD_HASH}"
+    xtream_username: "bell1111"
+    xtream_password: "bell2222"
+    upstream_username: "u1"
+    upstream_password: "p1"
+    pipeline: true
+""",
+    encoding="utf-8",
+  )
+  xtream_full = tmp_path / "xtream1"
+  xtream_collapsed = tmp_path / "xtream2"
 
   cfg_full = tmp_path / "config_full.yaml"
   cfg_full.write_text(
     f"""\
+credentials_file: "{creds_path}"
 paths:
+  cache_dir: "{tmp_path / "cache1"}"
   state_dir: "{tmp_path / "state1"}"
   seed_json: "{sample_json}"
-  m3u8_playlist_path: "{out_full}"
-  m3u8_report_path: "{tmp_path / "r1.json"}"
-  xtream_output_dir: "{tmp_path / "xtream1"}"
+  report_path: "{tmp_path / "r1.json"}"
+  xtream_output_dir: "{xtream_full}"
 pipeline:
   lineup:
     collapse_sd_dupes: false
@@ -407,8 +431,6 @@ pipeline:
     enabled: false
   epg:
     verify: false
-  output:
-    xtream_enabled: false
 """,
     encoding="utf-8",
   )
@@ -416,23 +438,24 @@ pipeline:
   # 1. Default (collapse_sd_dupes: false): emits both 101 (SD) and 1101 (HD) +
   #    148 + 901
   assert main(["-c", str(cfg_full), "--quiet"]) == 0
-  full_text = out_full.read_text(encoding="utf-8")
-  assert 'tvg-chno="101"' in full_text
-  assert 'tvg-chno="1101"' in full_text
-  assert 'tvg-chno="148"' in full_text
-  assert 'tvg-chno="901"' in full_text
+  full_streams = json.loads(
+    (xtream_full / "get_live_streams.json").read_text(encoding="utf-8")
+  )
+  full_chnos = {int(s["num"]) for s in full_streams}
+  assert {101, 1101, 148, 901}.issubset(full_chnos)
 
   # 2. With collapse_sd_dupes: true in config.yaml: collapses 101 duplicate,
   #    keeps 1101 HD + 148 & 901
   cfg_collapsed = tmp_path / "config_collapsed.yaml"
   cfg_collapsed.write_text(
     f"""\
+credentials_file: "{creds_path}"
 paths:
+  cache_dir: "{tmp_path / "cache2"}"
   state_dir: "{tmp_path / "state2"}"
   seed_json: "{sample_json}"
-  m3u8_playlist_path: "{out_collapsed}"
-  m3u8_report_path: "{tmp_path / "r2.json"}"
-  xtream_output_dir: "{tmp_path / "xtream2"}"
+  report_path: "{tmp_path / "r2.json"}"
+  xtream_output_dir: "{xtream_collapsed}"
 pipeline:
   lineup:
     collapse_sd_dupes: true
@@ -440,17 +463,16 @@ pipeline:
     enabled: false
   epg:
     verify: false
-  output:
-    xtream_enabled: false
 """,
     encoding="utf-8",
   )
   assert main(["run", "-c", str(cfg_collapsed), "--quiet"]) == 0
-  collapsed_text = out_collapsed.read_text(encoding="utf-8")
-  assert 'tvg-chno="101"' not in collapsed_text
-  assert 'tvg-chno="1101"' in collapsed_text
-  assert 'tvg-chno="148"' in collapsed_text
-  assert 'tvg-chno="901"' in collapsed_text
+  collapsed_streams = json.loads(
+    (xtream_collapsed / "get_live_streams.json").read_text(encoding="utf-8")
+  )
+  collapsed_chnos = {int(s["num"]) for s in collapsed_streams}
+  assert 101 not in collapsed_chnos
+  assert {1101, 148, 901}.issubset(collapsed_chnos)
 
 
 def test_exported_group_dial_ranges_reflect_surviving_validated_channels(
@@ -545,10 +567,6 @@ def test_exported_group_dial_ranges_reflect_surviving_validated_channels(
     project_root=tmp_path,
     lineup=LineupConfig(collapse_sd_dupes=True),
   )
-  m3u8 = render_m3u8(lineup, mappings, cfg)
-  assert 'group-title="Science & Docs (1522–1528)"' in m3u8
-  assert 'group-title="Entertainment & Lifestyle (1602–1660)"' in m3u8
-  assert "1600–2309" not in m3u8
 
   report = build_report_dict(lineup, mappings, cfg)
   assert set(report["groups"].keys()) == {
@@ -595,10 +613,13 @@ async def test_validator_and_report_redact_secrets_inside_error_strings(
   )
   cfg = AppConfig(
     project_root=tmp_path,
+    accounts=(
+      make_test_account(
+        upstream_username="alice", upstream_password="s3cr3t_pw"
+      ),
+    ),
     xtream=XtreamConfig(
       server_url="http://provider.example",
-      username="alice",
-      password="s3cr3t_pw",
       stream_format="ts",
     ),
     validation=ValidationConfig(

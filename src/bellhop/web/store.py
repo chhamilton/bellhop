@@ -76,6 +76,7 @@ class WebChannel:
   stream_id: int
   direct_source: str
   fallback_sources: list[str] = field(default_factory=list)
+  fallback_stream_ids: tuple[int, ...] = ()
   epg_aliases: tuple[str, ...] = ()
   gracenote_station_id: str = ""
 
@@ -179,33 +180,25 @@ class LineupSnapshot:
 
 
 class LineupGuideStore:
-  """Loads Phase (6) Xtream JSON (or M3U8) outputs with hot-reload."""
+  """Loads Phase (5) Xtream JSON bundle outputs with mtime hot-reload."""
 
   def __init__(
     self,
     xtream_dir: Path,
     *,
-    m3u8_path: Path | None = None,
     fallback_xmltv_url: str = "",
     bundle_reader: ExportBundleReader | None = None,
   ) -> None:
     self.xtream_dir = xtream_dir.resolve()
-    self.m3u8_path = m3u8_path.resolve() if m3u8_path else None
     self.fallback_xmltv_url = fallback_xmltv_url
     self._bundle_reader = bundle_reader or ExportBundleReader(
       self.xtream_dir,
-      m3u8_path=self.m3u8_path,
       fallback_xmltv_url=fallback_xmltv_url,
     )
     self._last_signature: tuple[float, ...] = ()
     self._last_updated_at: float = 0.0
     self._snapshot: LineupSnapshot | None = None
     self._epg_overlay_url: str = ""
-
-  @property
-  def bundle_signature(self) -> tuple[float, ...]:
-    """Return `(mtime_ns, size)` signature of the loaded export bundle."""
-    return self._last_signature
 
   def _next_updated_at(self) -> float:
     candidate = round(time.time(), 3)
@@ -281,7 +274,7 @@ class LineupGuideStore:
         postal_prefix=bundle_data.postal_prefix,
         timezone=bundle_data.timezone,
         loaded_at=bundle_data.loaded_at,
-        xmltv_url=self._epg_overlay_url or bundle_data.xmltv_url,
+        xmltv_url=bundle_data.xmltv_url or self._epg_overlay_url,
       )
 
     normalized_cats = [
@@ -312,6 +305,7 @@ class LineupGuideStore:
         stream_id=rec.stream_id,
         direct_source=rec.direct_source,
         fallback_sources=list(rec.fallback_sources),
+        fallback_stream_ids=rec.fallback_stream_ids,
         epg_aliases=rec.epg_aliases,
         gracenote_station_id=rec.gracenote_station_id,
       )

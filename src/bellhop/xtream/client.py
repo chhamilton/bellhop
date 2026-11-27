@@ -13,6 +13,7 @@ from typing import Any
 
 import aiohttp
 
+from bellhop.common.accounts import UserAccount
 from bellhop.common.file_utils import ensure_private_dir, write_private_text
 from bellhop.common.http_utils import redact_url_secrets
 from bellhop.config import AppConfig, XtreamConfig
@@ -276,18 +277,28 @@ async def _negotiate_xtream_handshake(
 async def fetch_xtream_account_info(
   config: AppConfig,
   *,
+  account: UserAccount | None = None,
   client: aiohttp.ClientSession | None = None,
 ) -> XtreamAccountInfo:
   """Verify live `player_api.php` account status without using a tuner slot."""
   xt = config.xtream
-  if not xt.server_url or not xt.username or not xt.password:
+  acct = account or config.pipeline_account
+  if (
+    not xt.server_url
+    or acct is None
+    or not acct.upstream_username
+    or not acct.upstream_password
+  ):
     raise XtreamError(
-      "Missing Xtream credentials. Configure upstream_xtream credentials in "
-      "credentials.yaml, config.yaml, or .env."
+      "Missing upstream Xtream credentials. Configure `upstream_xtream.server_url` "
+      "in config.yaml and an account in credentials.yaml."
     )
 
   candidates = _candidate_base_urls(xt.server_url)
-  base_params = {"username": xt.username, "password": xt.password}
+  base_params = {
+    "username": acct.upstream_username,
+    "password": acct.upstream_password,
+  }
 
   owns_client = client is None
   if owns_client:
@@ -310,20 +321,27 @@ async def fetch_xtream_account_info(
 async def fetch_xtream_catalog(
   config: AppConfig,
   *,
+  account: UserAccount | None = None,
   force_refresh: bool = False,
   persist_cache: bool = True,
   client: aiohttp.ClientSession | None = None,
 ) -> XtreamCatalog:
   """Fetch live categories and streams from upstream Xtream Codes API."""
   xt = config.xtream
-  if not xt.server_url or not xt.username or not xt.password:
+  acct = account or config.pipeline_account
+  if (
+    not xt.server_url
+    or acct is None
+    or not acct.upstream_username
+    or not acct.upstream_password
+  ):
     raise XtreamError(
-      "Missing Xtream credentials. Configure upstream_xtream credentials in "
-      "credentials.yaml, config.yaml, or .env (or set paths.seed_json for offline files)."
+      "Missing upstream Xtream credentials. Configure `upstream_xtream.server_url` "
+      "in config.yaml and an account in credentials.yaml (or set paths.seed_json)."
     )
 
   cache_dir = config.resolve_path(xt.cache_dir)
-  cache_file = _cache_file_for(cache_dir, xt.server_url, xt.username)
+  cache_file = _cache_file_for(cache_dir, xt.server_url, acct.upstream_username)
 
   if persist_cache and not force_refresh:
     cached = _load_cached_catalog(cache_file, xt.cache_ttl_hours)
@@ -335,7 +353,10 @@ async def fetch_xtream_catalog(
 
   candidates = _candidate_base_urls(xt.server_url)
   base_url = candidates[0]
-  base_params = {"username": xt.username, "password": xt.password}
+  base_params = {
+    "username": acct.upstream_username,
+    "password": acct.upstream_password,
+  }
 
   owns_client = client is None
   if owns_client:
@@ -351,8 +372,8 @@ async def fetch_xtream_catalog(
     )
     api_url = f"{base_url}/player_api.php"
 
-    account = XtreamAccountInfo.from_api_payload(account_payload)
-    account_inactive = account.status.strip().lower() not in {
+    account_info = XtreamAccountInfo.from_api_payload(account_payload)
+    account_inactive = account_info.status.strip().lower() not in {
       "active",
       "unknown",
       "",
@@ -383,7 +404,7 @@ async def fetch_xtream_catalog(
     if not isinstance(streams_raw, list):
       if account_inactive:
         raise XtreamError(
-          f"Xtream account is not active (status={account.status!r}) and returned no stream list."
+          f"Xtream account is not active (status={account_info.status!r}) and returned no stream list."
         )
       raise XtreamError(
         "Unexpected response for action=get_live_streams (expected JSON list)."
@@ -401,7 +422,7 @@ async def fetch_xtream_catalog(
 
     if account_inactive and not streams:
       raise XtreamError(
-        f"Xtream account is not active (status={account.status!r}) and returned 0 streams."
+        f"Xtream account is not active (status={account_info.status!r}) and returned 0 streams."
       )
 
     if persist_cache and streams:
@@ -409,7 +430,7 @@ async def fetch_xtream_catalog(
         cache_file, account_payload, categories, valid_raw_items
       )
     return XtreamCatalog(
-      account=account,
+      account=account_info,
       categories=categories,
       streams=streams,
       from_cache=False,

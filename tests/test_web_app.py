@@ -11,6 +11,7 @@ import pytest
 from aiohttp import web
 from yarl import URL
 
+from bellhop.common.accounts import hash_web_password
 from bellhop.common.http_utils import DEFAULT_CLIENT_MAX_SIZE, start_site
 from bellhop.epg.db import EpgDatabase
 from bellhop.epg.refresh import (
@@ -27,7 +28,7 @@ from bellhop.web.store import (
   ProgramItem,
   reconcile_non_overlapping_schedule,
 )
-from tests.conftest import await_until
+from tests.conftest import await_until, make_test_account
 from tests.http_mock import MockHttpServer, new_test_session
 
 
@@ -36,8 +37,13 @@ def _make_auth(
 ) -> WebAuthManager:
   return WebAuthManager(
     WebAuthConfig(
-      username="admin",
-      password="secret",
+      accounts=(
+        make_test_account(
+          account_id="admin",
+          email="admin@example.com",
+          web_password_hash=hash_web_password("secret"),
+        ),
+      ),
       secret_file=tmp_path / filename,
     )
   )
@@ -201,9 +207,18 @@ async def test_web_guide_api_filtering_search_and_stream_proxy(
       async with new_test_session(base_url, timeout=10.0) as client:
         async with client.post(
           "/api/auth/login",
-          json={"username": "admin", "password": "secret"},
+          json={"email": "admin@example.com", "password": "secret"},
         ) as sign_in:
           assert sign_in.status == 200
+          login_body = await sign_in.json()
+          assert login_body["email"] == "admin@example.com"
+          assert login_body["account_id"] == "admin"
+        async with client.get("/api/auth/status") as st_resp:
+          assert st_resp.status == 200
+          st_body = await st_resp.json()
+          assert st_body["authenticated"] is True
+          assert st_body["email"] == "admin@example.com"
+          assert st_body["account_id"] == "admin"
         # 1. Root index.html (including stateful query-param deep links) &
         #    assets
         async with client.get("/") as idx_resp:
@@ -455,9 +470,18 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
       async with new_test_session(base_url, timeout=10.0) as client:
         async with client.post(
           "/api/auth/login",
-          json={"username": "admin", "password": "secret"},
+          json={"email": "admin@example.com", "password": "secret"},
         ) as sign_in:
           assert sign_in.status == 200
+          login_body = await sign_in.json()
+          assert login_body["email"] == "admin@example.com"
+          assert login_body["account_id"] == "admin"
+        async with client.get("/api/auth/status") as st_resp:
+          assert st_resp.status == 200
+          st_body = await st_resp.json()
+          assert st_body["authenticated"] is True
+          assert st_body["email"] == "admin@example.com"
+          assert st_body["account_id"] == "admin"
         health: dict[str, object] = {}
 
         async def _initial_epg_ready() -> bool:
@@ -592,19 +616,38 @@ async def test_web_app_dynamic_passthrough_epg_and_persistent_cache(
     assert reason_after_evict == "no_active_programs"
 
 
-def test_store_m3u8_and_gzip_xmltv_fallbacks(tmp_path: Path) -> None:
+def test_store_xtream_json_and_gzip_xmltv_fallbacks(tmp_path: Path) -> None:
   import gzip
   from datetime import datetime, timezone
 
-  # M3U8 fallback + gzipped XMLTV fallback in LineupGuideStore when
-  # output/xtream is empty
-  empty_xtream = tmp_path / "output" / "xtream"
-  empty_xtream.mkdir(parents=True)
-  m3u8_file = tmp_path / "output" / "lineup.m3u8"
-  m3u8_file.write_text(
-    '#EXTM3U url-tvg="http://panel.example/xmltv.php?username=u&password=p"\n'
-    '#EXTINF:-1 tvg-chno="1108" tvg-id="RDS.ca" tvg-logo="https://logo/rds.png" group-title="Sports",RDS\n'
-    "http://panel.example/live/u/p/410108.ts\n",
+  # Single-stream bundle + gzipped XMLTV fallback in LineupGuideStore
+  xtream_dir = tmp_path / "output" / "xtream"
+  xtream_dir.mkdir(parents=True)
+  (xtream_dir / "bellhop_xtream_playlist.json").write_text(
+    json.dumps(
+      {
+        "lineup_info": {"lineup_id": "TEST", "provider": "Bell Fibe TV"},
+        "server_info": {
+          "timezone": "UTC",
+          "xmltv_url": "http://panel.example/xmltv.php?username=u&password=p",
+        },
+        "live_categories": [
+          {"category_id": "1", "category_name": "Sports", "parent_id": 0}
+        ],
+        "live_streams": [
+          {
+            "num": 1108,
+            "name": "RDS",
+            "stream_type": "live",
+            "stream_id": 410108,
+            "epg_channel_id": "RDS.ca",
+            "category_id": "1",
+            "category_name": "Sports",
+            "direct_source": "http://panel.example/live/u/p/410108.ts",
+          }
+        ],
+      }
+    ),
     encoding="utf-8",
   )
 
@@ -624,7 +667,7 @@ def test_store_m3u8_and_gzip_xmltv_fallbacks(tmp_path: Path) -> None:
     )
   )
 
-  store = LineupGuideStore(empty_xtream, m3u8_path=m3u8_file)
+  store = LineupGuideStore(xtream_dir)
   snap = store.get_snapshot()
   assert (
     snap.xmltv_url == "http://panel.example/xmltv.php?username=u&password=p"
@@ -642,18 +685,10 @@ def test_store_m3u8_and_gzip_xmltv_fallbacks(tmp_path: Path) -> None:
 async def test_public_logo_and_favicon_served_before_auth(
   tmp_path: Path,
 ) -> None:
-  from bellhop.web.auth import WebAuthConfig, WebAuthManager
-
   xt_dir = tmp_path / "output" / "xtream"
   _write_sample_xtream_dir(xt_dir, int(time.time()))
 
-  auth = WebAuthManager(
-    WebAuthConfig(
-      username="admin",
-      password="secret",
-      secret_file=tmp_path / "session_secret.key",
-    )
-  )
+  auth = _make_auth(tmp_path)
   app = WebGuideApp(LineupGuideStore(xt_dir), auth=auth, settle_sec=0.01)
   await app.startup()
   runner, port = await start_site(app.build_app(), "127.0.0.1", 0)
@@ -721,7 +756,7 @@ async def test_public_logo_and_favicon_served_before_auth(
       # theme toggle
       async with client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "secret"},
+        json={"email": "admin@example.com", "password": "secret"},
       ) as sign_in:
         assert sign_in.status == 200
       async with client.get("/") as index_resp:
@@ -805,9 +840,15 @@ def test_wcag_aa_contrast_landmarks_and_keyboard_a11y_contracts() -> None:
   assert (
     'id="channel-counter" class="meta-text" aria-live="polite"' in index_html
   )
-  assert 'role="tab"' in index_html and 'aria-selected="true"' in index_html
+  assert (
+    'id="settings-overlay"' in index_html
+    and 'aria-labelledby="settings-title"' in index_html
+  )
+  assert (
+    'id="settings-status" class="settings-status" role="status"' in index_html
+  )
   assert 'aria-label="Close player"' in index_html
-  assert 'aria-label="Close settings"' in index_html
+  assert 'aria-label="Close account drawer"' in index_html
 
   # 2. Focus trap, focus restore & Timeline keyboard navigation in compiled JS
   assert "trapFocusInContainer" in compiled_js
@@ -935,9 +976,18 @@ async def test_hot_reload_bumps_lineup_updated_at_and_refetches_epg_on_lineup_ch
       async with new_test_session(base_url, timeout=10.0) as client:
         async with client.post(
           "/api/auth/login",
-          json={"username": "admin", "password": "secret"},
+          json={"email": "admin@example.com", "password": "secret"},
         ) as sign_in:
           assert sign_in.status == 200
+          login_body = await sign_in.json()
+          assert login_body["email"] == "admin@example.com"
+          assert login_body["account_id"] == "admin"
+        async with client.get("/api/auth/status") as st_resp:
+          assert st_resp.status == 200
+          st_body = await st_resp.json()
+          assert st_body["authenticated"] is True
+          assert st_body["email"] == "admin@example.com"
+          assert st_body["account_id"] == "admin"
 
         # 1. Wait for initial EPG fetch (only initial channels extracted; ASN.ca
         #    not yet in lineup)
@@ -1327,9 +1377,18 @@ async def test_hls_ssrf_defense_cross_tab_preemption_and_write_timeout(
       async with new_test_session(base_url, timeout=10.0) as client:
         async with client.post(
           "/api/auth/login",
-          json={"username": "admin", "password": "secret"},
+          json={"email": "admin@example.com", "password": "secret"},
         ) as sign_in:
           assert sign_in.status == 200
+          login_body = await sign_in.json()
+          assert login_body["email"] == "admin@example.com"
+          assert login_body["account_id"] == "admin"
+        async with client.get("/api/auth/status") as st_resp:
+          assert st_resp.status == 200
+          st_body = await st_resp.json()
+          assert st_body["authenticated"] is True
+          assert st_body["email"] == "admin@example.com"
+          assert st_body["account_id"] == "admin"
           cookie_hdr = sign_in.headers["Set-Cookie"].split(";", 1)[0].strip()
 
         # 1. Manifest SSRF filtering strips all private/loopback/file lines.
@@ -1378,7 +1437,8 @@ async def test_hls_ssrf_defense_cross_tab_preemption_and_write_timeout(
           assert h2["active_tuner"]["chno"] == 1401
 
         await await_until(
-          lambda: app.tuner.active_info is None, description="TS tuner close"
+          lambda: app.tuner_for("admin").active_info is None,
+          description="TS tuner close",
         )
 
         # 3. `302` redirect to loopback returns 502 instead of fetching local.
@@ -1408,7 +1468,7 @@ async def test_hls_ssrf_defense_cross_tab_preemption_and_write_timeout(
             if hdr_line in (b"\r\n", b"\n", b""):
               break
           await await_until(
-            lambda: app.tuner.active_info is None,
+            lambda: app.tuner_for("admin").active_info is None,
             timeout_sec=5.0,
             description="write timeout releases tuner on stalled client",
           )
@@ -1448,3 +1508,180 @@ async def test_hls_ssrf_defense_cross_tab_preemption_and_write_timeout(
   assert not s3.cancel_event.is_set() and s3.session_id > 0
   assert mgr.active_info is not None and mgr.active_info["chno"] == 103
   await mgr.mark_closed(s3)
+
+
+@pytest.mark.asyncio
+async def test_multi_account_concurrent_tuner_and_hls_asset_isolation(
+  tmp_path: Path,
+) -> None:
+  """Verify two accounts get independent tuners, upstream creds, & HLS scope."""
+  xt_dir = tmp_path / "output" / "xtream"
+  xt_dir.mkdir(parents=True)
+  (xt_dir / "bellhop_xtream_playlist.json").write_text(
+    json.dumps(
+      {
+        "lineup_info": {"lineup_id": "TEST", "provider": "Bell Fibe TV"},
+        "server_info": {"timezone": "UTC", "xmltv_url": ""},
+        "live_categories": [
+          {"category_id": "1", "category_name": "General", "parent_id": 0},
+          {"category_id": "2", "category_name": "Sports", "parent_id": 0},
+        ],
+        "live_streams": [
+          {
+            "num": 1101,
+            "name": "ICI",
+            "stream_type": "live",
+            "stream_id": 498715,
+            "epg_channel_id": "CBFT.ca",
+            "category_id": "1",
+            "category_name": "General",
+            "direct_source": "",
+          },
+          {
+            "num": 1401,
+            "name": "TSN1",
+            "stream_type": "live",
+            "stream_id": 500101,
+            "epg_channel_id": "TSN1.ca",
+            "category_id": "2",
+            "category_name": "Sports",
+            "direct_source": "",
+          },
+        ],
+      }
+    ),
+    encoding="utf-8",
+  )
+
+  alice = make_test_account(
+    account_id="alice",
+    email="alice@example.com",
+    web_password_hash=hash_web_password("alice_pw"),
+    xtream_username="xtalice1",
+    xtream_password="xtalicep",
+    upstream_username="alice_up",
+    upstream_password="pw1",
+    pipeline=True,
+  )
+  bob = make_test_account(
+    account_id="bob",
+    email="bob@example.com",
+    web_password_hash=hash_web_password("bob_pw"),
+    xtream_username="xtbob001",
+    xtream_password="xtbobpw1",
+    upstream_username="bob_up",
+    upstream_password="pw2",
+    pipeline=False,
+  )
+  seen_paths: list[str] = []
+  ts_chunk = bytes([0x47, 0x40, 0x00, 0x10]) + b"\xff" * 184
+  alice_connected = asyncio.Event()
+  release_alice = asyncio.Event()
+
+  async def upstream_handler(request: web.Request) -> web.StreamResponse:
+    seen_paths.append(request.path)
+    if request.path.endswith("/498715.ts"):
+      alice_connected.set()
+      resp = web.StreamResponse(
+        status=200, headers={"Content-Type": "video/mp2t"}
+      )
+      await resp.prepare(request)
+      await resp.write(ts_chunk * 4)
+      await asyncio.wait_for(release_alice.wait(), timeout=5.0)
+      await resp.write_eof()
+      return resp
+    if request.path.endswith("/500101.ts"):
+      return web.Response(
+        status=200, headers={"Content-Type": "video/mp2t"}, body=ts_chunk * 4
+      )
+    if request.path.endswith("/498715.m3u8"):
+      return web.Response(
+        status=200,
+        headers={"Content-Type": "application/vnd.apple.mpegurl"},
+        text="#EXTM3U\n#EXTINF:2.0,\nseg0.ts\n",
+      )
+    if request.path.endswith("/seg0.ts"):
+      return web.Response(
+        status=200, headers={"Content-Type": "video/mp2t"}, body=ts_chunk
+      )
+    return web.Response(status=404)
+
+  async with MockHttpServer(upstream_handler) as mock:
+    auth = WebAuthManager(
+      WebAuthConfig(
+        accounts=(alice, bob),
+        secret_file=tmp_path / "session_secret.key",
+      )
+    )
+    app = WebGuideApp(
+      LineupGuideStore(xt_dir),
+      auth=auth,
+      upstream_server_url=mock.base_url,
+      settle_sec=0.0,
+      session_factory=mock.session_factory,
+    )
+    await app.startup()
+    runner, port = await start_site(app.build_app(), "127.0.0.1", 0)
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+      async with (
+        new_test_session(base_url, timeout=10.0) as cli_alice,
+        new_test_session(base_url, timeout=10.0) as cli_bob,
+      ):
+        async with cli_alice.post(
+          "/api/auth/login",
+          json={"email": "alice@example.com", "password": "alice_pw"},
+        ) as r_la:
+          assert r_la.status == 200
+        async with cli_bob.post(
+          "/api/auth/login",
+          json={"email": "bob@example.com", "password": "bob_pw"},
+        ) as r_lb:
+          assert r_lb.status == 200
+
+        # Alice opens MPEG-TS ch 1101; Bob opens ch 1401 concurrently.
+        async with cli_alice.get("/api/stream/1101.ts?client=a1") as ts_alice:
+          assert ts_alice.status == 200
+          await asyncio.wait_for(alice_connected.wait(), timeout=2.0)
+          alice_info_1 = app.tuner_for("alice").active_info
+          assert alice_info_1 is not None
+          assert alice_info_1["chno"] == 1101
+
+          async with cli_bob.get("/api/stream/1401.ts?client=b1") as ts_bob:
+            assert ts_bob.status == 200
+            bob_bytes = await ts_bob.read()
+            assert bob_bytes.startswith(b"\x47")
+            # Alice's tuner remained undisturbed while Bob streamed
+            alice_info_2 = app.tuner_for("alice").active_info
+            assert alice_info_2 is not None
+            assert alice_info_2["chno"] == 1101
+
+          release_alice.set()
+          alice_bytes = await ts_alice.read()
+          assert alice_bytes.startswith(b"\x47")
+
+        assert "/live/alice_up/pw1/498715.ts" in seen_paths
+        assert "/live/bob_up/pw2/500101.ts" in seen_paths
+
+        # Alice opens HLS and gets an opaque asset token scoped only to Alice
+        async with cli_alice.get(
+          "/api/hls/1101/index.m3u8?client=a-hls"
+        ) as r_hls:
+          assert r_hls.status == 200
+          hls_text = await r_hls.text()
+        asset_path = next(
+          ln for ln in hls_text.splitlines() if ln.startswith("/api/hls/")
+        )
+        assert "/live/alice_up/pw1/498715.m3u8" in seen_paths
+
+        async with cli_alice.get(asset_path) as alice_seg:
+          assert alice_seg.status == 200
+          assert await alice_seg.read() == ts_chunk
+
+        # Bob replaying Alice's HLS asset token is rejected with 403
+        async with cli_bob.get(asset_path) as bob_seg:
+          assert bob_seg.status == 403
+    finally:
+      release_alice.set()
+      await runner.cleanup()
+      await app.shutdown()

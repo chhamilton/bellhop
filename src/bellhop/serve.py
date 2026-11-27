@@ -14,6 +14,7 @@ from typing import Any
 
 from aiohttp import web
 
+from bellhop.common.accounts import UserAccount
 from bellhop.common.export_bundle import ExportBundleReader
 from bellhop.common.http_utils import (
   ClientSessionFactory,
@@ -106,40 +107,45 @@ class UnifiedServeServer:
       config.config_file, initial_config=config
     )
     xtream_dir = config.resolve_path(config.output.xtream_dir)
-    m3u8_cand = config.resolve_path(config.output.playlist_path)
-    m3u8_path = m3u8_cand if m3u8_cand.is_file() else None
     cache_dir = config.resolve_path(config.cache_dir)
     fallback_xmltv_url = build_passthrough_xmltv_url(
       config, redact_secret=False
     )
 
+    def _accounts_provider() -> tuple[UserAccount, ...]:
+      return mgr.get().accounts
+
+    def _upstream_config_provider() -> tuple[str, str]:
+      cur = mgr.get()
+      return cur.xtream.server_url, cur.xtream.stream_format
+
+    def _fallback_xmltv_url_provider() -> str:
+      return build_passthrough_xmltv_url(mgr.get(), redact_secret=False)
+
     shared_reader = ExportBundleReader(
       xtream_dir,
-      m3u8_path=m3u8_path,
       fallback_xmltv_url=fallback_xmltv_url,
+      fallback_xmltv_url_provider=_fallback_xmltv_url_provider,
+      extra_watched_files=(
+        mgr.target_path,
+        config.resolve_path(config.credentials_file),
+      ),
     )
     xtream_store = XtreamExportStore(
       xtream_dir,
-      m3u8_path=m3u8_path,
-      fallback_xmltv_url=fallback_xmltv_url,
       bundle_reader=shared_reader,
     )
 
     web_store: LineupGuideStore | None = None
     headless_store: ExportBundleGuideStore | None = None
     if config.serve.web.enabled:
-      web_username = config.serve.web.username.strip()
-      web_password = config.serve.web.password.strip()
-      if not web_username or not web_password:
+      if not config.accounts:
         raise ValueError(
-          "Web Guide login cannot be disabled: configure `web_server.username` "
-          "and `web_server.password` in credentials.yaml, config.yaml, or "
-          "BELLHOP_WEB_USERNAME / BELLHOP_WEB_PASSWORD."
+          "Web Guide login requires at least one configured account under "
+          "`accounts:` in credentials.yaml."
         )
       web_store = LineupGuideStore(
         xtream_dir,
-        m3u8_path=m3u8_path,
-        fallback_xmltv_url=fallback_xmltv_url,
         bundle_reader=shared_reader,
       )
       epg_refresher = build_epg_refresher_from_config(
@@ -148,75 +154,11 @@ class UnifiedServeServer:
         session_factory=epg_session_factory or session_factory,
         enabled=True,
         sd_base_url=sd_base_url,
-      )
-
-      web_auth = WebAuthManager(
-        WebAuthConfig(
-          username=web_username,
-          password=web_password,
-          session_ttl_hours=config.serve.web.session_ttl_hours,
-          session_secret=config.serve.web.session_secret,
-          secret_file=cache_dir / "session_secret.key",
-        )
-      )
-      config_target = config.config_file or (
-        config.project_root / "config.yaml"
-      )
-
-      def _read_public_config() -> dict[str, Any]:
-        return {
-          "available": True,
-          "config_file": config_target.name,
-          "config": mgr.get_public(),
-        }
-
-      def _write_public_config(updates: dict[str, Any]) -> dict[str, Any]:
-        new_cfg, restart_required = mgr.update_public(updates)
-        epg_refresher.config.refresh_hours = new_cfg.epg.refresh_hours
-        epg_refresher.config.request_timeout_sec = (
-          new_cfg.xtream.request_timeout_sec
-        )
-        new_fallback_xmltv = build_passthrough_xmltv_url(
-          new_cfg, redact_secret=False
-        )
-        epg_refresher.config.xmltv_url = new_fallback_xmltv
-        shared_reader.fallback_xmltv_url = new_fallback_xmltv
-        web_store.fallback_xmltv_url = new_fallback_xmltv
-        xtream_store.fallback_xmltv_url = new_fallback_xmltv
-        if epg_refresher.config.sd_epg is not None:
-          epg_refresher.config.sd_epg.preferred_lineup_id = (
-            new_cfg.lineup.lineup_id
-          )
-          epg_refresher.config.sd_epg.postal_code = new_cfg.lineup.postal_code
-          epg_refresher.config.sd_epg.auto_add_lineup = (
-            new_cfg.lineup.schedules_direct.auto_add_lineup
-          )
-          epg_refresher.config.sd_epg.timeout_sec = (
-            new_cfg.xtream.request_timeout_sec
-          )
-        return {
-          "saved": True,
-          "restart_required": restart_required,
-          "config_file": config_target.name,
-          "config": mgr.get_public(),
-        }
-
-      web_app: WebGuideApp | None = WebGuideApp(
-        web_store,
-        settle_sec=max(0, config.serve.web.settle_ms) / 1000.0,
-        session_factory=session_factory,
-        epg_refresher=epg_refresher,
-        auth=web_auth,
-        trust_proxy_headers=config.serve.web.trust_proxy_headers,
-        trusted_proxy_ips=config.serve.web.trusted_proxy_ips,
-        config_reader=_read_public_config,
-        config_writer=_write_public_config,
+        xmltv_url_provider=_fallback_xmltv_url_provider,
       )
     else:
       headless_store = ExportBundleGuideStore(
         xtream_dir,
-        m3u8_path=m3u8_path,
-        fallback_xmltv_url=fallback_xmltv_url,
         bundle_reader=shared_reader,
       )
       epg_refresher = build_epg_refresher_from_config(
@@ -225,8 +167,8 @@ class UnifiedServeServer:
         session_factory=epg_session_factory or session_factory,
         enabled=config.serve.xtream.enabled,
         sd_base_url=sd_base_url,
+        xmltv_url_provider=_fallback_xmltv_url_provider,
       )
-      web_app = None
 
     async def _provide_xmltv_chunks() -> Iterator[bytes] | None:
       epg_refresher.trigger_background_if_needed(reason_prefix="xmltv")
@@ -269,8 +211,11 @@ class UnifiedServeServer:
     epg_active = epg_refresher.config.enabled and epg_refresher.is_configured
     xtream_app = XtreamPassthroughServer(
       xtream_store,
-      username=config.serve.xtream.username,
-      password=config.serve.xtream.password,
+      accounts=config.accounts,
+      accounts_provider=_accounts_provider,
+      upstream_server_url=config.xtream.server_url,
+      upstream_stream_format=config.xtream.stream_format,
+      upstream_config_provider=_upstream_config_provider,
       host=config.serve.xtream_host,
       port=config.serve.xtream_port,
       public_host=config.serve.xtream.public_host,
@@ -281,6 +226,34 @@ class UnifiedServeServer:
       epg_xmltv_chunks_provider=_provide_xmltv_chunks if epg_active else None,
       epg_short_provider=_provide_short_epg if epg_active else None,
     )
+
+    web_app: WebGuideApp | None = None
+    if config.serve.web.enabled:
+      assert web_store is not None
+      web_auth = WebAuthManager(
+        WebAuthConfig(
+          accounts=config.accounts,
+          accounts_provider=_accounts_provider,
+          session_ttl_hours=config.serve.web.session_ttl_hours,
+          secret_file=cache_dir / "session_secret.key",
+        )
+      )
+      web_app = WebGuideApp(
+        web_store,
+        settle_sec=max(0, config.serve.web.settle_ms) / 1000.0,
+        session_factory=session_factory,
+        epg_refresher=epg_refresher,
+        auth=web_auth,
+        trust_proxy_headers=config.serve.web.trust_proxy_headers,
+        trusted_proxy_ips=config.serve.web.trusted_proxy_ips,
+        upstream_server_url=config.xtream.server_url,
+        upstream_stream_format=config.xtream.stream_format,
+        upstream_config_provider=_upstream_config_provider,
+        xtream_api_enabled=config.serve.xtream.enabled,
+        player_base_url_provider=xtream_app.format_public_base_url,
+        password_changer=mgr.change_account_web_password,
+        stream_creds_regenerator=mgr.regenerate_account_stream_credentials,
+      )
 
     return cls(
       web_app,
@@ -349,9 +322,7 @@ class UnifiedServeServer:
 
   @property
   def xtream_auth_configured(self) -> bool:
-    return self.xtream_enabled and bool(
-      self.xtream_app.username and self.xtream_app.password
-    )
+    return self.xtream_enabled and self.xtream_app.auth_configured
 
   def _build_listener_app(
     self, *, serve_web: bool, serve_xtream: bool
@@ -433,11 +404,12 @@ class UnifiedServeServer:
     self, *, serve_web: bool, serve_xtream: bool
   ) -> _Handler:
     async def _handle_health(request: web.Request) -> web.StreamResponse:
-      is_authed = bool(
-        self.web_enabled
-        and self.web_app is not None
-        and self.web_app.is_authenticated(request)
+      session = (
+        self.web_app.session_for(request)
+        if self.web_enabled and self.web_app is not None
+        else None
       )
+      is_authed = session is not None
       epg_st = (
         self.epg_refresher.status_dict()
         if self.epg_refresher is not None
@@ -450,7 +422,11 @@ class UnifiedServeServer:
         market = snap.market
         channel_count = len(snap.channels)
         category_count = len(snap.categories)
-        active_tuner = self.web_app.tuner.active_info if is_authed else None
+        active_tuner = (
+          self.web_app.active_tuner_for(session.account_id)
+          if session is not None
+          else None
+        )
       else:
         xt_snap = await self.xtream_app.store.async_get_snapshot()
         lineup_id = xt_snap.lineup_id

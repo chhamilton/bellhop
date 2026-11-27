@@ -29,6 +29,7 @@ from bellhop.pipeline.models import (
 )
 from bellhop.pipeline.xtream_exporter import export_xtream_playlist_and_guide
 from bellhop.xtream import XtreamCatalog, load_catalog_from_json
+from tests.conftest import TEST_PASSWORD_HASH, make_test_account
 from tests.http_mock import MockHttpServer
 
 SAMPLE_XMLTV = """\
@@ -130,12 +131,17 @@ async def test_phase6_xtream_export_collapsed_hd_and_passthrough_epg(
       body=gzipped_body,
     )
 
+  from tests.conftest import make_test_account
+
   cfg = AppConfig(
     project_root=tmp_path,
+    accounts=(
+      make_test_account(
+        upstream_username="sub_user", upstream_password="secret_pw"
+      ),
+    ),
     xtream=XtreamConfig(
       server_url="http://provider.example",
-      username="sub_user",
-      password="secret_pw",
       stream_format="ts",
     ),
     lineup=LineupConfig(
@@ -210,20 +216,18 @@ async def test_phase6_xtream_export_collapsed_hd_and_passthrough_epg(
   assert s_ici["category_id"] == "1"
   assert s_ici["category_ids"] == [1]
   assert s_ici["custom_sid"] == "1101"
-  assert (
-    s_ici["direct_source"]
-    == "http://provider.example/live/sub_user/secret_pw/410101.ts"
-  )
+  assert s_ici["direct_source"] == ""
+  assert s_ici["guide"]["fallback_stream_ids"] == []
   assert "epg_listings" not in s_ici["guide"]
 
-  # 3. Inspect unified bundle passthrough EPG metadata & round-trip via
-  #    load_catalog_from_json()
+  # 3. Inspect passthrough EPG metadata (no leaked URL creds) & round-trip.
   bundle = json.loads(res.bundle_path.read_text(encoding="utf-8"))
-  assert bundle["server_info"]["xmltv_url"] == res.xmltv_url
+  assert bundle["server_info"]["xmltv_url"] == ""
   assert bundle["epg_guide"]["mode"] == "passthrough"
-  assert bundle["epg_guide"]["xmltv_url"] == res.xmltv_url
+  assert bundle["epg_guide"]["xmltv_url"] == ""
   assert bundle["epg_guide"]["verified"] is True
   assert "secret_pw" not in bundle["epg_guide"]["verification"]["url"]
+  assert "secret_pw" not in json.dumps(bundle)
 
   roundtrip = load_catalog_from_json(res.bundle_path)
   assert roundtrip.account.username == "sub_user"
@@ -294,26 +298,39 @@ channels:
     encoding="utf-8",
   )
 
+  creds_path = tmp_path / "credentials.yaml"
+  creds_path.write_text(
+    f"""\
+accounts:
+  pipeline_user:
+    email: "pipe@example.com"
+    web_password_hash: "{TEST_PASSWORD_HASH}"
+    xtream_username: "xtpipe01"
+    xtream_password: "xtpass01"
+    upstream_username: "u"
+    upstream_password: "super_secret_upstream_pw"
+    pipeline: true
+""",
+    encoding="utf-8",
+  )
+
   state_dir = tmp_path / "state"
-  out_m3u8 = tmp_path / "output" / "test.m3u8"
   out_report = tmp_path / "output" / "report.json"
   xtream_dir = tmp_path / "output" / "xtream_both"
 
   cfg_both_path = tmp_path / "config_both.yaml"
   cfg_both_path.write_text(
     f"""\
+credentials_file: "{creds_path}"
 paths:
   state_dir: "{state_dir}"
   lineup_file: "{lineup_yaml_path}"
   seed_json: "{input_catalog_path}"
   xmltv_file: "{epg_xml_path}"
-  m3u8_playlist_path: "{out_m3u8}"
-  m3u8_report_path: "{out_report}"
+  report_path: "{out_report}"
   xtream_output_dir: "{xtream_dir}"
 upstream_xtream:
   server_url: "http://provider.example"
-  username: "u"
-  password: "p"
 pipeline:
   lineup:
     lineup_id: "CAN-BELLFIBE-MTL-X"
@@ -330,40 +347,39 @@ pipeline:
   )
   assert rc == 0
 
-  # Both M3U8 and Xtream JSON embed the passthrough upstream xmltv.php URL
-  m3u8_text = out_m3u8.read_text(encoding="utf-8")
-  assert (
-    'url-tvg="http://provider.example/xmltv.php?username=u&password=p"'
-    in m3u8_text
+  # Report exists cleanly without leaking secrets; Xtream bundle omits creds.
+  assert out_report.is_file()
+  assert "super_secret_upstream_pw" not in out_report.read_text(
+    encoding="utf-8"
   )
 
   both_streams = json.loads(
     (xtream_dir / "get_live_streams.json").read_text(encoding="utf-8")
   )
   assert [s["num"] for s in both_streams] == [101, 108, 1101, 1108]
+  assert all(s["direct_source"] == "" for s in both_streams)
 
   bundle = json.loads(
     (xtream_dir / "bellhop_xtream_playlist.json").read_text(encoding="utf-8")
   )
+  assert bundle["server_info"]["xmltv_url"] == ""
   assert bundle["epg_guide"]["mode"] == "passthrough"
   assert bundle["epg_guide"]["verified"] is True
   assert not (xtream_dir / "xmltv.xml").exists()
   assert not (xtream_dir / "get_epg.json").exists()
 
-  # Now run single-phase `bellhop run --phase xtream` with collapse_sd_dupes:
-  # true in config
+  # Now run `--phase export` with collapse_sd_dupes: true.
   xtream_hd_dir = tmp_path / "output" / "xtream_hd"
   cfg_hd_path = tmp_path / "config_hd.yaml"
   cfg_hd_path.write_text(
     f"""\
+credentials_file: "{creds_path}"
 paths:
   state_dir: "{state_dir}"
   lineup_file: "{lineup_yaml_path}"
   xtream_output_dir: "{xtream_hd_dir}"
 upstream_xtream:
   server_url: "http://provider.example"
-  username: "u"
-  password: "p"
 pipeline:
   lineup:
     lineup_id: "CAN-BELLFIBE-MTL-X"
@@ -374,7 +390,7 @@ pipeline:
     encoding="utf-8",
   )
   rc2 = cli_main(
-    ["run", "--config", str(cfg_hd_path), "--phase", "xtream", "--quiet"]
+    ["run", "--config", str(cfg_hd_path), "--phase", "export", "--quiet"]
   )
   assert rc2 == 0
   hd_streams = json.loads(
@@ -394,10 +410,13 @@ async def test_verify_epg_endpoint_redacts_secrets_in_error_and_bundle(
 
   cfg = AppConfig(
     project_root=tmp_path,
+    accounts=(
+      make_test_account(
+        upstream_username="sub_user", upstream_password="s3cr3t_epg_pw"
+      ),
+    ),
     xtream=XtreamConfig(
       server_url="http://provider.example",
-      username="sub_user",
-      password="s3cr3t_epg_pw",
       stream_format="ts",
     ),
     output=OutputConfig(xtream_dir=tmp_path / "output" / "xtream"),

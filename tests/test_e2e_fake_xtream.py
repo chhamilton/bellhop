@@ -10,6 +10,7 @@ from pathlib import Path
 import aiohttp
 import pytest
 
+from bellhop.common.accounts import hash_web_password
 from bellhop.common.http_utils import start_site
 from bellhop.config import load_config
 from bellhop.epg.refresh import EpgRefreshConfig, EpgRefreshService
@@ -17,6 +18,7 @@ from bellhop.pipeline.runner import PipelineRunner, PipelineRunOptions
 from bellhop.web.auth import WebAuthConfig, WebAuthManager
 from bellhop.web.server import WebGuideApp
 from bellhop.web.store import LineupGuideStore
+from tests.conftest import make_test_account
 from tests.fake_xtream_server import (
   FakeProgram,
   FakeStreamDef,
@@ -151,20 +153,34 @@ async def test_e2e_pipeline_to_web_guide_passthrough_epg_and_single_tuner(
     lineup_file = tmp_path / "lineup.yaml"
     _write_mini_lineup(lineup_file)
 
+    creds_path = tmp_path / "credentials.yaml"
+    creds_path.write_text(
+      f"""\
+accounts:
+  e2e_admin:
+    email: "e2e_admin@example.com"
+    web_password_hash: "{hash_web_password("e2e_web_pw")}"
+    xtream_username: "xt_e2e_01"
+    xtream_password: "xt_e2e_pw"
+    upstream_username: "{fake.username}"
+    upstream_password: "{fake.password}"
+    pipeline: true
+""",
+      encoding="utf-8",
+    )
+
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
       f"""\
+credentials_file: "{creds_path}"
 paths:
   cache_dir: "cache"
   state_dir: "state"
   lineup_file: "{lineup_file}"
-  m3u8_playlist_path: "output/lineup.m3u8"
-  m3u8_report_path: "output/report.json"
+  report_path: "output/report.json"
   xtream_output_dir: "output/xtream"
 upstream_xtream:
   server_url: "{fake.base_url}"
-  username: "{fake.username}"
-  password: "{fake.password}"
   stream_format: "ts"
 pipeline:
   lineup:
@@ -183,14 +199,11 @@ pipeline:
   epg:
     verify: true
     refresh_hours: 6.0
-  output:
-    m3u8_enabled: true
-    xtream_enabled: true
 """,
       encoding="utf-8",
     )
 
-    # 1. Run full 6-phase pipeline against FakeXtreamServer
+    # 1. Run full 5-phase pipeline against FakeXtreamServer
     cfg = load_config(cfg_path)
     result = await PipelineRunner(cfg).run(PipelineRunOptions())
     assert result.xtream_result is not None
@@ -199,13 +212,18 @@ pipeline:
     assert fake.peak_concurrent_streams == 1
     assert fake.connection_limit_violations == 0
 
-    # Passthrough EPG only: no static get_epg.json / xmltv.xml written
+    # Passthrough EPG only: no static get_epg.json / xmltv.xml; creds omitted.
     xt_dir = tmp_path / "output" / "xtream"
     assert not (xt_dir / "get_epg.json").exists()
     assert not (xt_dir / "xmltv.xml").exists()
-    assert fake.xmltv_url in (tmp_path / "output" / "lineup.m3u8").read_text(
-      encoding="utf-8"
+    assert (tmp_path / "output" / "report.json").is_file()
+    bundle_on_disk = json.loads(
+      (xt_dir / "bellhop_xtream_playlist.json").read_text(encoding="utf-8")
     )
+    assert bundle_on_disk["server_info"]["xmltv_url"] == ""
+    assert fake.password not in (
+      xt_dir / "bellhop_xtream_playlist.json"
+    ).read_text(encoding="utf-8")
 
     # Validator rejected /video/black.ts (#410100) and rescued Ch 1101 with
     # #410101
@@ -218,7 +236,7 @@ pipeline:
 
     # 2. Boot real Bellhop Web Guide server against the exported files &
     #    FakeXtreamServer
-    store = LineupGuideStore(xt_dir)
+    store = LineupGuideStore(xt_dir, fallback_xmltv_url=fake.xmltv_url)
     epg_cache = tmp_path / "cache" / "epg.sqlite3"
     refresher = EpgRefreshService(
       store,
@@ -226,13 +244,17 @@ pipeline:
     )
     auth = WebAuthManager(
       WebAuthConfig(
-        username="e2e_admin",
-        password="e2e_web_pw",
+        accounts=cfg.accounts,
         secret_file=tmp_path / "session.key",
       )
     )
     app = WebGuideApp(
-      store, auth=auth, settle_sec=0.05, epg_refresher=refresher
+      store,
+      auth=auth,
+      upstream_server_url=fake.base_url,
+      upstream_stream_format=cfg.xtream.stream_format,
+      settle_sec=0.05,
+      epg_refresher=refresher,
     )
     await app.startup()
     web_runner, web_port = await start_site(app.build_app(), "127.0.0.1", 0)
@@ -242,7 +264,7 @@ pipeline:
       async with new_test_session(web_base, timeout=10.0) as client:
         async with client.post(
           "/api/auth/login",
-          json={"username": "e2e_admin", "password": "e2e_web_pw"},
+          json={"email": "e2e_admin@example.com", "password": "e2e_web_pw"},
         ) as login_r:
           assert login_r.status == 200
         # Wait for automatic passthrough EPG fetch & disk cache persistence
@@ -378,15 +400,27 @@ async def test_e2e_reload_channel_deep_link_race_placeholder_failover_and_hls(
       json.dumps(bundle), encoding="utf-8"
     )
 
-    store = LineupGuideStore(xt_dir)
+    store = LineupGuideStore(xt_dir, fallback_xmltv_url=fake.xmltv_url)
     auth = WebAuthManager(
       WebAuthConfig(
-        username="e2e_admin",
-        password="e2e_web_pw",
+        accounts=(
+          make_test_account(
+            account_id="e2e_admin",
+            email="e2e_admin@example.com",
+            web_password_hash=hash_web_password("e2e_web_pw"),
+            upstream_username=fake.username,
+            upstream_password=fake.password,
+          ),
+        ),
         secret_file=tmp_path / "session2.key",
       )
     )
-    app = WebGuideApp(store, auth=auth, settle_sec=0.05)
+    app = WebGuideApp(
+      store,
+      auth=auth,
+      upstream_server_url=fake.base_url,
+      settle_sec=0.05,
+    )
     await app.startup()
     web_runner, web_port = await start_site(app.build_app(), "127.0.0.1", 0)
     web_base = f"http://127.0.0.1:{web_port}"
@@ -395,7 +429,7 @@ async def test_e2e_reload_channel_deep_link_race_placeholder_failover_and_hls(
       async with new_test_session(web_base, timeout=10.0) as client:
         async with client.post(
           "/api/auth/login",
-          json={"username": "e2e_admin", "password": "e2e_web_pw"},
+          json={"email": "e2e_admin@example.com", "password": "e2e_web_pw"},
         ) as login_r:
           assert login_r.status == 200
         # 1. Reload race: tab-old is streaming Ch 1101 (failing over past

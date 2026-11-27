@@ -10,14 +10,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TypedDict
-from urllib.parse import quote
 
 import aiohttp
 
+from bellhop.common.accounts import UserAccount, build_upstream_xmltv_url
 from bellhop.common.http_utils import (
   UPSTREAM_ERRORS,
   default_session_factory,
-  detect_device_ip,
   extract_explicit_private_origins,
   open_upstream_url,
   redact_url_secrets,
@@ -82,40 +81,20 @@ class EpgVerificationResult:
 
 
 def build_passthrough_xmltv_url(
-  config: AppConfig, *, redact_secret: bool = False
+  config: AppConfig,
+  *,
+  account: UserAccount | None = None,
+  redact_secret: bool = False,
 ) -> str:
-  """Build the upstream passthrough `xmltv.php` URL from `AppConfig.xtream`."""
-  xt = config.xtream
-  if not xt.server_url or not xt.username or not xt.password:
+  """Build upstream passthrough `xmltv.php` URL via the active account."""
+  acct = account or config.pipeline_account
+  if acct is None:
     return ""
-  base = xt.server_url.strip().rstrip("/")
-  if not base.startswith(("http://", "https://")):
-    base = f"http://{base}"
-  user_q = quote(xt.username, safe="")
-  pw = "***" if redact_secret else quote(xt.password, safe="")
-  return f"{base}/xmltv.php?username={user_q}&password={pw}"
-
-
-def build_serve_xmltv_url(
-  config: AppConfig, *, redact_secret: bool = False
-) -> str:
-  """Build Bellhop's own `/xmltv.php` URL from `AppConfig.serve.xtream`."""
-  sx = config.serve.xtream
-  user = sx.username.strip()
-  password = sx.password.strip()
-  if not sx.enabled or not user or not password:
-    return ""
-  proto = (sx.server_protocol or "http").strip() or "http"
-  raw_host = (sx.public_host or config.serve.xtream_host or "").strip()
-  if raw_host.lower() in {"", "0.0.0.0", "::", "auto"}:
-    raw_host = detect_device_ip() or "127.0.0.1"
-  host_clean = raw_host.strip("[]")
-  host_fmt = f"[{host_clean}]" if ":" in host_clean else host_clean
-  port = sx.public_port or config.serve.xtream_port
-  user_q = quote(user, safe="")
-  pw_q = "***" if redact_secret else quote(password, safe="")
-  return (
-    f"{proto}://{host_fmt}:{port}/xmltv.php?username={user_q}&password={pw_q}"
+  return build_upstream_xmltv_url(
+    config.xtream.server_url,
+    acct.upstream_username,
+    acct.upstream_password,
+    redact_secret=redact_secret,
   )
 
 
@@ -166,8 +145,14 @@ async def verify_epg_endpoint(
       error=None if fmt else "File does not appear to be valid XMLTV",
     )
 
-  full_url = build_passthrough_xmltv_url(config, redact_secret=False)
-  redacted_url = build_passthrough_xmltv_url(config, redact_secret=True)
+  pipe_acct = config.pipeline_account
+  full_url = build_passthrough_xmltv_url(
+    config, account=pipe_acct, redact_secret=False
+  )
+  redacted_url = build_passthrough_xmltv_url(
+    config, account=pipe_acct, redact_secret=True
+  )
+  secret_pw = pipe_acct.upstream_password if pipe_acct is not None else ""
   if not full_url:
     return EpgVerificationResult(
       verified=False,
@@ -239,7 +224,7 @@ async def verify_epg_endpoint(
       url_redacted=redacted_url,
       verified=False,
       latency_ms=(time.perf_counter() - t0) * 1000.0,
-      error=redact_url_secrets(str(exc), secret=config.xtream.password),
+      error=redact_url_secrets(str(exc), secret=secret_pw),
     )
   finally:
     if owns_client:

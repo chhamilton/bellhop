@@ -2,8 +2,8 @@
  * Unit tests for Bellhop's pure ES module guide logic (`guide_logic.js`).
  *
  * Exercises HTML escaping, badge/initials helpers, live EPG schedule window
- * progression & boundary detection, category-relative filter counts, URL state
- * round-tripping, and Settings form parsers.
+ * progression & boundary detection, category-relative filter counts, and URL state
+ * round-tripping.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -19,8 +19,6 @@ import {
   groupChannelsByCategory,
   hasLineupUpdated,
   makeInitials,
-  parseExcludedChannelsText,
-  parsePinnedStreamsText,
   parseUrlState,
   qualityBadgeClass,
   refreshScheduleWindows,
@@ -212,27 +210,6 @@ test("parseUrlState, buildUrlQueryString, and computeTimelineGeometry round-trip
   assert.equal(geom.windowEnd, 3600 + 8 * 1800);
   assert.equal(geom.trackWidthPx, 1920);
   assert.equal(geom.showNowLine, true);
-});
-
-test("parsePinnedStreamsText and parseExcludedChannelsText parse lines, JSON, and errors", () => {
-  assert.deepEqual(
-    parsePinnedStreamsText("# comment\n1108 = 410108\n1205:520105\n"),
-    { "1108": 410108, "1205": 520105 },
-  );
-  assert.deepEqual(parsePinnedStreamsText('{"1108": 410108}'), {
-    "1108": 410108,
-  });
-  assert.throws(
-    () => parsePinnedStreamsText("1108_without_separator"),
-    /Invalid pinned stream entry/,
-  );
-
-  assert.deepEqual(parseExcludedChannelsText("1001, 1002\n1305"), [
-    1001,
-    1002,
-    1305,
-  ]);
-  assert.deepEqual(parseExcludedChannelsText("   "), []);
 });
 
 test("createLineupUpdatePoller checks lightweight timestamp and only reloads when changed", async () => {

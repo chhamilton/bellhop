@@ -2,17 +2,11 @@
 # Auto-seeded on first container startup when /config/config.yaml does not exist.
 #
 # Mount points inside the container:
-#   /config       -> config.yaml and optional credentials.yaml
+#   /config       -> config.yaml and credentials.yaml
 #   /data/state   -> lineup & catalog snapshots and channel_mapping.json
 #   /data/cache   -> SQLite EPG store (epg.sqlite3), sd_token.json, & session_secret.key
-#   /data/output  -> bellhop.m3u8, lineup_report.json, and xtream/*.json
-#
-# Credentials can be provided via environment variables (.env / docker-compose.yml)
-# or placed in /config/credentials.yaml.
+#   /data/output  -> lineup_report.json and xtream/*.json
 
-# =============================================================================
-# 1. HOST & INFRASTRUCTURE (Config file only — NOT editable in Web UI)
-# =============================================================================
 credentials_file: "/config/credentials.yaml"
 
 paths:
@@ -20,8 +14,7 @@ paths:
   state_dir: "/data/state"
   mapping_path: "/data/state/channel_mapping.json"
   lineup_file: "/app/data/lineups/bell_fibe_montreal.yaml"
-  m3u8_playlist_path: "/data/output/bellhop.m3u8"
-  m3u8_report_path: "/data/output/lineup_report.json"
+  report_path: "/data/output/lineup_report.json"
   xtream_output_dir: "/data/output/xtream"
   seed_json: null
   xmltv_file: null
@@ -31,12 +24,7 @@ web_server:
   host: "0.0.0.0"
   port: 8080
   settle_ms: 180
-  # Web Guide login credentials (REQUIRED when web_server.enabled is true)
-  username: "${BELLHOP_WEB_USERNAME}"
-  password: "${BELLHOP_WEB_PASSWORD}"
   session_ttl_hours: 168.0
-  session_secret: "${BELLHOP_WEB_SESSION_SECRET}"
-  # Reverse-proxy X-Forwarded-For trust (config-file only, never surfaced in Web UI)
   trust_proxy_headers: false
   trusted_proxy_ips:
     - "127.0.0.1"
@@ -46,21 +34,13 @@ xtream_server:
   enabled: true
   host: null
   port: null
-  # Client credentials for IPTV players connecting to /player_api.php, /get.php, /live/*
-  username: "${BELLHOP_SERVE_USERNAME}"
-  password: "${BELLHOP_SERVE_PASSWORD}"
   public_host: null
   public_port: null
   server_protocol: "http"
 
-# =============================================================================
-# 2. OPERATIONAL SETTINGS (Editable via Web UI Settings panel; no credentials)
-# =============================================================================
 upstream_xtream:
-  server_url: "${XTREAM_SERVER_URL}"
-  username: "${XTREAM_USERNAME}"
-  password: "${XTREAM_PASSWORD}"
-  stream_format: "${XTREAM_STREAM_FORMAT}"
+  server_url: "http://provider.example:8080"
+  stream_format: "ts"
   request_timeout_sec: 90.0
   refresh_hours: 24.0
 
@@ -76,8 +56,6 @@ pipeline:
     pinned_streams: {}
     excluded_channels: []
     schedules_direct:
-      username: "${SD_USERNAME}"
-      password: "${SD_PASSWORD}"
       auto_add_lineup: false
     iptv_org:
       enabled: true
@@ -106,6 +84,4 @@ pipeline:
     refresh_hours: 6.0
 
   output:
-    m3u8_enabled: true
-    xtream_enabled: true
     include_unmatched_comment: false

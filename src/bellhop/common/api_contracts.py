@@ -1,7 +1,7 @@
 """Single-source-of-truth HTTP JSON contracts, JSON Schema, and TS codegen.
 
 Defines the wire `TypedDict` schemas shared across `bellhop.web`, `bellhop.epg`,
-and `bellhop.config.public`, generates
+and `bellhop.pipeline`, generates
 `src/bellhop/web/frontend/api_contracts.d.ts`, emits Draft 2020-12 JSON
 Schemas, and validates live HTTP responses against those schemas in tests.
 """
@@ -135,7 +135,8 @@ class AuthStatusResponseDict(TypedDict):
 
   auth_required: bool
   authenticated: bool
-  username: str | None
+  account_id: str | None
+  email: str | None
   expires_at: float | None
 
 
@@ -148,116 +149,30 @@ class ChannelEpgResponseDict(TypedDict):
   programs: list[ProgramItemDict]
 
 
-class PublicUpstreamXtreamDict(TypedDict):
-  """Tier-2 `upstream_xtream` operational settings exposed on `/api/config`."""
+class PlayerUrlsDict(TypedDict):
+  """Ready-to-paste external IPTV player URLs scoped to the signed-in user."""
 
-  server_url: str
-  stream_format: str
-  request_timeout_sec: float
-  refresh_hours: float
-
-
-class PublicIptvOrgDict(TypedDict):
-  """Tier-2 `pipeline.lineup.iptv_org` settings exposed on `/api/config`."""
-
-  enabled: bool
-  recheck_hours: float
+  xtream_server_url: str
+  m3u_url: str
+  m3u_hls_url: str
+  xmltv_url: str
 
 
-class PublicSchedulesDirectDict(TypedDict):
-  """Tier-2 `pipeline.lineup.schedules_direct` settings on `/api/config`."""
+class AccountInfoResponseDict(TypedDict):
+  """Self-service account & external player setup payload (`/api/account`)."""
 
-  auto_add_lineup: bool
-
-
-class PublicLineupDict(TypedDict):
-  """Tier-2 `pipeline.lineup` settings exposed on `/api/config`."""
-
-  backend: str
-  lineup_id: str
-  postal_code: str
-  refresh_days: float
-  numbering_mode: str
-  collapse_sd_dupes: bool
-  exclude_audio: bool
-  pinned_streams: dict[str, int]
-  excluded_channels: list[int]
-  schedules_direct: PublicSchedulesDirectDict
-  iptv_org: PublicIptvOrgDict
+  account_id: str
+  email: str
+  xtream_username: str
+  xtream_password: str
+  player_urls: PlayerUrlsDict
 
 
-class PublicMatchingDict(TypedDict):
-  """Tier-2 `pipeline.matching` settings exposed on `/api/config`."""
+class PasswordChangeResponseDict(TypedDict):
+  """Response payload for `POST /api/account/password`."""
 
-  upgrade_hysteresis_score: float
-
-
-class PublicValidationDict(TypedDict):
-  """Tier-2 `pipeline.validation` settings exposed on `/api/config`."""
-
-  enabled: bool
-  only_changed: bool
-  concurrency: int
-  ignore_account_limit: bool
-  inter_probe_delay_sec: float
-  http_timeout_sec: float
-  min_bytes_to_read: int
-  use_ffprobe: bool
-  ffprobe_timeout_sec: float
-  detect_black_screen: bool
-  black_sample_sec: float
-  check_audio_language: bool
-  max_candidates_per_channel: int
-
-
-class PublicEpgDict(TypedDict):
-  """Tier-2 `pipeline.epg` settings exposed on `/api/config`."""
-
-  verify: bool
-  refresh_hours: float
-
-
-class PublicOutputDict(TypedDict):
-  """Tier-2 `pipeline.output` settings exposed on `/api/config`."""
-
-  m3u8_enabled: bool
-  xtream_enabled: bool
-  include_unmatched_comment: bool
-
-
-class PublicPipelineDict(TypedDict):
-  """Tier-2 `pipeline` settings exposed on `/api/config`."""
-
-  lineup: PublicLineupDict
-  matching: PublicMatchingDict
-  validation: PublicValidationDict
-  epg: PublicEpgDict
-  output: PublicOutputDict
-
-
-class PublicConfigPayload(TypedDict):
-  """Scoped Tier-2 operational settings payload exposed by `/api/config`."""
-
-  upstream_xtream: PublicUpstreamXtreamDict
-  pipeline: PublicPipelineDict
-
-
-class PublicConfigResponseDict(TypedDict):
-  """Response payload for `GET /api/config`."""
-
-  available: bool
-  config: PublicConfigPayload | None
-  config_file: str | None
-
-
-class ConfigSaveResponseDict(TypedDict, total=False):
-  """Response payload for `PUT/POST /api/config`."""
-
-  saved: bool
-  restart_required: bool
-  config_file: str
-  config: PublicConfigPayload
-  error: str
+  ok: bool
+  email: str
 
 
 # Ordered mapping from Python TypedDict class -> TypeScript interface name.
@@ -272,18 +187,9 @@ API_CONTRACT_TYPES: tuple[tuple[type[Any], str], ...] = (
   (HealthApiResponseDict, "HealthApiResponse"),
   (AuthStatusResponseDict, "AuthStatusResponse"),
   (ChannelEpgResponseDict, "ChannelEpgResponse"),
-  (PublicUpstreamXtreamDict, "UpstreamXtreamPublicConfig"),
-  (PublicIptvOrgDict, "IptvOrgPublicConfig"),
-  (PublicSchedulesDirectDict, "SchedulesDirectPublicConfig"),
-  (PublicLineupDict, "LineupPublicConfig"),
-  (PublicMatchingDict, "MatchingPublicConfig"),
-  (PublicValidationDict, "ValidationPublicConfig"),
-  (PublicEpgDict, "EpgPublicConfig"),
-  (PublicOutputDict, "OutputPublicConfig"),
-  (PublicPipelineDict, "PipelinePublicConfig"),
-  (PublicConfigPayload, "PublicConfig"),
-  (PublicConfigResponseDict, "PublicConfigResponse"),
-  (ConfigSaveResponseDict, "ConfigSaveResponse"),
+  (PlayerUrlsDict, "PlayerUrls"),
+  (AccountInfoResponseDict, "AccountInfoResponse"),
+  (PasswordChangeResponseDict, "PasswordChangeResponse"),
 )
 
 _TS_NAME_BY_CLASS: dict[type[Any], str] = dict(API_CONTRACT_TYPES)

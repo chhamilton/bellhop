@@ -35,6 +35,7 @@ npm-debug.log*
 config.yaml
 credentials.yaml
 *.yaml.tmp
+*.bak
 *.key
 docker-compose.yml
 docker-compose.override.yml

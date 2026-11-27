@@ -31,21 +31,21 @@ function buildLoginDom({ nextUrl = "/guide", includeForm = true } = {}) {
     const btn = doc.createElement("button");
     btn.id = "login-submit";
     btn.textContent = "Sign In";
-    const userInput = doc.createElement("input");
-    userInput.id = "username";
+    const emailInput = doc.createElement("input");
+    emailInput.id = "email";
     const passInput = doc.createElement("input");
     passInput.id = "password";
     const nextInput = doc.createElement("input");
     nextInput.name = "next";
     nextInput.value = nextUrl;
 
-    for (const child of [errEl, userInput, passInput, nextInput, btn]) {
+    for (const child of [errEl, emailInput, passInput, nextInput, btn]) {
       form.appendChild(child);
       doc.register(child);
     }
     doc.register(form);
     doc.body.appendChild(form);
-    Object.assign(els, { form, errEl, btn, userInput, passInput, nextInput });
+    Object.assign(els, { form, errEl, btn, emailInput, passInput, nextInput });
   }
   return { doc, els };
 }
@@ -101,10 +101,13 @@ test("login.js handles missing DOM, theme toggle binding, and successful redirec
   });
 
   assert.equal(themeTarget, els.themeBtn);
-  els.userInput.value = "admin";
+  els.emailInput.value = "admin@example.com";
   els.passInput.value = "s3cret";
   await els.form.dispatch("submit");
-  assert.deepEqual(postedBody, { username: "admin", password: "s3cret" });
+  assert.deepEqual(postedBody, {
+    email: "admin@example.com",
+    password: "s3cret",
+  });
   assert.deepEqual(replaced, ["/?view=grid#now"]);
 });
 
@@ -129,7 +132,7 @@ test("login.js surfaces HTTP error details, invalid JSON fallback, and network e
         json: async () => ({ error: "Rate limited" }),
       }),
     });
-    els.userInput.value = "u";
+    els.emailInput.value = "user@example.com";
     els.passInput.value = "bad";
     await els.form.dispatch("submit");
     assert.equal(els.errEl.hidden, false);
@@ -154,7 +157,7 @@ test("login.js surfaces HTTP error details, invalid JSON fallback, and network e
       }),
     });
     await els.form.dispatch("submit");
-    assert.equal(els.errEl.textContent, "Invalid username or password.");
+    assert.equal(els.errEl.textContent, "Invalid email or password.");
     assert.equal(els.btn.disabled, false);
   }
 

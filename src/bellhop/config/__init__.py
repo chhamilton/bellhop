@@ -1,8 +1,20 @@
-"""Two-tier configuration package (`model`, `load`, `public`, `manager`)."""
+"""Configuration package (`model`, `load`, `manager`) and account helpers."""
 
 from __future__ import annotations
 
-from bellhop.config.load import load_config
+from bellhop.common.accounts import (
+  STREAM_CREDENTIAL_ALPHABET,
+  STREAM_CREDENTIAL_LENGTH,
+  UserAccount,
+  generate_stream_credential,
+  hash_web_password,
+  verify_web_password,
+)
+from bellhop.config.load import (
+  find_project_root,
+  load_and_normalize_credentials,
+  load_config,
+)
 from bellhop.config.manager import (
   ConfigManager,
   clear_config_cache,
@@ -27,53 +39,35 @@ from bellhop.config.model import (
   ValidationConfig,
   XtreamConfig,
 )
-from bellhop.config.public import (
-  PublicConfigPayload,
-  PublicEpgDict,
-  PublicIptvOrgDict,
-  PublicLineupDict,
-  PublicMatchingDict,
-  PublicOutputDict,
-  PublicPipelineDict,
-  PublicSchedulesDirectDict,
-  PublicUpstreamXtreamDict,
-  PublicValidationDict,
-  apply_public_config_update,
-  export_public_config,
-)
 
 __all__ = [
   "DEFAULT_BELL_FIBE_MTL_LINEUP_ID",
   "DEFAULT_IPTV_ORG_API_URL",
   "DEFAULT_SD_BASE_URL",
   "DEFAULT_TVGUIDE_BASE_URL",
+  "STREAM_CREDENTIAL_ALPHABET",
+  "STREAM_CREDENTIAL_LENGTH",
   "AppConfig",
   "ConfigManager",
   "EpgConfig",
   "IptvOrgConfig",
   "LineupConfig",
   "OutputConfig",
-  "PublicConfigPayload",
-  "PublicEpgDict",
-  "PublicIptvOrgDict",
-  "PublicLineupDict",
-  "PublicMatchingDict",
-  "PublicOutputDict",
-  "PublicPipelineDict",
-  "PublicSchedulesDirectDict",
-  "PublicUpstreamXtreamDict",
-  "PublicValidationDict",
   "SchedulesDirectConfig",
   "ServeConfig",
   "ServeWebConfig",
   "ServeXtreamConfig",
   "StateConfig",
+  "UserAccount",
   "ValidationConfig",
   "XtreamConfig",
-  "apply_public_config_update",
   "clear_config_cache",
-  "export_public_config",
+  "find_project_root",
+  "generate_stream_credential",
   "get_cached_config",
   "get_config_manager",
+  "hash_web_password",
+  "load_and_normalize_credentials",
   "load_config",
+  "verify_web_password",
 ]

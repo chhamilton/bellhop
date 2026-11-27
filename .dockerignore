@@ -16,8 +16,13 @@ __pycache__/
 
 # Machine-local secrets, configs, runtime state & exports
 .env
+.env.*
+!.env.example
 config.yaml
 credentials.yaml
+*.yaml.tmp
+*.bak
+*.key
 cache/
 state/
 output/

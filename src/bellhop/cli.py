@@ -198,10 +198,9 @@ def _print_validation_panel(
     )
 
 
-def _print_m3u8_summary(
+def _print_coverage_summary(
   lineup: CableLineup,
   mappings: list[MappedChannel],
-  playlist_path: Path | None,
   report_path: Path | None,
   cfg: AppConfig,
   *,
@@ -281,12 +280,12 @@ def _print_m3u8_summary(
 
   console.print(
     Panel.fit(
-      f"[bold green]M3U8 Playlist:[/bold green]   {playlist_path}\n"
       f"[bold cyan]JSON Report:[/bold cyan]     {report_path}\n"
       f"[bold]Unique Networks:[/bold] {total_active}/{total_slots} ({pct:.1f}%), "
       f"{total_epg} with native provider EPG\n"
-      f"[bold]M3U8 Dial Slots:[/bold] {dial_count}/{dial_total} channel numbers emitted ({sd_note})",
-      title="Phase (5) — M3U8 & Diagnostics Generation (`m3u8`)",
+      f"[bold]Lineup Dial Slots:[/bold] {dial_count}/{dial_total} active slots ({sd_note}); "
+      f"playlists served dynamically via `bellhop serve`",
+      title="Phase (5) — Lineup Coverage & Diagnostics (`export`)",
       border_style="green",
     )
   )
@@ -335,7 +334,7 @@ def _print_xtream_panel(
       f"{sync_line}"
       f"[bold]Upstream XMLTV URL:[/bold]      {epg_url_line}\n"
       f"[bold]Official Network Logos:[/bold]  {res.channels_with_official_logo} networks enriched with official logos",
-      title="Phase (6) — Official Xtream JSON & EPG Export (`xtream` / `epg`)",
+      title="Phase (5) — Official Xtream JSON & EPG Export (`export` / `epg`)",
       border_style="green",
     )
   )
@@ -358,7 +357,7 @@ def _add_run_execution_args(parser: argparse.ArgumentParser) -> None:
     metavar="PHASES",
     help=(
       "Comma-separated or repeatable phase(s) to run: "
-      "lineup, catalog, match, validate, m3u8, xtream (or shorthand `export` / `epg`). "
+      "lineup, catalog, match, validate, export (or shorthand `epg`). "
       "Defaults to all enabled phases in config.yaml."
     ),
   )
@@ -414,8 +413,8 @@ def build_parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(
     prog="bellhop",
     description=(
-      "Bellhop — Declarative 6-phase IPTV lineup & EPG pipeline and unified server. "
-      "All provider, lineup, validation, and path settings live in `config.yaml`; "
+      "Bellhop — Declarative 5-phase IPTV lineup & EPG pipeline and unified server. "
+      "All settings live in `config.yaml` and `credentials.yaml`; "
       "CLI flags control execution mode and phase selection."
     ),
   )
@@ -522,12 +521,17 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
 
     cfg_label = str(cfg.config_file) if cfg.config_file else "(defaults)"
 
+    acct_count = len(cfg.accounts)
+    acct_preview = ", ".join(acct.email for acct in cfg.accounts[:3])
+    if acct_count > 3:
+      acct_preview = f"{acct_preview}, +{acct_count - 3} more"
+
     if not server.web_enabled:
       web_label = "[yellow]Disabled[/yellow] (`web_server.enabled: false`)"
     else:
       web_label = (
         f"[bold green]Enabled[/bold green] "
-        f"(login user: [cyan]{cfg.serve.web.username}[/cyan], "
+        f"({acct_count} account(s): [cyan]{acct_preview}[/cyan]; "
         f"session TTL={cfg.serve.web.session_ttl_hours:g}h; "
         f"settle={cfg.serve.web.settle_ms}ms)"
       )
@@ -538,13 +542,13 @@ async def _execute_cli_serve(args: argparse.Namespace) -> int:
       )
     elif server.xtream_auth_configured:
       xtream_label = (
-        f"[bold green]Enabled[/bold green] (user: [cyan]{cfg.serve.xtream.username}[/cyan], "
-        f"/player_api.php, /get.php, /xmltv.php, /live/*)"
+        f"[bold green]Enabled[/bold green] "
+        f"({acct_count} account(s); /player_api.php, /get.php, /xmltv.php, /live/*)"
       )
     else:
       xtream_label = (
         "[yellow]Auth Disabled[/yellow] "
-        "(set `xtream_server.username` & `password` in config.yaml or credentials.yaml)"
+        "(configure accounts in credentials.yaml)"
       )
 
     epg_lines = ""
@@ -726,19 +730,18 @@ async def _execute_cli_run(args: argparse.Namespace) -> int:
     )
 
   if result.lineup is not None and (
-    "m3u8" in result.executed_phases
+    "export" in result.executed_phases
     or (result.dry_run and "match" in result.executed_phases)
   ):
-    _print_m3u8_summary(
+    _print_coverage_summary(
       result.lineup,
       result.mappings,
-      result.playlist_path,
       result.report_path,
       cfg,
       dry_run=result.dry_run,
     )
 
-  if result.xtream_result is not None and "xtream" in result.executed_phases:
+  if result.xtream_result is not None and "export" in result.executed_phases:
     _print_xtream_panel(
       result.xtream_result, epg_sync_status=result.epg_sync_status
     )

@@ -1,10 +1,5 @@
 /**
- * Unit tests for Bellhop's Settings drawer controller (`settings.js`).
- *
- * Exercises `/api/config` availability checks, form population, tab switching,
- * `PUT /api/config` payload assembly (including `pinned_streams` &
- * `excluded_channels`), validation error reporting, `401` login redirects, and
- * `restart_required` warnings using lightweight DOM stubs.
+ * Unit tests for Bellhop's Account & Player Setup drawer (`settings.js`).
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -18,6 +13,7 @@ function makeFakeElement(tag = "div", id = "") {
   return {
     tagName: tag.toUpperCase(),
     id,
+    type: "text",
     hidden: false,
     disabled: false,
     checked: false,
@@ -28,6 +24,7 @@ function makeFakeElement(tag = "div", id = "") {
     dataset: {},
     style: { overflow: "" },
     className: "",
+    selected: false,
     classList: {
       toggle(cls, force) {
         if (force === undefined) {
@@ -60,32 +57,24 @@ function makeFakeElement(tag = "div", id = "") {
       }
     },
     focus() {},
+    select() {
+      this.selected = true;
+    },
     querySelectorAll() {
       return [];
     },
   };
 }
 
-test("createSettingsController loads config, switches tabs, and submits PUT /api/config", async () => {
+test("createSettingsController loads /api/account, toggles password, copies URLs, regenerates creds, and updates web password", async () => {
   const elementsById = new Map();
-  const registerInput = (id, { value = "", checked = false } = {}) => {
+  const regInput = (id, value = "", type = "text") => {
     const el = makeFakeElement("input", id);
     el.value = value;
-    el.checked = checked;
+    el.type = type;
     elementsById.set(id, el);
     return el;
   };
-
-  const tabUpstream = makeFakeElement("button");
-  tabUpstream.dataset.settingsTab = "upstream_xtream";
-  const tabLineup = makeFakeElement("button");
-  tabLineup.dataset.settingsTab = "lineup";
-  tabLineup.closest = () => tabLineup;
-
-  const paneUpstream = makeFakeElement("div");
-  paneUpstream.dataset.settingsPane = "upstream_xtream";
-  const paneLineup = makeFakeElement("div");
-  paneLineup.dataset.settingsPane = "lineup";
 
   const elPlayerOverlay = makeFakeElement("div");
   elPlayerOverlay.hidden = true;
@@ -95,115 +84,51 @@ test("createSettingsController loads config, switches tabs, and submits PUT /api
   elSettingsOverlay.hidden = true;
   const elSettingsBackdrop = makeFakeElement("div");
   const elSettingsCloseBtn = makeFakeElement("button");
-  const elSettingsFileBadge = makeFakeElement("span");
-  const elSettingsTabs = makeFakeElement("div");
-  elSettingsTabs.querySelectorAll = () => [tabUpstream, tabLineup];
-  const elSettingsForm = makeFakeElement("form");
+  const elSettingsEmailBadge = makeFakeElement("span");
   const elSettingsBody = makeFakeElement("div");
-  elSettingsBody.querySelectorAll = () => [paneUpstream, paneLineup];
   const elSettingsStatus = makeFakeElement("div");
   const elSettingsReloadBtn = makeFakeElement("button");
-  const elSettingsSaveBtn = makeFakeElement("button");
 
-  const sampleConfig = {
-    upstream_xtream: {
-      server_url: "http://provider.example",
-      stream_format: "ts",
-      request_timeout_sec: 15,
-      refresh_hours: 24,
-    },
-    pipeline: {
-      lineup: {
-        backend: "schedules_direct",
-        lineup_id: "CAN-0000001-X",
-        postal_code: "H3B",
-        refresh_days: 30,
-        numbering_mode: "both",
-        collapse_sd_dupes: true,
-        exclude_audio: false,
-        pinned_streams: { "1108": 410108 },
-        excluded_channels: [1424],
-        iptv_org: {
-          enabled: true,
-          recheck_hours: 24,
-        },
-        schedules_direct: {
-          auto_add_lineup: true,
-        },
-      },
-      matching: { upgrade_hysteresis_score: 5.0 },
-      validation: {
-        enabled: true,
-        only_changed: true,
-        concurrency: 1,
-        ignore_account_limit: false,
-        inter_probe_delay_sec: 0.35,
-        http_timeout_sec: 8,
-        min_bytes_to_read: 8192,
-        use_ffprobe: true,
-        ffprobe_timeout_sec: 12,
-        max_candidates_per_channel: 5,
-        detect_black_screen: true,
-        black_sample_sec: 1.5,
-        check_audio_language: true,
-      },
-      epg: { verify: true, refresh_hours: 6 },
-      output: {
-        m3u8_enabled: true,
-        xtream_enabled: true,
-        include_unmatched_comment: false,
-      },
+  const accountSample = {
+    account_id: "alice",
+    email: "alice@example.com",
+    xtream_username: "ab12cd34",
+    xtream_password: "ef56gh78",
+    player_urls: {
+      xtream_server_url: "http://127.0.0.1:8080",
+      m3u_url: "http://127.0.0.1:8080/get.php?username=ab12cd34&password=ef56gh78&type=m3u_plus&output=ts",
+      m3u_hls_url: "http://127.0.0.1:8080/get.php?username=ab12cd34&password=ef56gh78&type=m3u_plus&output=hls",
+      xmltv_url: "http://127.0.0.1:8080/xmltv.php?username=ab12cd34&password=ef56gh78",
     },
   };
 
-  // Populate simulated form inputs read by collectSettingsPayload()
-  registerInput("cfg-xt-server", { value: " http://provider.example " });
-  registerInput("cfg-xt-format", { value: "ts" });
-  registerInput("cfg-xt-timeout", { value: "15" });
-  registerInput("cfg-xt-refresh", { value: "24" });
-  registerInput("cfg-lu-backend", { value: "schedules_direct" });
-  registerInput("cfg-lu-id", { value: "CAN-0000001-X" });
-  registerInput("cfg-lu-postal", { value: "H3B" });
-  registerInput("cfg-lu-refresh", { value: "30" });
-  registerInput("cfg-lu-numbering", { value: "both" });
-  registerInput("cfg-lu-collapse", { checked: true });
-  registerInput("cfg-lu-excl-audio", { checked: false });
-  registerInput("cfg-lu-pins", { value: "1108 = 410108\n1205:520105" });
-  registerInput("cfg-lu-excl", { value: "1424, 1425" });
-  registerInput("cfg-lu-iptv-en", { checked: false });
-  registerInput("cfg-lu-iptv-recheck", { value: "48" });
-  registerInput("cfg-lu-sd-autoadd", { checked: true });
-  registerInput("cfg-match-hysteresis", { value: "5.5" });
-  registerInput("cfg-val-enabled", { checked: true });
-  registerInput("cfg-val-only-changed", { checked: true });
-  registerInput("cfg-val-concurrency", { value: "1" });
-  registerInput("cfg-val-ignore-limit", { checked: false });
-  registerInput("cfg-val-delay", { value: "0.35" });
-  registerInput("cfg-val-http-timeout", { value: "8" });
-  registerInput("cfg-val-min-bytes", { value: "8192" });
-  registerInput("cfg-val-ffprobe", { checked: true });
-  registerInput("cfg-val-ffprobe-timeout", { value: "12" });
-  registerInput("cfg-val-max-cands", { value: "5" });
-  registerInput("cfg-val-black", { checked: false });
-  registerInput("cfg-val-black-sec", { value: "2.5" });
-  registerInput("cfg-val-audio-lang", { checked: false });
-  registerInput("cfg-epg-verify", { checked: true });
-  registerInput("cfg-epg-refresh", { value: "6" });
-  registerInput("cfg-out-m3u8-en", { checked: true });
-  registerInput("cfg-out-xt-en", { checked: true });
-  registerInput("cfg-out-unmatched", { checked: false });
+  const xtPassInput = regInput("acct-xt-pass", accountSample.xtream_password, "password");
+  const m3uInput = regInput("player-m3u-ts", accountSample.player_urls.m3u_url);
+  const pwdCurrent = regInput("pwd-current", "", "password");
+  const pwdNew = regInput("pwd-new", "", "password");
+  const pwdConfirm = regInput("pwd-confirm", "", "password");
+  const pwdSaveBtn = makeFakeElement("button", "pwd-save-btn");
 
+  const pwdForm = makeFakeElement("form", "password-change-form");
+  pwdForm.querySelector = (sel) => {
+    if (sel === "#pwd-current") return pwdCurrent;
+    if (sel === "#pwd-new") return pwdNew;
+    if (sel === "#pwd-confirm") return pwdConfirm;
+    if (sel === "#pwd-save-btn") return pwdSaveBtn;
+    return null;
+  };
+
+  let confirmAnswer = true;
   let loginRedirects = 0;
-  let putRequests = [];
-  let nextPutStatus = 200;
-  let nextPutBody = {
-    saved: true,
-    restart_required: true,
-    config_file: "config.yaml",
-    config: sampleConfig,
-  };
+  let copiedTexts = [];
+  let postedRegen = 0;
+  let postedPasswordBodies = [];
+  let nextPasswordStatus = 200;
+  let nextPasswordBody = { ok: true, email: "alice@example.com" };
 
   const origDoc = globalThis.document;
+  const origWin = globalThis.window;
+  const origNav = globalThis.navigator;
   const origFetch = globalThis.fetch;
   globalThis.HTMLElement = class FakeHTMLElement {};
   globalThis.document = {
@@ -211,25 +136,55 @@ test("createSettingsController loads config, switches tabs, and submits PUT /api
     body: { style: { overflow: "" } },
     getElementById: (id) => elementsById.get(id) ?? null,
   };
+  globalThis.window = {
+    setTimeout(fn) {
+      fn();
+      return 1;
+    },
+    confirm() {
+      return confirmAnswer;
+    },
+  };
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      clipboard: {
+        async writeText(text) {
+          copiedTexts.push(text);
+        },
+      },
+    },
+  });
   globalThis.fetch = async (url, init = {}) => {
     const method = init.method || "GET";
-    if (url === "/api/config" && method === "GET") {
+    if (url === "/api/account" && method === "GET") {
+      return { ok: true, status: 200, json: async () => accountSample };
+    }
+    if (
+      url === "/api/account/stream-credentials/regenerate" &&
+      method === "POST"
+    ) {
+      postedRegen += 1;
       return {
         ok: true,
         status: 200,
         json: async () => ({
-          available: true,
-          config_file: "/config/config.yaml",
-          config: sampleConfig,
+          ...accountSample,
+          xtream_username: "zz99yy88",
+          xtream_password: "ww77vv66",
+          player_urls: {
+            ...accountSample.player_urls,
+            m3u_url: "http://127.0.0.1:8080/get.php?username=zz99yy88&password=ww77vv66&type=m3u_plus&output=ts",
+          },
         }),
       };
     }
-    if (url === "/api/config" && method === "PUT") {
-      putRequests.push(JSON.parse(init.body));
+    if (url === "/api/account/password" && method === "POST") {
+      postedPasswordBodies.push(JSON.parse(init.body));
       return {
-        ok: nextPutStatus >= 200 && nextPutStatus < 300,
-        status: nextPutStatus,
-        json: async () => nextPutBody,
+        ok: nextPasswordStatus >= 200 && nextPasswordStatus < 300,
+        status: nextPasswordStatus,
+        json: async () => nextPasswordBody,
       };
     }
     throw new Error(`Unexpected fetch: ${method} ${url}`);
@@ -242,74 +197,203 @@ test("createSettingsController loads config, switches tabs, and submits PUT /api
       elSettingsOverlay,
       elSettingsBackdrop,
       elSettingsCloseBtn,
-      elSettingsFileBadge,
-      elSettingsTabs,
-      elSettingsForm,
+      elSettingsEmailBadge,
       elSettingsBody,
       elSettingsStatus,
       elSettingsReloadBtn,
-      elSettingsSaveBtn,
       redirectToLogin: () => {
         loginRedirects += 1;
       },
+      confirmRegenerate: () => confirmAnswer,
     });
 
     await ctrl.checkSettingsAvailability();
     assert.equal(elSettingsBtn.hidden, false);
+    assert.equal(elSettingsEmailBadge.textContent, "alice@example.com");
 
     await ctrl.openSettingsDrawer();
     assert.equal(elSettingsOverlay.hidden, false);
-    assert.equal(elSettingsFileBadge.textContent, "config.yaml");
-    assert.ok(elSettingsBody.innerHTML.includes("CAN-0000001-X"));
-    assert.equal(elSettingsStatus.textContent, "Loaded from disk.");
+    assert.ok(elSettingsBody.innerHTML.includes("ab12cd34"));
+    assert.ok(elSettingsBody.innerHTML.includes("External Player Setup"));
 
-    // Switch active tab to "lineup"
-    await elSettingsTabs.dispatch("click", { target: tabLineup });
-    assert.equal(paneUpstream.hidden, true);
-    assert.equal(paneLineup.hidden, false);
+    const flush = () => new Promise((r) => setTimeout(r, 0));
 
-    // Valid PUT submission serializes typed payload and reports restart_required
-    await elSettingsForm.dispatch("submit");
-    assert.equal(putRequests.length, 1);
-    assert.equal(
-      putRequests[0].upstream_xtream.server_url,
-      "http://provider.example",
-    );
-    assert.deepEqual(putRequests[0].pipeline.lineup.pinned_streams, {
-      "1108": 410108,
-      "1205": 520105,
-    });
-    assert.deepEqual(putRequests[0].pipeline.lineup.excluded_channels, [
-      1424,
-      1425,
-    ]);
-    assert.equal(
-      putRequests[0].pipeline.matching.upgrade_hysteresis_score,
-      5.5,
-    );
-    assert.deepEqual(putRequests[0].pipeline.lineup.iptv_org, {
-      enabled: false,
-      recheck_hours: 48,
-    });
-    assert.equal(putRequests[0].pipeline.validation.detect_black_screen, false);
-    assert.equal(putRequests[0].pipeline.validation.black_sample_sec, 2.5);
-    assert.equal(putRequests[0].pipeline.validation.check_audio_language, false);
-    assert.equal(elSettingsStatus.className, "settings-status is-warn");
+    // Show / Hide Xtream password toggle
+    const toggleBtn = makeFakeElement("button", "toggle-xt-pass-btn");
+    toggleBtn.closest = () => toggleBtn;
+    await elSettingsBody.dispatch("click", { target: toggleBtn });
+    assert.equal(xtPassInput.type, "text");
+    assert.equal(toggleBtn.textContent, "Hide");
+    await elSettingsBody.dispatch("click", { target: toggleBtn });
+    assert.equal(xtPassInput.type, "password");
+    assert.equal(toggleBtn.textContent, "Show");
 
-    // Malformed pinned stream syntax aborts client-side before sending PUT
-    elementsById.get("cfg-lu-pins").value = "bad_pin_entry";
-    await elSettingsForm.dispatch("submit");
-    assert.equal(putRequests.length, 1);
+    // Copy button uses clipboard API cleanly
+    const copyBtn = makeFakeElement("button");
+    copyBtn.textContent = "Copy";
+    copyBtn.dataset.copyTarget = "player-m3u-ts";
+    copyBtn.closest = () => copyBtn;
+    await elSettingsBody.dispatch("click", { target: copyBtn });
+    await flush();
+    assert.deepEqual(copiedTexts, [m3uInput.value]);
+    assert.equal(elSettingsStatus.className, "settings-status is-ok");
+
+    // Copy password input without clipboard API falls back to select() safely
+    const origClip = globalThis.navigator.clipboard;
+    globalThis.navigator.clipboard = undefined;
+    const copyPassBtn = makeFakeElement("button");
+    copyPassBtn.textContent = "Copy";
+    copyPassBtn.dataset.copyTarget = "acct-xt-pass";
+    copyPassBtn.closest = () => copyPassBtn;
+    await elSettingsBody.dispatch("click", { target: copyPassBtn });
+    await flush();
+    assert.equal(xtPassInput.selected, true);
+    assert.equal(xtPassInput.type, "password");
+    globalThis.navigator.clipboard = origClip;
+
+    // Cancelled regeneration does not hit POST
+    confirmAnswer = false;
+    const regenBtn = makeFakeElement("button", "regen-stream-creds-btn");
+    regenBtn.closest = () => regenBtn;
+    await elSettingsBody.dispatch("click", { target: regenBtn });
+    await flush();
+    assert.equal(postedRegen, 0);
+
+    // Confirmed regeneration calls POST and re-renders new credentials
+    confirmAnswer = true;
+    await elSettingsBody.dispatch("click", { target: regenBtn });
+    await flush();
+    assert.equal(postedRegen, 1);
+    assert.ok(elSettingsBody.innerHTML.includes("zz99yy88"));
+    assert.equal(elSettingsStatus.className, "settings-status is-ok");
+
+    // Client-side password validation (empty / short / mismatch) aborts before fetch
+    pwdCurrent.value = "";
+    pwdNew.value = "";
+    pwdConfirm.value = "";
+    await elSettingsBody.dispatch("submit", { target: pwdForm });
+    await flush();
+    assert.equal(postedPasswordBodies.length, 0);
     assert.equal(elSettingsStatus.className, "settings-status is-error");
 
-    // Session expiry (`401`) on PUT triggers redirectToLogin()
-    elementsById.get("cfg-lu-pins").value = "1108=410108";
-    nextPutStatus = 401;
-    await elSettingsForm.dispatch("submit");
+    pwdCurrent.value = "oldpassword1";
+    pwdNew.value = "short";
+    pwdConfirm.value = "short";
+    await elSettingsBody.dispatch("submit", { target: pwdForm });
+    await flush();
+    assert.equal(postedPasswordBodies.length, 0);
+    assert.equal(elSettingsStatus.className, "settings-status is-error");
+
+    pwdNew.value = "newpassword1";
+    pwdConfirm.value = "mismatch123";
+    await elSettingsBody.dispatch("submit", { target: pwdForm });
+    await flush();
+    assert.equal(postedPasswordBodies.length, 0);
+    assert.equal(elSettingsStatus.className, "settings-status is-error");
+
+    // Valid password update submits POST and clears inputs
+    pwdConfirm.value = "newpassword1";
+    await elSettingsBody.dispatch("submit", { target: pwdForm });
+    await flush();
+    assert.equal(postedPasswordBodies.length, 1);
+    assert.deepEqual(postedPasswordBodies[0], {
+      current_password: "oldpassword1",
+      new_password: "newpassword1",
+    });
+    assert.equal(pwdCurrent.value, "");
+    assert.equal(pwdNew.value, "");
+    assert.equal(pwdConfirm.value, "");
+    assert.equal(elSettingsStatus.className, "settings-status is-ok");
+
+    // Server 403 on wrong password surfaces API error message
+    pwdCurrent.value = "wrongpass";
+    pwdNew.value = "anotherpass1";
+    pwdConfirm.value = "anotherpass1";
+    nextPasswordStatus = 403;
+    nextPasswordBody = { error: "Current password is incorrect." };
+    await elSettingsBody.dispatch("submit", { target: pwdForm });
+    await flush();
+    assert.equal(elSettingsStatus.textContent, "Current password is incorrect.");
+    assert.equal(elSettingsStatus.className, "settings-status is-error");
+
+    // Session expiry (`401`) on password change triggers redirectToLogin()
+    pwdCurrent.value = "newpassword1";
+    pwdNew.value = "anotherpass1";
+    pwdConfirm.value = "anotherpass1";
+    nextPasswordStatus = 401;
+    await elSettingsBody.dispatch("submit", { target: pwdForm });
+    await flush();
     assert.equal(loginRedirects, 1);
 
-    ctrl.closeSettingsDrawer();
+    // Reload button & close/backdrop actions work cleanly
+    await elSettingsReloadBtn.dispatch("click");
+    await flush();
+    await elSettingsBackdrop.dispatch("click");
     assert.equal(elSettingsOverlay.hidden, true);
+    await ctrl.openSettingsDrawer();
+    await elSettingsCloseBtn.dispatch("click");
+    assert.equal(elSettingsOverlay.hidden, true);
+  } finally {
+    globalThis.document = origDoc;
+    globalThis.window = origWin;
+    if (origNav !== undefined) {
+      Object.defineProperty(globalThis, "navigator", {
+        configurable: true,
+        value: origNav,
+      });
+    }
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("createSettingsController renders disabled notice when xtream_server_url is empty", async () => {
+  const elPlayerOverlay = makeFakeElement("div");
+  elPlayerOverlay.hidden = true;
+  const elSettingsOverlay = makeFakeElement("div");
+  elSettingsOverlay.hidden = true;
+  const elSettingsBody = makeFakeElement("div");
+  const elSettingsStatus = makeFakeElement("div");
+
+  const origDoc = globalThis.document;
+  const origFetch = globalThis.fetch;
+  globalThis.HTMLElement = class FakeHTMLElement {};
+  globalThis.document = {
+    activeElement: null,
+    body: { style: { overflow: "" } },
+    getElementById: () => null,
+  };
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      account_id: "bob",
+      email: "bob@example.com",
+      xtream_username: "aa11bb22",
+      xtream_password: "cc33dd44",
+      player_urls: {
+        xtream_server_url: "",
+        m3u_url: "",
+        m3u_hls_url: "",
+        xmltv_url: "",
+      },
+    }),
+  });
+
+  try {
+    const ctrl = createSettingsController({
+      elPlayerOverlay,
+      elSettingsBtn: makeFakeElement("button"),
+      elSettingsOverlay,
+      elSettingsBackdrop: null,
+      elSettingsCloseBtn: null,
+      elSettingsEmailBadge: null,
+      elSettingsBody,
+      elSettingsStatus,
+      elSettingsReloadBtn: null,
+      redirectToLogin: () => {},
+    });
+    await ctrl.openSettingsDrawer();
+    assert.ok(elSettingsBody.innerHTML.includes("player-xtream-disabled-note"));
   } finally {
     globalThis.document = origDoc;
     globalThis.fetch = origFetch;

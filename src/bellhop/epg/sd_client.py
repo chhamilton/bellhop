@@ -190,8 +190,9 @@ class SchedulesDirectSession:
     """Exchange `(username, sha1(password))` for a fresh SD API token."""
     if not self.has_credentials:
       raise SchedulesDirectApiError(
-        "Schedules Direct credentials missing. Configure `schedules_direct.username` "
-        "and `schedules_direct.password` in credentials.yaml or SD_USERNAME / SD_PASSWORD."
+        "Schedules Direct credentials missing. Configure "
+        "`schedules_direct.username` and `schedules_direct.password` in "
+        "credentials.yaml."
       )
     url = f"{self.base_url}/token"
     payload = {

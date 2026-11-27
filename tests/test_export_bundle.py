@@ -39,36 +39,29 @@ def test_export_bundle_reader_empty_volume_and_store_parity(
   assert xt_snap.streams == []
   assert xt_snap.xmltv_url == "http://panel.example/xmltv.php"
 
+  # Dynamic fallback URL provider invalidates cached bundle when URL changes.
+  url_box = ["http://panel-a.example/xmltv.php"]
+  dyn_reader = ExportBundleReader(
+    xtream_dir, fallback_xmltv_url_provider=lambda: url_box[0]
+  )
+  _sig1, b1 = dyn_reader.read_cached()
+  assert b1.xmltv_url == "http://panel-a.example/xmltv.php"
+  url_box[0] = "http://panel-b.example/xmltv.php"
+  _sig2, b2 = dyn_reader.read_cached()
+  assert b2.xmltv_url == "http://panel-b.example/xmltv.php"
+
 
 def test_export_bundle_reader_fallbacks_and_category_synthesis(
   tmp_path: Path,
 ) -> None:
-  """Verify M3U8 -> split JSON -> legacy bundle -> primary bundle precedence."""
+  """Verify split JSON -> legacy bundle -> primary bundle & fallback IDs."""
   xtream_dir = tmp_path / "xtream"
   xtream_dir.mkdir()
-  m3u_path = tmp_path / "bellhop.m3u8"
-  m3u_path.write_text(
-    '#EXTM3U url-tvg="http://m3u.example/epg.xml"\n'
-    '#EXTINF:-1 tvg-chno="1108" tvg-id="RDS.ca" tvg-logo="https://img/rds.png"'
-    ' group-title="Sports",RDS\n'
-    "http://up.example/live/u/p/108.ts\n",
-    encoding="utf-8",
-  )
 
-  reader = ExportBundleReader(xtream_dir, m3u8_path=m3u_path)
-  sig_m3u = reader.compute_signature()
-  from_m3u = reader.read()
-  assert from_m3u.initialized is True
-  assert from_m3u.xmltv_url == "http://m3u.example/epg.xml"
-  assert len(from_m3u.categories) == 1
-  assert from_m3u.categories[0].category_name == "Sports"
-  assert from_m3u.categories[0].channel_count == 1
-  assert from_m3u.streams[0].num == 1108
-  assert (
-    from_m3u.streams[0].direct_source == "http://up.example/live/u/p/108.ts"
-  )
+  reader = ExportBundleReader(xtream_dir)
+  sig_empty = reader.compute_signature()
 
-  # Split JSON overrides M3U8 fallback and synthesizes missing category_id "9"
+  # Split JSON synthesizes missing category_id "9" and parses fallback IDs.
   (xtream_dir / "get_live_streams.json").write_text(
     json.dumps(
       [
@@ -89,15 +82,17 @@ def test_export_bundle_reader_fallbacks_and_category_synthesis(
               "http://up.example/live/u/***/404.ts",
               "http://up.example/live/u/p/405.ts",
             ],
+            "fallback_stream_ids": [404, 405, 404, "bad", 403],
           },
         }
       ]
     ),
     encoding="utf-8",
   )
-  assert reader.compute_signature() != sig_m3u
+  assert reader.compute_signature() != sig_empty
   from_split = reader.read()
   assert from_split.streams[0].num == 1201
+  assert from_split.streams[0].fallback_stream_ids == (404, 405, 403)
   assert from_split.streams[0].stream_icon == "https://img/ctv.png"
   assert from_split.streams[0].fallback_sources == (
     "http://up.example/live/u/p/405.ts",

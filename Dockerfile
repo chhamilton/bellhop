@@ -58,6 +58,7 @@ ENV TZ=UTC \
     BELLHOP_OUTPUT_DIR=/data/output \
     BELLHOP_CONFIG=/config/config.yaml \
     BELLHOP_DEFAULT_CONFIG=/app/docker/config.docker.yaml \
+    BELLHOP_DEFAULT_CREDENTIALS=/app/docker/credentials.docker.yaml \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8080
@@ -65,7 +66,7 @@ EXPOSE 8080
 VOLUME ["/config", "/data/state", "/data/cache", "/data/output"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python3 -c "import os, urllib.request; from bellhop.config import load_config; cp = os.environ.get('BELLHOP_CONFIG', '/config/config.yaml'); c = load_config(cp) if os.path.isfile(cp) else None; p = (c.serve.web_port if c.serve.web.enabled else c.serve.xtream_port) if c else int(os.environ.get('BELLHOP_PORT', '8080') or '8080'); urllib.request.urlopen(f'http://127.0.0.1:{p}/health', timeout=3)" || exit 1
+  CMD python3 -c "import os, urllib.request; from bellhop.config import load_config; cp = os.environ.get('BELLHOP_CONFIG', '/config/config.yaml'); c = load_config(cp, persist_credential_updates=False) if os.path.isfile(cp) else None; p = (c.serve.web_port if c.serve.web.enabled else c.serve.xtream_port) if c else int(os.environ.get('BELLHOP_PORT', '8080') or '8080'); urllib.request.urlopen(f'http://127.0.0.1:{p}/health', timeout=3)" || exit 1
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
 CMD ["bellhop", "serve"]

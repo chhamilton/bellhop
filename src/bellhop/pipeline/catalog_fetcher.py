@@ -190,8 +190,11 @@ async def fetch_daily_iptv_catalog(
 ) -> CatalogFetchResult:
   """Fetch IPTV live channels on a daily cadence, tracking catalog diffs."""
   xt = config.xtream
+  pipe_acct = config.pipeline_account
   state_dir = config.resolve_path(config.state.state_dir)
-  snap_path = _catalog_snapshot_path(state_dir, xt.server_url, xt.username)
+  snap_path = _catalog_snapshot_path(
+    state_dir, xt.server_url, pipe_acct.upstream_username if pipe_acct else ""
+  )
   ttl_sec = max(0.0, xt.cache_ttl_hours) * 3600.0
 
   previous_catalog: XtreamCatalog | None = None

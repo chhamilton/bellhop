@@ -13,6 +13,49 @@ from typing import Any
 
 import pytest
 
+from bellhop.common.accounts import UserAccount, hash_web_password
+
+# Precompute a single valid scrypt hash for shared hermetic fixtures.
+TEST_WEB_PASSWORD: str = "test_web_password"
+TEST_PASSWORD_HASH: str = hash_web_password(TEST_WEB_PASSWORD)
+
+
+def make_test_account(
+  *,
+  account_id: str = "admin",
+  email: str = "admin@example.com",
+  web_password: str | None = None,
+  web_password_hash: str | None = None,
+  xtream_username: str = "xtuser01",
+  xtream_password: str = "xtpass01",
+  upstream_username: str = "up_user",
+  upstream_password: str = "up_pass",
+  pipeline: bool = False,
+  lineup_id: str | None = None,
+) -> UserAccount:
+  """Construct a validated `UserAccount` fixture with fast cached hashing."""
+  pw_hash = (
+    web_password_hash
+    if web_password_hash is not None
+    else (
+      hash_web_password(web_password)
+      if web_password is not None
+      else TEST_PASSWORD_HASH
+    )
+  )
+  return UserAccount(
+    account_id=account_id,
+    email=email,
+    web_password_hash=pw_hash,
+    xtream_username=xtream_username,
+    xtream_password=xtream_password,
+    upstream_username=upstream_username,
+    upstream_password=upstream_password,
+    pipeline=pipeline,
+    lineup_id=lineup_id,
+  )
+
+
 # Normalize permissive container/CI umasks (e.g. `0000`) so pytest, mypy, ruff,
 # and bytecode generation never leave group- or world-writable
 # directories/files.
@@ -52,7 +95,7 @@ def write_minimal_xtream_export(
   xmltv_url: str = "",
   streams: list[dict[str, Any]] | None = None,
 ) -> Path:
-  """Write a minimal valid Phase 6 Xtream JSON bundle into `xt_dir`."""
+  """Write a minimal valid Phase 5 Xtream JSON bundle into `xt_dir`."""
   xt_dir.mkdir(parents=True, exist_ok=True)
   categories = [
     {"category_id": "1", "category_name": "News (1000–1099)", "parent_id": 0},

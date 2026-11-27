@@ -24,7 +24,7 @@ from bellhop.common.http_utils import (
   redact_url_secrets,
   upstream_url,
 )
-from bellhop.config import AppConfig
+from bellhop.config import AppConfig, UserAccount
 from bellhop.pipeline.models import (
   MappedChannel,
   MatchCandidate,
@@ -279,10 +279,19 @@ class StreamValidator:
     config: AppConfig,
     account: XtreamAccountInfo | None = None,
     *,
+    pipeline_account: UserAccount | None = None,
     session_factory: ClientSessionFactory | None = None,
   ) -> None:
     self.config = config
     self.val_cfg = config.validation
+    self.pipeline_account: UserAccount | None = (
+      pipeline_account or config.pipeline_account
+    )
+    self._upstream_secret: str = (
+      self.pipeline_account.upstream_password
+      if self.pipeline_account is not None
+      else ""
+    )
     self.concurrency = effective_concurrency(config, account)
     self._semaphore = asyncio.Semaphore(self.concurrency)
     self._session_factory: ClientSessionFactory = (
@@ -305,19 +314,25 @@ class StreamValidator:
 
   def build_stream_url(self, stream: XtreamStream) -> str:
     xt = self.config.xtream
-    if xt.server_url and xt.username and xt.password:
+    acct = self.pipeline_account
+    if (
+      xt.server_url
+      and acct is not None
+      and acct.upstream_username
+      and acct.upstream_password
+    ):
       return stream.build_url(
         xt.server_url,
-        xt.username,
-        xt.password,
+        acct.upstream_username,
+        acct.upstream_password,
         xt.stream_format,
       )
     if stream.direct_source:
       return stream.direct_source
     return stream.build_url(
       xt.server_url or "http://localhost",
-      xt.username or "user",
-      xt.password or "pass",
+      acct.upstream_username if acct is not None else "user",
+      acct.upstream_password if acct is not None else "pass",
       xt.stream_format,
     )
 
@@ -467,7 +482,7 @@ class StreamValidator:
         ok=False,
         error=redact_url_secrets(
           f"Unexpected probe error: {exc}",
-          secret=self.config.xtream.password,
+          secret=self._upstream_secret,
         ),
         checked_at=datetime.now(timezone.utc).isoformat(),
       )
@@ -578,7 +593,7 @@ class StreamValidator:
               latency_ms=latency_ms,
               error=redact_url_secrets(
                 f"Redirected to static offline placeholder ({final_url})",
-                secret=self.config.xtream.password,
+                secret=self._upstream_secret,
               ),
               checked_at=checked_at,
             ),
@@ -633,7 +648,7 @@ class StreamValidator:
           latency_ms=(time.perf_counter() - t0) * 1000.0,
           error=redact_url_secrets(
             f"HTTP error: {exc}",
-            secret=self.config.xtream.password,
+            secret=self._upstream_secret,
           ),
           checked_at=checked_at,
         ),
@@ -886,7 +901,7 @@ class StreamValidator:
       probe.ok = False
       probe.error = redact_url_secrets(
         f"ffprobe failed: {short_err}",
-        secret=self.config.xtream.password,
+        secret=self._upstream_secret,
       )
       return
 

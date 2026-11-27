@@ -1,22 +1,21 @@
 ---
 name: bellhop-pipeline-ops
 description: >-
-  Use this skill when modifying, debugging, or running the 6-phase Bellhop pipeline
+  Use this skill when modifying, debugging, or running the 5-phase Bellhop pipeline
   (`PipelineRunner`), channel matching (`ChannelMatcher`), stream validation
   (`StreamValidator`), passthrough EPG & Xtream exports, or lineup backends (`tvguide`,
   `schedules_direct`, `yaml`).
 ---
 
-# Bellhop 6-Phase Pipeline Operations & Development
+# Bellhop 5-Phase Pipeline Operations & Development
 
 ## Phase Flow (`src/bellhop/pipeline/runner.py`)
 `PipelineRunner(config).run(options)` executes canonical phases in order:
 1. `lineup` (`src/bellhop/pipeline/lineup_retriever.py` + `src/bellhop/pipeline/providers/`) — `30d` TTL in `state/lineups/`
-2. `catalog` (`src/bellhop/pipeline/catalog_fetcher.py` + `src/bellhop/xtream/client.py`) — `24h` TTL in `state/catalogs/`
+2. `catalog` (`src/bellhop/pipeline/catalog_fetcher.py` + `src/bellhop/xtream/client.py`) — `24h` TTL in `state/catalogs/` (uses `config.pipeline_account`)
 3. `match` (`src/bellhop/pipeline/matcher.py` + `src/bellhop/pipeline/matcher_vocab.py` + `src/bellhop/pipeline/mapping_state.py`) — Incremental reconciliation of `state/channel_mapping.json` (`upgrade_hysteresis_score = 5.0`)
-4. `validate` (`src/bellhop/pipeline/validator.py`) — Sequential candidate-only probing (`only_changed: true` by default; checkpoints every 20 slots)
-5. `m3u8` (`src/bellhop/pipeline/playlist.py`) — Extended M3U8 (`output/bellhop.m3u8`) + `output/lineup_report.json`
-6. `xtream` (`src/bellhop/pipeline/xtream_exporter.py` + `src/bellhop/epg/xmltv.py` + `src/bellhop/epg/sync.py`) — Lightweight ~4 KB upstream `xmltv.php` passthrough verification (`verify_epg_endpoint`) + export of `bellhop_xtream_playlist.json`, `get_live_streams.json`, and `get_live_categories.json` + SQLite EPG hydration
+4. `validate` (`src/bellhop/pipeline/validator.py`) — Sequential candidate-only probing via `config.pipeline_account` (`only_changed: true` by default; checkpoints every 20 slots)
+5. `export` (`src/bellhop/pipeline/playlist.py` + `src/bellhop/pipeline/xtream_exporter.py` + `src/bellhop/epg/xmltv.py` + `src/bellhop/epg/sync.py`) — Writes `output/lineup_report.json`, runs lightweight ~4 KB upstream `xmltv.php` passthrough verification (`verify_epg_endpoint`), exports credential-free `bellhop_xtream_playlist.json`, `get_live_streams.json`, and `get_live_categories.json`, and hydrates SQLite EPG (M3U8 playlists are served dynamically by `bellhop serve`)
 
 ## Safe Verification Workflow
 1. Always test logic and strict static types first:

@@ -1,4 +1,4 @@
-"""Phase (6): Export the mapped lineup as Xtream Codes JSON artifacts.
+"""Phase (5): Export the mapped lineup as Xtream Codes JSON artifacts.
 
 Exported Directory Layout (`output/xtream/`)
 --------------------------------------------
@@ -141,6 +141,7 @@ class ExportedStreamGuideMeta:
   has_native_epg: bool
   quality_tier: str
   fallback_sources: list[str] = field(default_factory=list)
+  fallback_stream_ids: list[int] = field(default_factory=list)
 
   def to_dict(self) -> dict[str, Any]:
     return {
@@ -163,6 +164,7 @@ class ExportedStreamGuideMeta:
       "has_native_epg": self.has_native_epg,
       "quality_tier": self.quality_tier,
       "fallback_sources": list(self.fallback_sources),
+      "fallback_stream_ids": list(self.fallback_stream_ids),
     }
 
 
@@ -367,11 +369,12 @@ def build_xtream_export_bundle(
       )
 
   xt = config.xtream
+  pipe_acct = config.pipeline_account
   base_url = (
     _normalize_base_url(xt.server_url) if xt.server_url else "http://localhost"
   )
   parsed_url = urlparse(base_url)
-  upstream_xmltv_url = build_passthrough_xmltv_url(config, redact_secret=False)
+  upstream_xmltv_url = ""
 
   unique_epg_by_chno = assign_unique_slot_epg_ids(
     [
@@ -409,11 +412,26 @@ def build_xtream_export_bundle(
     canonical_epg_id = unique_epg_by_chno.get(
       chno, _resolve_canonical_epg_id(mapped)
     )
-    playback_url = resolve_playback_url(mapped, config)
+    if xt.server_url:
+      playback_url = stream.direct_source
+    else:
+      playback_url = resolve_playback_url(mapped, config, account=pipe_acct)
 
     fallback_sources: list[str] = []
+    fallback_stream_ids: list[int] = []
     for alt_cand in mapped.candidates:
-      alt_url = _resolve_stream_url(alt_cand.stream, config)
+      alt_id = alt_cand.stream.stream_id
+      if (
+        alt_id
+        and alt_id != stream.stream_id
+        and alt_id not in fallback_stream_ids
+      ):
+        fallback_stream_ids.append(alt_id)
+      alt_url = (
+        alt_cand.stream.direct_source
+        if xt.server_url
+        else _resolve_stream_url(alt_cand.stream, config, account=pipe_acct)
+      )
       if (
         alt_url and alt_url != playback_url and alt_url not in fallback_sources
       ):
@@ -439,6 +457,7 @@ def build_xtream_export_bundle(
       has_native_epg=cand.has_native_epg,
       quality_tier=cand.quality_tier,
       fallback_sources=fallback_sources,
+      fallback_stream_ids=fallback_stream_ids,
     )
 
     streams.append(
@@ -482,7 +501,8 @@ def build_xtream_export_bundle(
       )
 
   acc = account or XtreamAccountInfo(
-    username=xt.username or "bellhop_user", status="Active"
+    username=(pipe_acct.upstream_username if pipe_acct else "bellhop_user"),
+    status="Active",
   )
   user_info: dict[str, Any] = {
     "username": acc.username,
@@ -572,7 +592,7 @@ async def export_xtream_playlist_and_guide(
   verify_epg: bool | None = None,
   client: aiohttp.ClientSession | None = None,
 ) -> XtreamExportResult:
-  """Phase (6): Verify XMLTV passthrough and export Xtream JSON feeds."""
+  """Phase (5): Verify XMLTV passthrough and export Xtream JSON feeds."""
   dest_dir = config.resolve_path(output_dir or config.output.xtream_dir)
   ensure_private_dir(dest_dir)
 

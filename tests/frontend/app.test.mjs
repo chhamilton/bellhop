@@ -432,9 +432,6 @@ test("app.js initializes state from URL, supports filtering, timeline nav, short
           json: async () => ({ auth_required: true, authenticated: true }),
         };
       }
-      if (url === "/api/config") {
-        return { ok: false, status: 404, json: async () => ({}) };
-      }
       if (url === "/api/lineup") {
         return {
           ok: true,
@@ -593,9 +590,6 @@ test("app.js redirects to /login on 401 lineup responses and unauthenticated aut
           status: 200,
           json: async () => ({ auth_required: true, authenticated: false }),
         };
-      }
-      if (url === "/api/config") {
-        return { ok: false, status: 401, json: async () => ({}) };
       }
       if (url === "/api/lineup") {
         return { ok: false, status: 401, json: async () => ({}) };

@@ -73,6 +73,7 @@ class FakeXtreamServer:
 
   username: str = "test_user"
   password: str = "test_pass"
+  extra_accounts: dict[str, str] = field(default_factory=dict)
   max_connections: int = 1
   enforce_max_connections: bool = True
   categories: list[dict[str, Any]] = field(default_factory=list)
@@ -92,13 +93,27 @@ class FakeXtreamServer:
     default=None, init=False, repr=False
   )
   active_live_streams: int = field(default=0, init=False)
+  active_streams_by_user: dict[str, int] = field(
+    default_factory=dict, init=False
+  )
   peak_concurrent_streams: int = field(default=0, init=False)
   connection_limit_violations: int = field(default=0, init=False)
   xmltv_requests: int = field(default=0, init=False)
+  xmltv_requests_by_user: list[str] = field(default_factory=list, init=False)
   stream_requests: list[int] = field(default_factory=list, init=False)
+  stream_requests_by_user: list[tuple[str, int]] = field(
+    default_factory=list, init=False
+  )
   hls_manifest_requests: list[str] = field(default_factory=list, init=False)
   request_log: list[str] = field(default_factory=list, init=False)
   _edge_seq: int = field(default=0, init=False)
+
+  def _is_valid_creds(self, user: str, passwd: str) -> bool:
+    if not user or not passwd:
+      return False
+    if user == self.username and passwd == self.password:
+      return True
+    return self.extra_accounts.get(user) == passwd
 
   @property
   def advertised_host(self) -> str:
@@ -262,12 +277,14 @@ class FakeXtreamServer:
     m_live = re.match(r"^/live/([^/]+)/([^/]+)/(\d+)\.(ts|m3u8)$", path)
     if m_live:
       user, passwd, sid_str, ext = m_live.groups()
-      if user != self.username or passwd != self.password:
+      if not self._is_valid_creds(user, passwd):
         await self._send_raw(
           writer, 513, "Invalid Credentials", b"Bad credentials", "text/plain"
         )
         return
-      await self._handle_live_stream(int(sid_str), ext, method, writer)
+      await self._handle_live_stream(
+        int(sid_str), ext, method, writer, user=user
+      )
       return
 
     m_edge_m3u8 = re.match(r"^/edge/([^/]+)/(\d+)\.m3u8$", path)
@@ -314,7 +331,7 @@ class FakeXtreamServer:
   ) -> None:
     user = (query.get("username") or [""])[0]
     passwd = (query.get("password") or [""])[0]
-    if user != self.username or passwd != self.password:
+    if not self._is_valid_creds(user, passwd):
       await self._send_json(writer, 401, {"user_info": {"auth": 0}})
       return
 
@@ -344,11 +361,11 @@ class FakeXtreamServer:
       200,
       {
         "user_info": {
-          "username": self.username,
+          "username": user,
           "auth": 1,
           "status": "Active",
           "is_trial": "0",
-          "active_cons": str(self.active_live_streams),
+          "active_cons": str(self.active_streams_by_user.get(user, 0)),
           "max_connections": str(self.max_connections),
           "allowed_output_formats": ["m3u8", "ts"],
         },
@@ -370,12 +387,13 @@ class FakeXtreamServer:
   ) -> None:
     user = (query.get("username") or [""])[0]
     passwd = (query.get("password") or [""])[0]
-    if user != self.username or passwd != self.password:
+    if not self._is_valid_creds(user, passwd):
       await self._send_raw(
         writer, 401, "Unauthorized", b"Unauthorized", "text/plain"
       )
       return
     self.xmltv_requests += 1
+    self.xmltv_requests_by_user.append(user)
     body = self._render_xmltv()
     ctype = (
       "application/gzip"
@@ -390,6 +408,8 @@ class FakeXtreamServer:
     ext: str,
     method: str,
     writer: asyncio.StreamWriter,
+    *,
+    user: str = "",
   ) -> None:
     sdef = self._find_stream(stream_id)
     if sdef is None:
@@ -435,10 +455,10 @@ class FakeXtreamServer:
       return
 
     self.stream_requests.append(stream_id)
-    if (
-      self.enforce_max_connections
-      and self.active_live_streams >= self.max_connections
-    ):
+    user_key = user or self.username
+    self.stream_requests_by_user.append((user_key, stream_id))
+    user_active = self.active_streams_by_user.get(user_key, 0)
+    if self.enforce_max_connections and user_active >= self.max_connections:
       self.connection_limit_violations += 1
       await self._send_raw(
         writer,
@@ -449,6 +469,7 @@ class FakeXtreamServer:
       )
       return
 
+    self.active_streams_by_user[user_key] = user_active + 1
     self.active_live_streams += 1
     if self.active_live_streams > self.peak_concurrent_streams:
       self.peak_concurrent_streams = self.active_live_streams
@@ -485,6 +506,9 @@ class FakeXtreamServer:
     except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
       pass
     finally:
+      self.active_streams_by_user[user_key] = max(
+        0, self.active_streams_by_user.get(user_key, 1) - 1
+      )
       self.active_live_streams = max(0, self.active_live_streams - 1)
 
   @staticmethod

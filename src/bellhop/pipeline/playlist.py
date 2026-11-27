@@ -1,4 +1,4 @@
-"""Phase (5): Extended M3U8 lineup writer and structured diagnostics.
+"""Phase (5): Lineup diagnostics report & stream URL resolution helpers.
 
 Diagnostics Report Schema (`output/lineup_report.json`)
 -------------------------------------------------------
@@ -46,13 +46,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from bellhop.common.export_bundle import (
-  assign_unique_slot_epg_ids,
-  resolve_preferred_epg_base_id,
-)
 from bellhop.common.file_utils import write_private_text
-from bellhop.config import AppConfig
-from bellhop.epg.xmltv import build_passthrough_xmltv_url, build_serve_xmltv_url
+from bellhop.config import AppConfig, UserAccount
 from bellhop.pipeline.lineup_loader import CableLineup
 from bellhop.pipeline.models import (
   MappedChannel,
@@ -81,10 +76,6 @@ def format_group_with_dial_range(raw_group: str, chnos: Sequence[int]) -> str:
   return f"{base} ({lo}–{hi})" if lo != hi else f"{base} ({lo})"
 
 
-def _escape_attr(value: str) -> str:
-  return value.replace('"', "'").replace("\n", " ").replace("\r", " ").strip()
-
-
 def _normalize_base_url(server_url: str) -> str:
   base = server_url.strip().rstrip("/")
   if base and not base.startswith(("http://", "https://")):
@@ -92,36 +83,50 @@ def _normalize_base_url(server_url: str) -> str:
   return base
 
 
-def _resolve_stream_url(stream: XtreamStream, config: AppConfig) -> str:
+def _resolve_stream_url(
+  stream: XtreamStream,
+  config: AppConfig,
+  *,
+  account: UserAccount | None = None,
+) -> str:
   xt = config.xtream
-  if xt.server_url and xt.username and xt.password:
-    return stream.build_url(
-      xt.server_url, xt.username, xt.password, xt.stream_format
-    )
+  acct = account or config.pipeline_account
+  u_user = acct.upstream_username if acct else ""
+  u_pass = acct.upstream_password if acct else ""
+  if xt.server_url and u_user and u_pass:
+    return stream.build_url(xt.server_url, u_user, u_pass, xt.stream_format)
   if stream.direct_source:
     return stream.direct_source
   return stream.build_url(
     xt.server_url or "http://localhost",
-    xt.username or "user",
-    xt.password or "pass",
+    u_user or "user",
+    u_pass or "pass",
     xt.stream_format,
   )
 
 
-def resolve_playback_url(mapped: MappedChannel, config: AppConfig) -> str:
+def resolve_playback_url(
+  mapped: MappedChannel,
+  config: AppConfig,
+  *,
+  account: UserAccount | None = None,
+) -> str:
   """Resolve the playable upstream stream URL for a selected mapped channel."""
   assert mapped.selected is not None
   xt = config.xtream
+  acct = account or config.pipeline_account
+  u_user = acct.upstream_username if acct else ""
+  u_pass = acct.upstream_password if acct else ""
   stream = mapped.selected.stream
-  if xt.server_url and xt.username and xt.password:
-    return _resolve_stream_url(stream, config)
+  if xt.server_url and u_user and u_pass:
+    return _resolve_stream_url(stream, config, account=acct)
   if (
     mapped.probe is not None
     and mapped.probe.url
     and "***" not in mapped.probe.url
   ):
     return mapped.probe.url
-  return _resolve_stream_url(stream, config)
+  return _resolve_stream_url(stream, config, account=acct)
 
 
 def _expand_entries_by_numbering(
@@ -177,122 +182,6 @@ def resolve_group_display_map(
       grp, surviving if surviving else all_chnos
     )
   return resolved
-
-
-def render_m3u8(
-  lineup: CableLineup,
-  mappings: list[MappedChannel],
-  config: AppConfig,
-) -> str:
-  """Render an Extended M3U8 playlist emulating the target cable lineup."""
-  header_attrs: list[str] = []
-  xmltv_url = build_serve_xmltv_url(config) or build_passthrough_xmltv_url(
-    config, redact_secret=False
-  )
-  if xmltv_url:
-    esc_xmltv = _escape_attr(xmltv_url)
-    header_attrs.append(f'url-tvg="{esc_xmltv}"')
-    header_attrs.append(f'x-tvg-url="{esc_xmltv}"')
-
-  header_line = "#EXTM3U" + (
-    " " + " ".join(header_attrs) if header_attrs else ""
-  )
-  lines: list[str] = [
-    header_line,
-    f"#PLAYLIST:{lineup.provider} ({lineup.market}) [{lineup.lineup_id}]",
-  ]
-
-  entries = _expand_entries_by_numbering(
-    mappings,
-    config.lineup.numbering_mode,
-    collapse_sd_dupes=config.lineup.collapse_sd_dupes,
-  )
-  group_labels = resolve_group_display_map(
-    mappings,
-    config.lineup.numbering_mode,
-    collapse_sd_dupes=config.lineup.collapse_sd_dupes,
-  )
-  include_unmatched = config.output.include_unmatched_comment
-  unique_epg_by_chno = assign_unique_slot_epg_ids(
-    [
-      (
-        chno,
-        mapped.channel.sd_chno,
-        resolve_preferred_epg_base_id(
-          chno=chno,
-          gracenote_station_id=mapped.channel.gracenote_station_id,
-          has_native_epg=mapped.selected.has_native_epg,
-          upstream_epg_channel_id=mapped.selected.stream.epg_channel_id,
-          official_tvg_id=mapped.channel.tvg_id or "",
-        ),
-      )
-      for chno, _name, mapped in entries
-      if mapped.selected is not None
-    ]
-  )
-
-  for chno, display_name, mapped in entries:
-    ch = mapped.channel
-    if mapped.selected is None:
-      if include_unmatched:
-        reason = (
-          "failed stream validation"
-          if mapped.candidates
-          else "no matching stream"
-        )
-        lines.append(f"# UNMAPPED {chno} {display_name} ({reason})")
-      continue
-
-    stream = mapped.selected.stream
-    url = resolve_playback_url(mapped, config)
-    tvg_id = unique_epg_by_chno.get(
-      chno,
-      resolve_preferred_epg_base_id(
-        chno=chno,
-        gracenote_station_id=ch.gracenote_station_id,
-        has_native_epg=mapped.selected.has_native_epg,
-        upstream_epg_channel_id=stream.epg_channel_id,
-        official_tvg_id=ch.tvg_id or "",
-      ),
-    )
-    logo = ch.logo or stream.stream_icon or ""
-
-    attrs = [
-      f'tvg-chno="{chno}"',
-      f'channel-id="{chno}"',
-      f'tvg-id="{_escape_attr(tvg_id)}"',
-      f'tvg-name="{_escape_attr(display_name)}"',
-    ]
-    if ch.gracenote_station_id:
-      attrs.append(
-        f'tvc-guide-stationid="{_escape_attr(ch.gracenote_station_id)}"'
-      )
-    if logo:
-      attrs.append(f'tvg-logo="{_escape_attr(logo)}"')
-    grp_label = group_labels.get(ch.group, ch.group)
-    attrs.append(f'group-title="{_escape_attr(grp_label)}"')
-
-    if ch.language:
-      attrs.append(f'tvg-language="{_escape_attr(ch.language)}"')
-
-    safe_title = display_name.replace("\n", " ").strip()
-    lines.append(f"#EXTINF:-1 {' '.join(attrs)},{safe_title}")
-    lines.append(url)
-
-  return "\n".join(lines) + "\n"
-
-
-def write_m3u8(
-  lineup: CableLineup,
-  mappings: list[MappedChannel],
-  config: AppConfig,
-  output_path: Path | None = None,
-) -> Path:
-  """Write the rendered M3U8 playlist to disk (`0o600`) and return its Path."""
-  dest = config.resolve_path(output_path or config.output.playlist_path)
-  content = render_m3u8(lineup, mappings, config)
-  write_private_text(dest, content)
-  return dest
 
 
 @dataclass(slots=True)
@@ -505,6 +394,8 @@ def build_diagnostics_report(
     collapse_sd_dupes=config.lineup.collapse_sd_dupes,
   )
 
+  pipe_acct = config.pipeline_account
+  secret_pw = pipe_acct.upstream_password if pipe_acct is not None else ""
   for m in mappings:
     ch = m.channel
     grp_label = group_labels.get(ch.group, ch.group)
@@ -516,9 +407,7 @@ def build_diagnostics_report(
       quality_counts[qt] = quality_counts.get(qt, 0) + 1
 
     probe_dict = (
-      m.probe.to_dict(redact_secret=config.xtream.password)
-      if m.probe is not None
-      else None
+      m.probe.to_dict(redact_secret=secret_pw) if m.probe is not None else None
     )
     channels_report.append(
       ReportChannelRecord(

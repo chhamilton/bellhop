@@ -8,6 +8,11 @@ from pathlib import Path
 import pytest
 from yarl import URL
 
+from bellhop.common.accounts import (
+  STREAM_CREDENTIAL_ALPHABET,
+  STREAM_CREDENTIAL_LENGTH,
+  hash_web_password,
+)
 from bellhop.common.http_utils import (
   DEFAULT_CLIENT_MAX_SIZE,
   build_access_urls,
@@ -16,7 +21,7 @@ from bellhop.common.http_utils import (
   resolve_client_ip,
   start_site,
 )
-from bellhop.config import load_config
+from bellhop.config import ConfigManager, load_config
 from bellhop.web.auth import (
   LoginRateLimiter,
   WebAuthConfig,
@@ -26,7 +31,7 @@ from bellhop.web.auth import (
 )
 from bellhop.web.server import WebGuideApp
 from bellhop.web.store import LineupGuideStore
-from tests.conftest import FakeClock
+from tests.conftest import FakeClock, make_test_account
 from tests.http_mock import new_test_session
 
 
@@ -87,32 +92,41 @@ def test_web_auth_token_signing_persistence_and_rotation_with_fake_clock(
   # Unconfigured credentials MUST fail verification and MUST be rejected by
   # WebGuideApp
   unconfigured = WebAuthManager(WebAuthConfig())
-  assert unconfigured.enabled is True
+  assert unconfigured.enabled is False
   assert unconfigured.has_credentials is False
-  assert unconfigured.verify_credentials("", "") is False
+  assert unconfigured.authenticate("", "") is None
   xt_empty = tmp_path / "empty_xtream"
   xt_empty.mkdir()
   with pytest.raises(ValueError, match="cannot be disabled"):
     WebGuideApp(LineupGuideStore(xt_empty), auth=unconfigured)
 
   secret_file = tmp_path / "cache" / "session_secret.key"
+  acct_unicode = make_test_account(
+    account_id="admin",
+    email="admín@example.com",
+    web_password_hash=hash_web_password("sëcret_web_password_🔐"),
+  )
   auth1 = WebAuthManager(
     WebAuthConfig(
-      username="admín",
-      password="sëcret_web_password_🔐",
+      accounts=(acct_unicode,),
       session_ttl_hours=2.0,
       secret_file=secret_file,
     ),
     clock=fake_clock,
   )
   assert auth1.enabled is True
-  assert auth1.verify_credentials("admín", "sëcret_web_password_🔐") is True
-  assert auth1.verify_credentials("admín", "wrong_é") is False
+  assert (
+    auth1.authenticate("  Admín@Example.COM ", "sëcret_web_password_🔐")
+    == acct_unicode
+  )
+  assert auth1.authenticate("admín@example.com", "wrong_é") is None
 
-  token, session = auth1.create_session_token("admín")
+  token, session = auth1.create_session_token(acct_unicode)
   assert secret_file.is_file()
   assert stat.S_IMODE(secret_file.stat().st_mode) == 0o600
   assert session.expires_at == int(fake_clock.now) + 7200
+  assert session.account_id == "admin"
+  assert session.email == "admín@example.com"
 
   # Before half-TTL: valid, no renewal needed
   fake_clock.advance(100.0)
@@ -127,31 +141,49 @@ def test_web_auth_token_signing_persistence_and_rotation_with_fake_clock(
   # Restart with same secret_file keeps cookie valid
   auth2 = WebAuthManager(
     WebAuthConfig(
-      username="admín",
-      password="sëcret_web_password_🔐",
+      accounts=(acct_unicode,),
       session_ttl_hours=2.0,
       secret_file=secret_file,
     ),
     clock=fake_clock,
   )
   verified = auth2.verify_session_token(token)
-  assert verified is not None and verified.username == "admín"
+  assert (
+    verified is not None
+    and verified.account_id == "admin"
+    and verified.email == "admín@example.com"
+  )
+
+  # Deleting session_secret.key on disk immediately invalidates old tokens
+  # and regenerates a fresh 0600 key on next session creation.
+  secret_file.unlink()
+  assert auth2.verify_session_token(token) is None
+  rotated_tok, _ = auth2.create_session_token(acct_unicode)
+  assert secret_file.is_file()
+  assert stat.S_IMODE(secret_file.stat().st_mode) == 0o600
+  assert auth2.verify_session_token(rotated_tok) is not None
+  assert auth2.verify_session_token(token) is None
 
   # Password change invalidates existing cookies immediately
+  acct_rotated = make_test_account(
+    account_id="admin",
+    email="admín@example.com",
+    web_password_hash=hash_web_password("brand_new_password"),
+  )
   auth_rotated = WebAuthManager(
     WebAuthConfig(
-      username="admín",
-      password="brand_new_password",
+      accounts=(acct_rotated,),
       session_ttl_hours=2.0,
       secret_file=secret_file,
     ),
     clock=fake_clock,
   )
-  assert auth_rotated.verify_session_token(token) is None
+  assert auth_rotated.verify_session_token(rotated_tok) is None
 
   # Past full TTL (7201s total): original auth rejects expired token
   fake_clock.advance(3201.0)
   assert auth1.verify_session_token(token) is None
+  assert auth2.verify_session_token(rotated_tok) is not None
 
 
 @pytest.mark.asyncio
@@ -161,10 +193,13 @@ async def test_http_sliding_cookie_renewal_and_expiry_via_fake_clock(
   """Verify live HTTP sliding session renewal & expiry with zero sleeps."""
   xt_dir = tmp_path / "output" / "xtream"
   _write_minimal_bundle(xt_dir)
+  acct = make_test_account(
+    email="admin@example.com",
+    web_password_hash=hash_web_password("secret"),
+  )
   auth = WebAuthManager(
     WebAuthConfig(
-      username="admin",
-      password="secret",
+      accounts=(acct,),
       session_ttl_hours=2.0,  # 7200s TTL -> renews at >= 3600s
       secret_file=tmp_path / "session_secret.key",
     ),
@@ -178,7 +213,8 @@ async def test_http_sliding_cookie_renewal_and_expiry_via_fake_clock(
   try:
     async with new_test_session(f"http://127.0.0.1:{port}") as client:
       async with client.post(
-        "/api/auth/login", json={"username": "admin", "password": "secret"}
+        "/api/auth/login",
+        json={"email": "admin@example.com", "password": "secret"},
       ) as login_r:
         assert login_r.status == 200
         assert "bellhop_session=" in login_r.headers.get("Set-Cookie", "")
@@ -297,9 +333,25 @@ def test_resolve_client_ip_and_bind_host_helpers(tmp_path: Path) -> None:
     "http://localhost:8080"
   ]
 
+  creds_path = tmp_path / "credentials.yaml"
+  creds_path.write_text(
+    f"""\
+accounts:
+  primary:
+    email: "primary@example.com"
+    web_password_hash: "{hash_web_password("secret_pass")}"
+    xtream_username: "xt111111"
+    xtream_password: "xt222222"
+    upstream_username: "u1"
+    upstream_password: "p1"
+    pipeline: true
+""",
+    encoding="utf-8",
+  )
   cfg_path = tmp_path / "config.yaml"
   cfg_path.write_text(
-    "upstream_xtream:\n  server_url: http://example.invalid\n", encoding="utf-8"
+    f"credentials_file: {creds_path}\nupstream_xtream:\n  server_url: http://example.invalid\n",
+    encoding="utf-8",
   )
   assert load_config(cfg_path).serve.web_host == "0.0.0.0"
 
@@ -313,8 +365,12 @@ async def test_http_hardening_413_403_cors_and_reverse_proxy_throttling(
   _write_minimal_bundle(xt_dir)
   auth = WebAuthManager(
     WebAuthConfig(
-      username="admin",
-      password="correct_password",
+      accounts=(
+        make_test_account(
+          email="admin@example.com",
+          web_password_hash=hash_web_password("correct_password"),
+        ),
+      ),
       secret_file=tmp_path / "session_secret.key",
     ),
     clock=fake_clock,
@@ -354,14 +410,14 @@ async def test_http_hardening_413_403_cors_and_reverse_proxy_throttling(
       for fake_prefix in ("8.8.8.8", "9.9.9.9"):
         async with client.post(
           "/api/auth/login",
-          json={"username": "admin", "password": "wrong"},
+          json={"email": "admin@example.com", "password": "wrong"},
           headers={"X-Forwarded-For": f"{fake_prefix}, 203.0.113.10"},
         ) as bad_r:
           assert bad_r.status == 401
 
       async with client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "correct_password"},
+        json={"email": "admin@example.com", "password": "correct_password"},
         headers={"X-Forwarded-For": "1.2.3.4, 203.0.113.10"},
       ) as blocked_r:
         assert blocked_r.status == 429
@@ -370,7 +426,7 @@ async def test_http_hardening_413_403_cors_and_reverse_proxy_throttling(
       # Separate client IP behind trusted proxy is unaffected
       async with client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "correct_password"},
+        json={"email": "admin@example.com", "password": "correct_password"},
         headers={"X-Forwarded-For": "203.0.113.20"},
       ) as legit_r:
         assert legit_r.status == 200
@@ -387,7 +443,7 @@ async def test_http_hardening_413_403_cors_and_reverse_proxy_throttling(
       fake_clock.advance(61.0)
       async with client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "correct_password"},
+        json={"email": "admin@example.com", "password": "correct_password"},
         headers={"X-Forwarded-For": "203.0.113.10"},
       ) as unblocked_r:
         assert unblocked_r.status == 200
@@ -414,13 +470,13 @@ async def test_http_hardening_413_403_cors_and_reverse_proxy_throttling(
       for spoof_ip in ("203.0.113.1", "203.0.113.2"):
         async with client.post(
           "/api/auth/login",
-          json={"username": "admin", "password": "wrong"},
+          json={"email": "admin@example.com", "password": "wrong"},
           headers={"X-Forwarded-For": spoof_ip},
         ) as bad_r2:
           assert bad_r2.status == 401
       async with client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "correct_password"},
+        json={"email": "admin@example.com", "password": "correct_password"},
         headers={"X-Forwarded-For": "203.0.113.99"},
       ) as blocked_r2:
         assert blocked_r2.status == 429
@@ -438,10 +494,13 @@ async def test_csrf_cors_and_hls_ssrf_protection(
 
   xt_dir = tmp_path / "output" / "xtream"
   _write_minimal_bundle(xt_dir)
+  acct = make_test_account(
+    email="admin@example.com",
+    web_password_hash=hash_web_password("secret"),
+  )
   auth = WebAuthManager(
     WebAuthConfig(
-      username="admin",
-      password="secret",
+      accounts=(acct,),
       secret_file=tmp_path / "session_secret.key",
     ),
     clock=fake_clock,
@@ -449,17 +508,7 @@ async def test_csrf_cors_and_hls_ssrf_protection(
   app = WebGuideApp(
     LineupGuideStore(xt_dir),
     auth=auth,
-    config_reader=lambda: {
-      "available": True,
-      "config_file": "config.yaml",
-      "config": {},
-    },
-    config_writer=lambda _u: {
-      "saved": True,
-      "restart_required": False,
-      "config_file": "config.yaml",
-      "config": {},
-    },
+    password_changer=lambda _aid, _cur, _new: acct,
     settle_sec=0.0,
     clock=fake_clock,
   )
@@ -470,7 +519,7 @@ async def test_csrf_cors_and_hls_ssrf_protection(
       # Cross-site login blocked with 403
       async with client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "secret"},
+        json={"email": "admin@example.com", "password": "secret"},
         headers={"Origin": "https://attacker.example"},
       ) as csrf_login:
         assert csrf_login.status == 403
@@ -478,10 +527,14 @@ async def test_csrf_cors_and_hls_ssrf_protection(
       # Legitimate login succeeds and never emits wildcard CORS
       async with client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "secret"},
+        json={"email": "admin@example.com", "password": "secret"},
       ) as ok_login:
         assert ok_login.status == 200
         assert "Access-Control-Allow-Origin" not in ok_login.headers
+
+      # Removed /api/config endpoint returns 404
+      async with client.get("/api/config") as old_cfg_r:
+        assert old_cfg_r.status == 404
 
       async with client.get("/api/lineup") as lu_r:
         assert lu_r.status == 200
@@ -493,25 +546,27 @@ async def test_csrf_cors_and_hls_ssrf_protection(
         "/api/auth/logout",
         "/api/epg/refresh",
         "/api/tuner/release",
+        "/api/account/password",
+        "/api/account/stream-credentials/regenerate",
       ):
         async with client.get(get_mut) as gm_r:
           assert gm_r.status in {404, 405}
 
-      # Cross-site POST/PUT mutations blocked via Sec-Fetch-Site and Origin
-      async with client.put(
-        "/api/config",
+      # Cross-site POST mutations blocked via Sec-Fetch-Site and Origin
+      async with client.post(
+        "/api/account/password",
         json={},
         headers={"Sec-Fetch-Site": "cross-site"},
-      ) as csrf_put:
-        assert csrf_put.status == 403
+      ) as csrf_post:
+        assert csrf_post.status == 403
 
-      # Non-JSON Content-Type on PUT /api/config rejected with 415
-      async with client.put(
-        "/api/config",
+      # Non-JSON Content-Type on POST /api/account/password rejected with 415
+      async with client.post(
+        "/api/account/password",
         data="{}",
         headers={"Content-Type": "text/plain"},
-      ) as plain_put:
-        assert plain_put.status == 415
+      ) as plain_post:
+        assert plain_post.status == 415
 
       # Forged base64 URL in `/api/hls/<chno>/asset?u=` rejected with 403 (zero
       # SSRF)
@@ -522,6 +577,191 @@ async def test_csrf_cors_and_hls_ssrf_protection(
       )
       async with client.get(f"/api/hls/1101/asset?u={forged}") as ssrf_r:
         assert ssrf_r.status == 403
+  finally:
+    await runner.cleanup()
+    await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_account_self_service_routes_and_removed_config_route(
+  tmp_path: Path,
+) -> None:
+  """Verify `/api/account*` self-service flows, validation, and 503 mode."""
+  xt_dir = tmp_path / "output" / "xtream"
+  _write_minimal_bundle(xt_dir)
+  creds_path = tmp_path / "credentials.yaml"
+  creds_path.write_text(
+    """\
+accounts:
+  primary:
+    email: "primary@example.com"
+    web_password: "initial_secret_pw"
+    xtream_username: "initxt01"
+    xtream_password: "initxtpw"
+    upstream_username: "up_user"
+    upstream_password: "up_secret_password"
+    pipeline: true
+""",
+    encoding="utf-8",
+  )
+  cfg_path = tmp_path / "config.yaml"
+  cfg_path.write_text(
+    f"""\
+credentials_file: "{creds_path}"
+paths:
+  cache_dir: "{tmp_path / "cache"}"
+  state_dir: "{tmp_path / "state"}"
+  xtream_output_dir: "{xt_dir}"
+web_server:
+  port: 9090
+xtream_server:
+  public_host: "bellhop.lan"
+upstream_xtream:
+  server_url: "http://upstream.example"
+""",
+    encoding="utf-8",
+  )
+  mgr = ConfigManager(cfg_path)
+  cfg = mgr.get()
+  auth = WebAuthManager(
+    WebAuthConfig(
+      accounts_provider=lambda: mgr.get().accounts,
+      secret_file=tmp_path / "cache" / "session_secret.key",
+    )
+  )
+
+  # 1. Without handlers attached, account mutations fail cleanly with 501
+  app_ro = WebGuideApp(LineupGuideStore(xt_dir), auth=auth, settle_sec=0.0)
+  await app_ro.startup()
+  runner_ro, port_ro = await start_site(app_ro.build_app(), "127.0.0.1", 0)
+  try:
+    async with new_test_session(f"http://127.0.0.1:{port_ro}") as cli_ro:
+      async with cli_ro.post(
+        "/api/auth/login",
+        json={"email": "primary@example.com", "password": "initial_secret_pw"},
+      ) as login_ro:
+        assert login_ro.status == 200
+      async with cli_ro.post(
+        "/api/account/password",
+        json={
+          "current_password": "initial_secret_pw",
+          "new_password": "new_strong_password_2",
+        },
+      ) as pw_501:
+        assert pw_501.status == 501
+      async with cli_ro.post(
+        "/api/account/stream-credentials/regenerate",
+        json={},
+      ) as reg_501:
+        assert reg_501.status == 501
+  finally:
+    await runner_ro.cleanup()
+    await app_ro.shutdown()
+
+  # 2. Full ConfigManager-backed self-service account lifecycle
+  app = WebGuideApp(
+    LineupGuideStore(xt_dir),
+    auth=auth,
+    upstream_server_url="http://upstream.example",
+    player_base_url_provider=lambda _hdrs: (
+      f"http://{cfg.serve.public_host or 'bellhop.lan'}:{cfg.serve.web_port}"
+    ),
+    password_changer=mgr.change_account_web_password,
+    stream_creds_regenerator=mgr.regenerate_account_stream_credentials,
+    settle_sec=0.0,
+  )
+  await app.startup()
+  runner, port = await start_site(app.build_app(), "127.0.0.1", 0)
+  try:
+    async with new_test_session(f"http://127.0.0.1:{port}") as client:
+      async with client.post(
+        "/api/auth/login",
+        json={"email": "primary@example.com", "password": "initial_secret_pw"},
+      ) as login_r:
+        assert login_r.status == 200
+
+      async with client.get("/api/config") as old_cfg:
+        assert old_cfg.status == 404
+
+      async with client.get("/api/account") as acct_r:
+        assert acct_r.status == 200
+        info = await acct_r.json()
+        assert info["account_id"] == "primary"
+        assert info["email"] == "primary@example.com"
+        assert info["xtream_username"] == "initxt01"
+        assert info["xtream_password"] == "initxtpw"
+        assert "up_secret_password" not in json.dumps(info)
+        assert (
+          info["player_urls"]["xtream_server_url"] == "http://bellhop.lan:9090"
+        )
+        assert "initxt01" in info["player_urls"]["m3u_url"]
+        assert "initxtpw" in info["player_urls"]["xmltv_url"]
+
+      # Wrong current password -> 403
+      async with client.post(
+        "/api/account/password",
+        json={
+          "current_password": "wrong_current_pw",
+          "new_password": "new_strong_password_2",
+        },
+      ) as wrong_pw:
+        assert wrong_pw.status == 403
+
+      # Too-short new password -> 400
+      async with client.post(
+        "/api/account/password",
+        json={
+          "current_password": "initial_secret_pw",
+          "new_password": "short",
+        },
+      ) as short_pw:
+        assert short_pw.status == 400
+
+      # Valid password change rotates session cookie and persists scrypt hash
+      async with client.post(
+        "/api/account/password",
+        json={
+          "current_password": "initial_secret_pw",
+          "new_password": "new_strong_password_2",
+        },
+      ) as ok_pw:
+        assert ok_pw.status == 200
+        pw_body = await ok_pw.json()
+        assert pw_body["ok"] is True
+        assert pw_body["email"] == "primary@example.com"
+        assert "bellhop_session=" in ok_pw.headers.get("Set-Cookie", "")
+
+      # Regenerate Bellhop Xtream credentials (8-char [a-z0-9])
+      async with client.post(
+        "/api/account/stream-credentials/regenerate",
+        json={},
+      ) as reg_r:
+        assert reg_r.status == 200
+        reg_body = await reg_r.json()
+        new_u = reg_body["xtream_username"]
+        new_p = reg_body["xtream_password"]
+        assert new_u != "initxt01"
+        assert new_p != "initxtpw"
+        assert len(new_u) == STREAM_CREDENTIAL_LENGTH
+        assert len(new_p) == STREAM_CREDENTIAL_LENGTH
+        assert all(ch in STREAM_CREDENTIAL_ALPHABET for ch in new_u + new_p)
+        assert new_u in reg_body["player_urls"]["m3u_url"]
+
+    # Verify old password rejected and new password accepted on fresh client
+    async with new_test_session(f"http://127.0.0.1:{port}") as fresh:
+      async with fresh.post(
+        "/api/auth/login",
+        json={"email": "primary@example.com", "password": "initial_secret_pw"},
+      ) as old_login:
+        assert old_login.status == 401
+      async with fresh.post(
+        "/api/auth/login",
+        json={
+          "email": "primary@example.com",
+          "password": "new_strong_password_2",
+        },
+      ) as new_login:
+        assert new_login.status == 200
   finally:
     await runner.cleanup()
     await app.shutdown()
@@ -547,8 +787,12 @@ async def test_session_revocation_on_logout_https_cookie_flag_and_url_redaction(
   xt_dir = write_minimal_xtream_export(tmp_path / "output" / "xtream")
   auth = WebAuthManager(
     WebAuthConfig(
-      username="admin",
-      password="secret",
+      accounts=(
+        make_test_account(
+          email="admin@example.com",
+          web_password_hash=hash_web_password("secret"),
+        ),
+      ),
       secret_file=tmp_path / "session_secret.key",
     )
   )
@@ -568,7 +812,7 @@ async def test_session_revocation_on_logout_https_cookie_flag_and_url_redaction(
       new_test_session(base_url) as client_http,
       client_http.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "secret"},
+        json={"email": "admin@example.com", "password": "secret"},
       ) as r_http,
     ):
       assert r_http.status == 200
@@ -578,7 +822,7 @@ async def test_session_revocation_on_logout_https_cookie_flag_and_url_redaction(
     async with new_test_session(base_url) as client_https:
       async with client_https.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "secret"},
+        json={"email": "admin@example.com", "password": "secret"},
         headers={"X-Forwarded-Proto": "https"},
       ) as r_https:
         assert r_https.status == 200
@@ -636,13 +880,13 @@ async def test_session_revocation_on_logout_https_cookie_flag_and_url_redaction(
     async with new_test_session(base_url) as csrf_cli:
       async with csrf_cli.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "secret"},
+        json={"email": "admin@example.com", "password": "secret"},
         headers={"Sec-Fetch-Site": "same-site"},
       ) as r_samesite:
         assert r_samesite.status == 403
       async with csrf_cli.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "secret"},
+        json={"email": "admin@example.com", "password": "secret"},
         headers={"Referer": "https://evil.example/phish"},
       ) as r_referer:
         assert r_referer.status == 403

@@ -27,6 +27,7 @@ from bellhop.epg.refresh import EpgRefreshConfig, EpgRefreshService
 from bellhop.epg.sd_epg import SchedulesDirectEpgConfig, hash_sd_password
 from bellhop.serve import UnifiedServeServer
 from bellhop.web.store import LineupGuideStore
+from tests.conftest import TEST_PASSWORD_HASH
 from tests.http_mock import MockHttpServer, new_test_session
 
 
@@ -531,12 +532,22 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
     # on `/api/epg/<chno>`, serves base64 `get_short_epg` /
     # `get_simple_data_table`,
     #    and streams merged XMLTV chunks directly from SQLite on `/xmltv.php`!
+    from tests.conftest import TEST_WEB_PASSWORD, make_test_account
+
     app_cfg = AppConfig(
       project_root=tmp_path,
+      accounts=(
+        make_test_account(
+          account_id="web_admin",
+          email="web_admin@example.com",
+          xtream_username="xt_user",
+          xtream_password="xt_pass",
+          upstream_username="u",
+          upstream_password="p",
+        ),
+      ),
       xtream=XtreamConfig(
         server_url=mock.base_url,
-        username="u",
-        password="p",
         cache_dir=Path("cache"),
       ),
       lineup=LineupConfig(
@@ -556,15 +567,11 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
           enabled=True,
           host="127.0.0.1",
           port=0,
-          username="web_admin",
-          password="web_pw",
         ),
         xtream=ServeXtreamConfig(
           enabled=True,
           host="127.0.0.1",
           port=0,
-          username="xt_user",
-          password="xt_pass",
         ),
       ),
     )
@@ -584,7 +591,10 @@ async def test_sd_epg_priority_xmltv_backfill_md5_cache_and_serve_xmltv(
       async with new_test_session() as client:
         async with client.post(
           f"{base_url}/api/auth/login",
-          json={"username": "web_admin", "password": "web_pw"},
+          json={
+            "email": "web_admin@example.com",
+            "password": TEST_WEB_PASSWORD,
+          },
         ) as r_login:
           assert r_login.status == 200
         async with client.get(f"{base_url}/api/epg/220") as r220:
@@ -795,9 +805,24 @@ async def test_epg_db_permissions_corrupt_recovery_schema_bump_and_cli_banner(
     fetched_at=float(now_ts),
     covered_channel_ids=frozenset({"hbo.us"}),
   )
+  creds_file = tmp_path / "credentials.yaml"
+  creds_file.write_text(
+    f"""\
+accounts:
+  banner_admin:
+    email: "banner_admin@example.com"
+    web_password_hash: "{TEST_PASSWORD_HASH}"
+    xtream_username: "bannerxt"
+    xtream_password: "bannerpw"
+    upstream_username: "u"
+    upstream_password: "p"
+""",
+    encoding="utf-8",
+  )
   cfg_file = tmp_path / "config.yaml"
   cfg_file.write_text(
     f"""\
+credentials_file: "{creds_file}"
 paths:
   cache_dir: "{tmp_path / "cache"}"
   xtream_output_dir: "{xt_dir}"
@@ -805,8 +830,6 @@ web_server:
   enabled: true
   host: "127.0.0.1"
   port: 0
-  username: "banner_admin"
-  password: "banner_secret"
 xtream_server:
   enabled: false
 """,

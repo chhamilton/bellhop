@@ -1,4 +1,4 @@
-"""Reusable 6-phase pipeline runner for CLI and scheduling."""
+"""Reusable 5-phase pipeline runner for CLI and scheduling."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from bellhop.pipeline.mapping_state import (
   validate_mapping_candidates,
 )
 from bellhop.pipeline.models import MappedChannel
-from bellhop.pipeline.playlist import write_m3u8, write_report
+from bellhop.pipeline.playlist import write_report
 from bellhop.pipeline.validator import ProgressCallback, StreamValidator
 from bellhop.pipeline.xtream_exporter import (
   XtreamExportResult,
@@ -43,8 +43,7 @@ ALL_PHASES: tuple[str, ...] = (
   "catalog",
   "match",
   "validate",
-  "m3u8",
-  "xtream",
+  "export",
 )
 
 PHASE_ALIASES: dict[str, tuple[str, ...]] = {
@@ -66,17 +65,17 @@ PHASE_ALIASES: dict[str, tuple[str, ...]] = {
   "validation": ("validate",),
   "validate-candidates": ("validate",),
   "validate_candidates": ("validate",),
-  "5": ("m3u8",),
-  "m3u8": ("m3u8",),
-  "playlist": ("m3u8",),
-  "generate": ("m3u8",),
-  "6": ("xtream",),
-  "xtream": ("xtream",),
-  "epg": ("xtream",),
-  "export-xtream": ("xtream",),
-  "export_xtream": ("xtream",),
-  "export": ("m3u8", "xtream"),
-  "outputs": ("m3u8", "xtream"),
+  "5": ("export",),
+  "6": ("export",),
+  "export": ("export",),
+  "outputs": ("export",),
+  "xtream": ("export",),
+  "epg": ("export",),
+  "export-xtream": ("export",),
+  "export_xtream": ("export",),
+  "m3u8": ("export",),
+  "playlist": ("export",),
+  "generate": ("export",),
   "all": ALL_PHASES,
 }
 
@@ -102,9 +101,9 @@ def parse_phase_tokens(
         continue
       mapped = PHASE_ALIASES.get(cleaned)
       if mapped is None:
-        valid = ", ".join((*ALL_PHASES, "export"))
+        valid = ", ".join(ALL_PHASES)
         raise PipelineConfigError(
-          f"Unknown pipeline phase {token!r}. Valid phases: {valid} (or 1..6)."
+          f"Unknown pipeline phase {token!r}. Valid phases: {valid} (or 1..5)."
         )
       expanded.update(mapped)
 
@@ -149,10 +148,7 @@ def resolve_active_phases(
     base = ["lineup", "catalog", "match"]
     if config.validation.enabled:
       base.append("validate")
-    if config.output.m3u8_enabled:
-      base.append("m3u8")
-    if config.output.xtream_enabled:
-      base.append("xtream")
+    base.append("export")
 
   active = [p for p in base if p not in skipped_req]
   skipped = [p for p in ALL_PHASES if p not in active]
@@ -191,7 +187,6 @@ class PipelineRunResult:
   validation_probed_streams: int = 0
   validation_would_probe_slots: int = 0
   validation_skipped_reason: str | None = None
-  playlist_path: Path | None = None
   report_path: Path | None = None
   xtream_result: XtreamExportResult | None = None
   epg_sync_status: EpgStatusDict | None = None
@@ -220,7 +215,6 @@ class PipelineRunResult:
       "validation_probed_streams": self.validation_probed_streams,
       "validation_would_probe_slots": self.validation_would_probe_slots,
       "validation_skipped_reason": self.validation_skipped_reason,
-      "playlist_path": str(self.playlist_path) if self.playlist_path else None,
       "report_path": str(self.report_path) if self.report_path else None,
       "xtream_bundle_path": (
         str(self.xtream_result.bundle_path) if self.xtream_result else None
@@ -268,13 +262,12 @@ class PipelineRunner:
     probed_unique = 0
     would_probe_slots = 0
     validation_skipped_reason: str | None = None
-    playlist_path: Path | None = None
     report_path: Path | None = None
     xtream_res: XtreamExportResult | None = None
     epg_sync_status: EpgStatusDict | None = None
 
     needs_lineup = bool(
-      set(active_phases) & {"lineup", "match", "validate", "m3u8", "xtream"}
+      set(active_phases) & {"lineup", "match", "validate", "export"}
     )
     needs_catalog = bool(set(active_phases) & {"catalog", "match", "validate"})
 
@@ -319,7 +312,7 @@ class PipelineRunner:
       if not opts.dry_run:
         save_mapping_document(doc, mapping_path)
         mapping_saved = True
-    elif set(active_phases) & {"validate", "m3u8", "xtream"}:
+    elif set(active_phases) & {"validate", "export"}:
       assert lineup is not None
       if not mapping_path.is_file():
         raise FileNotFoundError(
@@ -351,6 +344,7 @@ class PipelineRunner:
       if not opts.dry_run:
         account = catalog_res.catalog.account if catalog_res else None
         xt = self.config.xtream
+        pipe_acct = self.config.pipeline_account
         # If Phase (2) served a cached snapshot, verify `player_api.php` account
         # status first so an expired/inactive account implicitly skips
         # `validate`
@@ -358,10 +352,17 @@ class PipelineRunner:
         if (
           self._custom_validator is None
           and xt.seed_json is None
-          and bool(xt.server_url and xt.username and xt.password)
+          and bool(
+            xt.server_url
+            and pipe_acct is not None
+            and pipe_acct.upstream_username
+            and pipe_acct.upstream_password
+          )
           and (catalog_res is None or catalog_res.from_cache)
         ):
-          account = await fetch_xtream_account_info(self.config)
+          account = await fetch_xtream_account_info(
+            self.config, account=pipe_acct
+          )
         if account is not None and account.status.strip().lower() not in {
           "active",
           "unknown",
@@ -394,8 +395,8 @@ class PipelineRunner:
     if doc is not None and lineup is not None:
       mappings = mapping_document_to_mapped_channels(doc, lineup)
 
-    # Phase (5): M3U8 Playlist & JSON Report Generation
-    if "m3u8" in active_phases and not opts.dry_run:
+    # Phase (5): Diagnostics Report, Xtream JSON Bundle Export & EPG Sync
+    if "export" in active_phases and not opts.dry_run:
       assert lineup is not None and doc is not None
       any_validated = any(
         sl.preferred_source == "validated" for sl in doc.slots.values()
@@ -405,7 +406,6 @@ class PipelineRunner:
         if catalog_res is not None
         else doc.last_summary.raw_catalog_streams
       )
-      playlist_path = write_m3u8(lineup, mappings, self.config)
       report_path = write_report(
         lineup,
         mappings,
@@ -416,11 +416,6 @@ class PipelineRunner:
         ),
         mapping_summary=doc.last_summary.to_dict(),
       )
-
-    # Phase (6): Official Xtream API JSON Playlist Export (with Passthrough & SD
-    # EPG sync)
-    if "xtream" in active_phases and not opts.dry_run:
-      assert lineup is not None
       account = catalog_res.catalog.account if catalog_res is not None else None
       xtream_res = await export_xtream_playlist_and_guide(
         lineup,
@@ -465,7 +460,6 @@ class PipelineRunner:
       validation_probed_streams=probed_unique,
       validation_would_probe_slots=would_probe_slots,
       validation_skipped_reason=validation_skipped_reason,
-      playlist_path=playlist_path,
       report_path=report_path,
       xtream_result=xtream_res,
       epg_sync_status=epg_sync_status,

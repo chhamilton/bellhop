@@ -10,7 +10,6 @@ import runpy
 import stat
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import aiohttp
 import pytest
@@ -18,6 +17,7 @@ from aiohttp import web
 from rich.console import Console
 
 from bellhop import cli
+from bellhop.common.accounts import hash_web_password
 from bellhop.common.api_contracts import EpgStatusDict
 from bellhop.common.file_utils import (
   chmod_private_file,
@@ -30,6 +30,7 @@ from bellhop.common.http_utils import (
   _parse_ip_addr,
   build_access_urls,
   constant_time_credential_match,
+  parse_validated_host_header,
   resolve_bind_host,
   start_site,
 )
@@ -45,7 +46,7 @@ from bellhop.config import (
   get_config_manager,
   load_config,
 )
-from bellhop.config.load import _load_yaml_dict, _pick_bool, find_project_root
+from bellhop.config.load import _load_yaml_dict, _opt_str, find_project_root
 from bellhop.epg.db import EpgDatabase
 from bellhop.epg.models import ProgramItem
 from bellhop.epg.refresh import EpgRefreshConfig, EpgRefreshService
@@ -110,7 +111,7 @@ from bellhop.xtream.client import (
   _opt_int as _xt_opt_int,
 )
 from bellhop.xtream.server import XtreamExportStore, XtreamPassthroughServer
-from tests.conftest import write_minimal_xtream_export
+from tests.conftest import make_test_account, write_minimal_xtream_export
 from tests.fake_xtream_server import make_valid_mpegts_chunk
 from tests.http_mock import MockHttpServer, new_test_session
 
@@ -179,10 +180,9 @@ def test_python_module_entrypoint_and_cli_error_branches(
       project_root=tmp_path,
       lineup=LineupConfig(collapse_sd_dupes=False, numbering_mode=mode),
     )
-    cli._print_m3u8_summary(
+    cli._print_coverage_summary(
       lu,
       mappings,
-      tmp_path / "out.m3u8",
       tmp_path / "report.json",
       cfg,
       dry_run=False,
@@ -308,28 +308,50 @@ def test_file_http_and_config_hardening(
   assert _parse_ip_addr("") is None
   assert _parse_ip_addr("bogus") is None
 
-  # Parent `.env` must NOT be inherited when loading nested config.yaml.
-  monkeypatch.delenv("BELLHOP_PARENT_LEAK", raising=False)
+  # Env vars & parent `.env` MUST NOT be interpolated or loaded into
+  # config.yaml.
+  monkeypatch.setenv("BELLHOP_PARENT_LEAK", "from_env")
   (tmp_path / ".env").write_text(
-    "BELLHOP_PARENT_LEAK=leaked\n", encoding="utf-8"
+    "BELLHOP_PARENT_LEAK=from_dotenv\n", encoding="utf-8"
   )
   nested = tmp_path / "nested"
   nested.mkdir()
+  nested_creds = nested / "credentials.yaml"
+  nested_creds.write_text(
+    f"""\
+accounts:
+  primary:
+    email: "primary@example.com"
+    web_password_hash: "{hash_web_password("nested_secret")}"
+    xtream_username: "xt111111"
+    xtream_password: "xt222222"
+    upstream_username: "u"
+    upstream_password: "p"
+    pipeline: true
+""",
+    encoding="utf-8",
+  )
   nested_cfg = nested / "config.yaml"
   nested_cfg.write_text(
+    f'credentials_file: "{nested_creds}"\n'
     'upstream_xtream:\n  server_url: "http://panel.example/${BELLHOP_PARENT_LEAK}"\n',
     encoding="utf-8",
   )
   loaded_nested = load_config(nested_cfg)
-  assert loaded_nested.xtream.server_url == "http://panel.example/"
-  assert os.environ.get("BELLHOP_PARENT_LEAK") is None
+  assert (
+    loaded_nested.xtream.server_url
+    == "http://panel.example/${BELLHOP_PARENT_LEAK}"
+  )
+  assert os.environ.get("BELLHOP_PARENT_LEAK") == "from_env"
+  monkeypatch.delenv("BELLHOP_PARENT_LEAK", raising=False)
 
-  assert _pick_bool("yes") is True
-  assert _pick_bool("off") is False
-  assert _pick_bool(" ", default=True) is True
+  assert _opt_str("  hello ") == "hello"
+  assert _opt_str(" ") is None
+  assert _opt_str(None) is None
   list_yaml = tmp_path / "list.yaml"
   list_yaml.write_text("- a\n- b\n", encoding="utf-8")
-  assert _load_yaml_dict(list_yaml) == {}
+  with pytest.raises(ValueError, match="Expected a YAML mapping"):
+    _load_yaml_dict(list_yaml)
   assert find_project_root(nested_cfg) == nested
 
   clear_config_cache()
@@ -354,15 +376,28 @@ async def test_auth_revocations_grace_window_and_xtream_host_hardening(
   now_box = [1_764_000_000.0]
   secret_file = tmp_path / "cache" / "session_secret.key"
   rev_file = tmp_path / "cache" / "session_revoked.json"
+  acct1 = make_test_account(
+    account_id="admin",
+    email="admin@example.com",
+    web_password_hash=hash_web_password("pw1"),
+    xtream_username="xt",
+    xtream_password="xp",
+  )
+  acct2 = make_test_account(
+    account_id="admin",
+    email="admin@example.com",
+    web_password_hash=hash_web_password("pw2"),
+    xtream_username="xt",
+    xtream_password="xp",
+  )
   auth_cfg = WebAuthConfig(
-    username="admin",
-    password="pw1",
+    accounts=(acct1,),
     session_ttl_hours=120.0 / 3600.0,
     secret_file=secret_file,
     revocation_file=rev_file,
   )
   mgr1 = WebAuthManager(auth_cfg, clock=lambda: now_box[0])
-  tok, _info = mgr1.create_session_token("admin", now_ts=int(now_box[0]))
+  tok, _info = mgr1.create_session_token(acct1, now_ts=int(now_box[0]))
   assert mgr1.verify_session_token(tok) is not None
   mgr1.revoke_token(tok, now_ts=int(now_box[0]))
   assert stat.S_IMODE(rev_file.stat().st_mode) == 0o600
@@ -372,13 +407,12 @@ async def test_auth_revocations_grace_window_and_xtream_host_hardening(
 
   rev_file.write_text("{corrupt", encoding="utf-8")
   mgr3 = WebAuthManager(auth_cfg, clock=lambda: now_box[0])
-  tok2, _ = mgr3.create_session_token("admin", now_ts=int(now_box[0]))
+  tok2, _ = mgr3.create_session_token(acct1, now_ts=int(now_box[0]))
   assert mgr3.verify_session_token(tok2) is not None
 
   mgr_pw = WebAuthManager(
     WebAuthConfig(
-      username="admin",
-      password="pw2",
+      accounts=(acct2,),
       secret_file=secret_file,
       revocation_file=rev_file,
     ),
@@ -400,7 +434,8 @@ async def test_auth_revocations_grace_window_and_xtream_host_hardening(
   try:
     async with new_test_session(base) as client:
       async with client.post(
-        "/api/auth/login", json={"username": "admin", "password": "pw1"}
+        "/api/auth/login",
+        json={"email": "admin@example.com", "password": "pw1"},
       ) as r_login:
         assert r_login.status == 200
         raw_cookie = (
@@ -439,7 +474,7 @@ async def test_auth_revocations_grace_window_and_xtream_host_hardening(
       ):
         assert r_expired_grace.status == 401
 
-      fresh_tok, _ = mgr3.create_session_token("admin", now_ts=int(now_box[0]))
+      fresh_tok, _ = mgr3.create_session_token(acct1, now_ts=int(now_box[0]))
       async with client.get(
         "/api/hls/99999/index.m3u8",
         headers={"Cookie": f"bellhop_session={fresh_tok}"},
@@ -455,10 +490,7 @@ async def test_auth_revocations_grace_window_and_xtream_host_hardening(
     ("[::1]:8080", ("::1", 8080)),
     ("[2001:db8::1]", ("2001:db8::1", None)),
   ):
-    assert (
-      XtreamPassthroughServer._parse_validated_host_header(valid_host)
-      == expected
-    )
+    assert parse_validated_host_header(valid_host) == expected
 
   for bad_host in (
     "",
@@ -472,14 +504,11 @@ async def test_auth_revocations_grace_window_and_xtream_host_hardening(
     "host\r\nX-Inject: 1",
     "[::1]:99999",
   ):
-    assert (
-      XtreamPassthroughServer._parse_validated_host_header(bad_host) is None
-    )
+    assert parse_validated_host_header(bad_host) is None
 
   xt_srv = XtreamPassthroughServer(
     XtreamExportStore(xt_dir),
-    username="xt",
-    password="xp",
+    accounts=(acct1,),
     host="127.0.0.1",
     port=0,
   )
@@ -732,10 +761,11 @@ async def test_xtream_client_catalog_fetcher_and_validator_whitelist(
     state_dir = tmp_path / "state"
     cfg = AppConfig(
       project_root=tmp_path,
+      accounts=(
+        make_test_account(upstream_username="u", upstream_password="p"),
+      ),
       xtream=XtreamConfig(
         server_url=mock.base_url,
-        username="u",
-        password="p",
         cache_dir=cache_dir,
       ),
       state=StateConfig(state_dir=state_dir),
@@ -755,7 +785,7 @@ async def test_xtream_client_catalog_fetcher_and_validator_whitelist(
     return web.json_response({"user_info": {"auth": 0}})
 
   async with MockHttpServer(_bad_auth) as mock, mock.new_session() as sess:
-    xt_cfg = XtreamConfig(server_url=mock.base_url, username="u", password="p")
+    xt_cfg = XtreamConfig(server_url=mock.base_url)
     with pytest.raises(XtreamError, match="authentication failed"):
       await _negotiate_xtream_handshake(
         sess,
@@ -861,7 +891,10 @@ async def test_xtream_client_catalog_fetcher_and_validator_whitelist(
   async with MockHttpServer(_val_handler) as mock, mock.new_session() as sess:
     val_cfg = AppConfig(
       project_root=tmp_path,
-      xtream=XtreamConfig(server_url=mock.base_url, username="u", password="p"),
+      accounts=(
+        make_test_account(upstream_username="u", upstream_password="p"),
+      ),
+      xtream=XtreamConfig(server_url=mock.base_url),
       validation=ValidationConfig(
         use_ffprobe=True,
         detect_black_screen=True,
@@ -1147,16 +1180,20 @@ async def test_remaining_validator_client_auth_and_postal_branches(
     ),
     encoding="utf-8",
   )
+  acct_rev = make_test_account(
+    account_id="admin",
+    email="admin@example.com",
+    web_password_hash=hash_web_password("pw"),
+  )
   auth_mgr = WebAuthManager(
     WebAuthConfig(
-      username="admin",
-      password="pw",
+      accounts=(acct_rev,),
       secret_file=tmp_path / "sec.key",
       revocation_file=rev_file,
     ),
     clock=lambda: float(now_ts),
   )
-  t_hdr, _ = auth_mgr.create_session_token("admin", now_ts=now_ts)
+  t_hdr, _ = auth_mgr.create_session_token(acct_rev, now_ts=now_ts)
   auth_mgr.revoke_session_from_headers(
     {"Cookie": f"bellhop_session={t_hdr}"}, now_ts=now_ts
   )
@@ -1196,10 +1233,11 @@ async def test_remaining_validator_client_auth_and_postal_branches(
   async with MockHttpServer(_xt_cache_handler) as mock:
     cache_cfg = AppConfig(
       project_root=tmp_path,
+      accounts=(
+        make_test_account(upstream_username="u", upstream_password="p"),
+      ),
       xtream=XtreamConfig(
         server_url=mock.base_url,
-        username="u",
-        password="p",
         cache_dir=tmp_path / "xc",
         cache_ttl_hours=24.0,
       ),
@@ -1243,10 +1281,11 @@ async def test_remaining_validator_client_auth_and_postal_branches(
   async with MockHttpServer(_xt_err_handler) as err_mock:
     err_cfg = AppConfig(
       project_root=tmp_path,
+      accounts=(
+        make_test_account(upstream_username="u", upstream_password="p"),
+      ),
       xtream=XtreamConfig(
         server_url=err_mock.base_url,
-        username="u",
-        password="p",
       ),
     )
     for m_name in ("expired_dict", "expired_empty", "active_dict"):
@@ -1388,15 +1427,29 @@ async def test_sd_epg_full_discovery_and_web_server_extra_routes(
 
   # Write minimal export with Bell Fibe RDS + ConfigManager for WebGuideApp.
   xt_dir = write_minimal_xtream_export(tmp_path / "output" / "xtream")
+  creds_path = tmp_path / "credentials.yaml"
+  creds_path.write_text(
+    f"""\
+accounts:
+  admin:
+    email: "admin@example.com"
+    web_password_hash: "{hash_web_password("pw")}"
+    xtream_username: "xt111111"
+    xtream_password: "xt222222"
+    upstream_username: "u"
+    upstream_password: "p"
+    pipeline: true
+""",
+    encoding="utf-8",
+  )
   cfg_path = tmp_path / "config.yaml"
   cfg_path.write_text(
     f"""\
+credentials_file: "{creds_path}"
 paths:
   xtream_output_dir: "{xt_dir}"
 upstream_xtream:
   server_url: "http://127.0.0.1:9"
-  username: "u"
-  password: "p"
 pipeline:
   lineup:
     backend: "tvguide"
@@ -1683,36 +1736,21 @@ pipeline:
 
   await _run_sd_and_refresh()
 
-  # 2. `WebGuideApp`: `/api/config`, static routes, HLS assets, & `/api/stream`
+  # 2. `WebGuideApp`: `/api/account*`, removed `/api/config`, static, HLS, &
+  #    `/api/stream`
   cfg_mgr = ConfigManager(cfg_path)
   auth = WebAuthManager(
     WebAuthConfig(
-      username="admin",
-      password="pw",
+      accounts_provider=lambda: cfg_mgr.get().accounts,
       secret_file=tmp_path / "cache" / "w.key",
     )
   )
 
-  def _read_cfg() -> dict[str, Any]:
-    return {
-      "available": True,
-      "config_file": cfg_path.name,
-      "config": cfg_mgr.get_public(),
-    }
-
-  def _write_cfg(updates: dict[str, Any]) -> dict[str, Any]:
-    _new_cfg, restart_req = cfg_mgr.update_public(updates)
-    return {
-      "ok": True,
-      "restart_required": restart_req,
-      "config": cfg_mgr.get_public(),
-    }
-
   web_app = WebGuideApp(
     LineupGuideStore(xt_dir),
     auth=auth,
-    config_reader=_read_cfg,
-    config_writer=_write_cfg,
+    password_changer=cfg_mgr.change_account_web_password,
+    stream_creds_regenerator=cfg_mgr.regenerate_account_stream_credentials,
     clock=lambda: float(now_ts),
   )
   await web_app.startup()
@@ -1721,7 +1759,7 @@ pipeline:
   try:
     async with new_test_session(base) as client:
       async with client.post(
-        "/api/auth/login", json={"username": "admin", "password": "pw"}
+        "/api/auth/login", json={"email": "admin@example.com", "password": "pw"}
       ) as r_l:
         assert r_l.status == 200
       async with client.get(
@@ -1732,26 +1770,36 @@ pipeline:
         assert r_css.status == 200
       async with client.get("/favicon.ico") as r_fav:
         assert r_fav.status == 200
-      async with client.get("/api/config") as r_cfg:
-        assert r_cfg.status == 200
-      async with client.put("/api/config", data="{bad-json") as r_bad_ct:
+      async with client.get("/api/config") as r_cfg_gone:
+        assert r_cfg_gone.status == 404
+      async with client.get("/api/account") as r_acct:
+        assert r_acct.status == 200
+        assert (await r_acct.json())["xtream_username"] == "xt111111"
+      async with client.post(
+        "/api/account/password", data="{bad-json"
+      ) as r_bad_ct:
         assert r_bad_ct.status == 415
-      async with client.put(
-        "/api/config",
+      async with client.post(
+        "/api/account/password",
         data="{bad-json",
         headers={"Content-Type": "application/json"},
       ) as r_bad_j:
         assert r_bad_j.status == 400
-      async with client.put(
-        "/api/config",
-        json={"upstream_xtream": {"server_url": "ftp://invalid.example"}},
+      async with client.post(
+        "/api/account/password",
+        json={"current_password": "wrong", "new_password": "new_password_2"},
       ) as r_bad_v:
-        assert r_bad_v.status == 400
-      async with client.put(
-        "/api/config",
-        json={"pipeline": {"lineup": {"refresh_days": 15}}},
+        assert r_bad_v.status == 403
+      async with client.post(
+        "/api/account/password",
+        json={"current_password": "pw", "new_password": "new_password_2"},
       ) as r_ok_c:
         assert r_ok_c.status == 200
+      async with client.post(
+        "/api/account/stream-credentials/regenerate", json={}
+      ) as r_regen:
+        assert r_regen.status == 200
+        assert (await r_regen.json())["xtream_username"] != "xt111111"
       async with client.get("/api/hls/1101/asset") as r_no_u:
         assert r_no_u.status == 400
       async with client.get("/api/hls/1101/asset?u=unknown_tok") as r_bad_u:
@@ -1767,7 +1815,8 @@ pipeline:
     await runner.cleanup()
     await web_app.shutdown()
 
-  # 3. `WebGuideApp`: happy `/api/stream/*.ts`, HLS, & `config_reader=None`
+  # 3. `WebGuideApp`: happy `/api/stream/*.ts`, HLS, & `501` unconfigured
+  #    mutations
   def _hls_up_handler(req: web.Request) -> web.Response:
     if req.path == "/live/u/p/410101.ts":
       return web.Response(
@@ -1813,10 +1862,20 @@ pipeline:
         }
       ],
     )
+    hls_acct = make_test_account(
+      account_id="hls_user",
+      email="hls@example.com",
+      web_password_hash=hash_web_password("pw"),
+    )
+    hls_auth = WebAuthManager(
+      WebAuthConfig(
+        accounts=(hls_acct,),
+        secret_file=tmp_path / "cache" / "hls.key",
+      )
+    )
     hls_web = WebGuideApp(
       LineupGuideStore(hls_xt_dir),
-      auth=auth,
-      config_reader=None,
+      auth=hls_auth,
       clock=lambda: float(now_ts),
     )
     await hls_web.startup()
@@ -1825,12 +1884,15 @@ pipeline:
     try:
       async with new_test_session(hls_base) as hclient:
         async with hclient.post(
-          "/api/auth/login", json={"username": "admin", "password": "pw"}
+          "/api/auth/login",
+          json={"email": "hls@example.com", "password": "pw"},
         ) as r_hl:
           assert r_hl.status == 200
-        async with hclient.get("/api/config") as r_no_cfg:
-          assert r_no_cfg.status == 200
-          assert (await r_no_cfg.json())["available"] is False
+        async with hclient.post(
+          "/api/account/password",
+          json={"current_password": "pw", "new_password": "new_password_2"},
+        ) as r_no_cfg:
+          assert r_no_cfg.status == 501
         async with hclient.post("/api/epg/refresh") as r_ref:
           assert r_ref.status == 200
         async with hclient.get("/api/stream/1101.ts") as r_ts_ok:
@@ -1850,16 +1912,241 @@ pipeline:
           assert r_seg.status == 200
           assert len(await r_seg.read()) >= 188
         bad_tok = hls_web._register_hls_asset(
-          1101, f"{hls_mock.base_url}/bad.m3u8"
+          hls_acct, 1101, f"{hls_mock.base_url}/bad.m3u8"
         )
         async with hclient.get(f"/api/hls/1101/asset?u={bad_tok}") as r_bad:
           assert r_bad.status == 200
           assert await r_bad.text() == "NOT_M3U"
         miss_tok = hls_web._register_hls_asset(
-          1101, f"{hls_mock.base_url}/missing.ts"
+          hls_acct, 1101, f"{hls_mock.base_url}/missing.ts"
         )
         async with hclient.get(f"/api/hls/1101/asset?u={miss_tok}") as r_miss:
           assert r_miss.status == 502
     finally:
       await hls_runner.cleanup()
       await hls_web.shutdown()
+
+
+def test_accounts_and_config_load_edge_branches(tmp_path: Path) -> None:
+  """Cover validation error branches in `accounts` and `config.load`."""
+  from bellhop.common.accounts import (
+    UserAccount,
+    build_upstream_stream_url,
+    normalize_upstream_base_url,
+    password_hash_version,
+    validate_accounts_collection,
+    validate_email,
+    validate_stream_credential,
+    verify_web_password,
+  )
+  from bellhop.config.load import (
+    resolve_config_targets,
+    resolve_credentials_path,
+  )
+
+  # 1. `common/accounts.py` validation & normalization error branches
+  for bad_email in ("", "ctrl\x07@example.com", "not-an-email"):
+    with pytest.raises(ValueError):
+      validate_email(bad_email, account_id="acct")
+
+  for bad_cred in ("", "bad/cred", "bad?cred", "bad cred"):
+    with pytest.raises(ValueError):
+      validate_stream_credential(bad_cred, account_id="acct")
+
+  for blank_pw in ("", "   "):
+    with pytest.raises(ValueError):
+      hash_web_password(blank_pw)
+
+  assert verify_web_password("", "scrypt$16384$8$1$a$b") is False
+  assert verify_web_password("pw", "bcrypt$bad") is False
+  assert (
+    verify_web_password("pw", "scrypt$16384$8$1$not_b64!$not_b64!") is False
+  )
+  assert (
+    verify_web_password(
+      "pw", "scrypt$3$8$1$AAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAA=="
+    )
+    is False
+  )
+  assert (
+    verify_web_password(
+      "pw", "scrypt$1$8$1$AAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAA=="
+    )
+    is False
+  )
+  assert normalize_upstream_base_url("") == ""
+  assert normalize_upstream_base_url("panel.example") == "http://panel.example"
+  assert build_upstream_stream_url("", "u", "p", 123) == ""
+  valid_hash = hash_web_password("good_pw_123")
+  assert len(password_hash_version(valid_hash)) == 12
+
+  base_acct = UserAccount(
+    account_id="primary",
+    email="primary@example.com",
+    web_password_hash=valid_hash,
+    xtream_username="xt111111",
+    xtream_password="xt222222",
+    upstream_username="up1",
+    upstream_password="upp",
+    pipeline=True,
+  )
+  with pytest.raises(ValueError, match="At least one account"):
+    validate_accounts_collection([], require_non_empty=True)
+  with pytest.raises(ValueError, match="cannot be empty"):
+    validate_accounts_collection(
+      [
+        UserAccount(
+          account_id="   ",
+          email=base_acct.email,
+          web_password_hash=valid_hash,
+          xtream_username="xt1",
+          xtream_password="xp1",
+          upstream_username="u1",
+          upstream_password="p1",
+        )
+      ]
+    )
+  with pytest.raises(ValueError, match="Duplicate account"):
+    validate_accounts_collection(
+      [
+        base_acct,
+        UserAccount(
+          account_id="PRIMARY",
+          email="other@example.com",
+          web_password_hash=valid_hash,
+          xtream_username="xt2",
+          xtream_password="xp2",
+          upstream_username="u2",
+          upstream_password="p2",
+        ),
+      ]
+    )
+  with pytest.raises(ValueError, match="web_password_hash"):
+    validate_accounts_collection(
+      [
+        UserAccount(
+          account_id="badhash",
+          email="bh@example.com",
+          web_password_hash="invalid",
+          xtream_username="xt3",
+          xtream_password="xp3",
+          upstream_username="u3",
+          upstream_password="p3",
+        )
+      ]
+    )
+  with pytest.raises(ValueError, match="upstream_username"):
+    validate_accounts_collection(
+      [
+        UserAccount(
+          account_id="noup",
+          email="nu@example.com",
+          web_password_hash=valid_hash,
+          xtream_username="xt4",
+          xtream_password="xp4",
+          upstream_username="",
+          upstream_password="",
+        )
+      ]
+    )
+
+  # 2. `config/load.py` path resolution, malformed creds, & string proxy list
+  with pytest.raises(FileNotFoundError):
+    resolve_config_targets(tmp_path / "does_not_exist.yaml")
+
+  root_dir = tmp_path / "proj"
+  sub_dir = root_dir / "sub"
+  sub_dir.mkdir(parents=True)
+  (root_dir / "pyproject.toml").write_text("[project]\nname='x'\n")
+  (root_dir / "credentials.yaml").write_text("accounts: {}\n")
+  assert (
+    resolve_credentials_path(
+      {"credentials_file": "credentials.yaml"},
+      root=root_dir,
+      base_dir=sub_dir,
+    )
+    == root_dir / "credentials.yaml"
+  )
+
+  # Blank / non-mapping / bad account entries in credentials.yaml
+  cfg_p = tmp_path / "edge_cfg.yaml"
+  creds_p = tmp_path / "edge_creds.yaml"
+  cfg_p.write_text(
+    f"""\
+credentials_file: "{creds_p}"
+upstream_xtream:
+  server_url: "http://panel.example"
+web_server:
+  trusted_proxy_ips: "127.0.0.1, ::1"
+""",
+    encoding="utf-8",
+  )
+
+  creds_p.write_text("", encoding="utf-8")
+  with pytest.raises(ValueError, match="accounts:"):
+    load_config(cfg_p)
+
+  creds_p.write_text("- not-a-mapping\n", encoding="utf-8")
+  with pytest.raises(ValueError, match="YAML mapping"):
+    load_config(cfg_p)
+
+  creds_p.write_text("accounts:\n  bad: 'string'\n", encoding="utf-8")
+  with pytest.raises(ValueError, match="YAML mapping"):
+    load_config(cfg_p)
+
+  creds_p.write_text(
+    'accounts:\n  "":\n    email: "a@b.com"\n', encoding="utf-8"
+  )
+  with pytest.raises(ValueError, match="Account key"):
+    load_config(cfg_p)
+
+  # Legacy `password:` alias normalization
+  creds_p.write_text(
+    """\
+accounts:
+  legacy_user:
+    email: "legacy@example.com"
+    password: "legacy_web_password"
+    upstream_username: "up_leg"
+    upstream_password: "up_leg_pw"
+""",
+    encoding="utf-8",
+  )
+  loaded_edge = load_config(cfg_p)
+  assert loaded_edge.serve.web.trusted_proxy_ips == ["127.0.0.1", "::1"]
+  assert loaded_edge.accounts[0].web_password_hash.startswith("scrypt$")
+  assert "legacy_web_password" not in creds_p.read_text(encoding="utf-8")
+
+  # Blank plaintext web_password/password keys stripped alongside existing hash
+  creds_p.write_text(
+    f"""\
+accounts:
+  legacy_user:
+    email: "legacy@example.com"
+    web_password: ""
+    password: ""
+    web_password_hash: "{valid_hash}"
+    upstream_username: "up_leg"
+    upstream_password: "up_leg_pw"
+""",
+    encoding="utf-8",
+  )
+  loaded_blank_pw = load_config(cfg_p)
+  assert loaded_blank_pw.accounts[0].web_password_hash == valid_hash
+  creds_disk = creds_p.read_text(encoding="utf-8")
+  assert "web_password:" not in creds_disk
+  assert "\n    password:" not in creds_disk
+
+  # Invalid trusted_proxy_ips type -> ValueError
+  cfg_p.write_text(
+    f"""\
+credentials_file: "{creds_p}"
+upstream_xtream:
+  server_url: "http://panel.example"
+web_server:
+  trusted_proxy_ips: 123
+""",
+    encoding="utf-8",
+  )
+  with pytest.raises(ValueError, match="trusted_proxy_ips"):
+    load_config(cfg_p)

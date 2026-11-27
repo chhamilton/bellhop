@@ -1,4 +1,4 @@
-"""Typed configuration dataclasses for Bellhop's two-tier settings model."""
+"""Typed configuration dataclasses for Bellhop's file-based settings model."""
 
 from __future__ import annotations
 
@@ -6,6 +6,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bellhop.common.accounts import (
+  UserAccount,
+  select_pipeline_accounts,
+  validate_accounts_collection,
+)
 from bellhop.common.http_utils import DEFAULT_TRUSTED_PROXY_IPS
 
 DEFAULT_BELL_FIBE_MTL_LINEUP_ID = "CAN-BELLFIBE-MTL-X"
@@ -20,11 +25,9 @@ def _mask(secret: str, redact: bool) -> str:
 
 @dataclass(slots=True)
 class XtreamConfig:
-  """Upstream Xtream Codes IPTV account & catalog cache settings."""
+  """Upstream Xtream Codes IPTV host and catalog cache settings."""
 
   server_url: str = ""
-  username: str = ""
-  password: str = ""
   stream_format: str = "ts"
   request_timeout_sec: float = 90.0
   cache_dir: Path = Path("cache")
@@ -108,28 +111,22 @@ class EpgConfig:
 
 @dataclass(slots=True)
 class OutputConfig:
-  """Phase (5) M3U8 and Phase (6) Xtream export output settings."""
+  """Phase (5) diagnostics report and Xtream JSON bundle export settings."""
 
-  m3u8_enabled: bool = True
-  playlist_path: Path = Path("output/bellhop.m3u8")
   report_path: Path = Path("output/lineup_report.json")
-  xtream_enabled: bool = True
   xtream_dir: Path = Path("output/xtream")
   include_unmatched_comment: bool = False
 
 
 @dataclass(slots=True)
 class ServeWebConfig:
-  """Tier-1 Web TV Guide server, cookie session, and reverse-proxy settings."""
+  """Web TV Guide server, cookie session, and reverse-proxy settings."""
 
   enabled: bool = True
   host: str | None = None
   port: int | None = None
   settle_ms: int = 180
-  username: str = ""
-  password: str = ""
   session_ttl_hours: float = 168.0
-  session_secret: str = ""
   trust_proxy_headers: bool = False
   trusted_proxy_ips: list[str] = field(
     default_factory=lambda: list(DEFAULT_TRUSTED_PROXY_IPS)
@@ -143,8 +140,6 @@ class ServeXtreamConfig:
   enabled: bool = True
   host: str | None = None
   port: int | None = None
-  username: str = ""
-  password: str = ""
   public_host: str | None = None
   public_port: int | None = None
   server_protocol: str = "http"
@@ -180,14 +175,6 @@ class ServeConfig:
     return self.web.settle_ms
 
   @property
-  def username(self) -> str:
-    return self.xtream.username
-
-  @property
-  def password(self) -> str:
-    return self.xtream.password
-
-  @property
   def public_host(self) -> str | None:
     return self.xtream.public_host
 
@@ -216,6 +203,7 @@ class AppConfig:
   config_file: Path | None = None
   credentials_file: Path = Path("credentials.yaml")
   cache_dir: Path = Path("cache")
+  accounts: tuple[UserAccount, ...] = ()
   xtream: XtreamConfig = field(default_factory=XtreamConfig)
   validation: ValidationConfig = field(default_factory=ValidationConfig)
   lineup: LineupConfig = field(default_factory=LineupConfig)
@@ -231,6 +219,27 @@ class AppConfig:
       self.cache_dir = self.xtream.cache_dir
     else:
       self.xtream.cache_dir = self.cache_dir
+    if self.accounts:
+      self.accounts = validate_accounts_collection(self.accounts)
+
+  @property
+  def pipeline_accounts(self) -> tuple[UserAccount, ...]:
+    """Return accounts marked `pipeline: true` (defaulting to the first)."""
+    return select_pipeline_accounts(self.accounts)
+
+  @property
+  def pipeline_account(self) -> UserAccount | None:
+    """Return the primary account used for `bellhop run` catalog/validation."""
+    selected = self.pipeline_accounts
+    return selected[0] if selected else None
+
+  def account_by_id(self, account_id: str) -> UserAccount | None:
+    """Look up an account by `account_id`."""
+    cleaned = account_id.strip()
+    for acct in self.accounts:
+      if acct.account_id == cleaned:
+        return acct
+    return None
 
   def resolve_path(self, path: Path | str) -> Path:
     """Resolve `path` relative to `project_root` when not already absolute."""
@@ -241,10 +250,21 @@ class AppConfig:
     """Serialize full config for diagnostics, redacting secrets by default."""
     return {
       "credentials_file": str(self.credentials_file),
+      "accounts": {
+        acct.account_id: {
+          "email": acct.email,
+          "pipeline": acct.pipeline,
+          "lineup_id": acct.lineup_id,
+          "web_password_hash": _mask(acct.web_password_hash, redact_secrets),
+          "xtream_username": acct.xtream_username,
+          "xtream_password": _mask(acct.xtream_password, redact_secrets),
+          "upstream_username": acct.upstream_username,
+          "upstream_password": _mask(acct.upstream_password, redact_secrets),
+        }
+        for acct in self.accounts
+      },
       "xtream": {
         "server_url": self.xtream.server_url,
-        "username": self.xtream.username,
-        "password": _mask(self.xtream.password, redact_secrets),
         "stream_format": self.xtream.stream_format,
         "request_timeout_sec": self.xtream.request_timeout_sec,
         "refresh_hours": self.xtream.cache_ttl_hours,
@@ -302,10 +322,7 @@ class AppConfig:
         "xmltv_file": str(self.epg.xmltv_file) if self.epg.xmltv_file else None,
       },
       "output": {
-        "m3u8_enabled": self.output.m3u8_enabled,
-        "playlist_path": str(self.output.playlist_path),
         "report_path": str(self.output.report_path),
-        "xtream_enabled": self.output.xtream_enabled,
         "xtream_dir": str(self.output.xtream_dir),
         "include_unmatched_comment": self.output.include_unmatched_comment,
       },
@@ -317,12 +334,7 @@ class AppConfig:
           "host": self.serve.web.host,
           "port": self.serve.web.port,
           "settle_ms": self.serve.web.settle_ms,
-          "username": self.serve.web.username,
-          "password": _mask(self.serve.web.password, redact_secrets),
           "session_ttl_hours": self.serve.web.session_ttl_hours,
-          "session_secret": _mask(
-            self.serve.web.session_secret, redact_secrets
-          ),
           "trust_proxy_headers": self.serve.web.trust_proxy_headers,
           "trusted_proxy_ips": list(self.serve.web.trusted_proxy_ips),
         },
@@ -330,8 +342,6 @@ class AppConfig:
           "enabled": self.serve.xtream.enabled,
           "host": self.serve.xtream.host,
           "port": self.serve.xtream.port,
-          "username": self.serve.xtream.username,
-          "password": _mask(self.serve.xtream.password, redact_secrets),
           "public_host": self.serve.xtream.public_host,
           "public_port": self.serve.xtream.public_port,
           "server_protocol": self.serve.xtream.server_protocol,

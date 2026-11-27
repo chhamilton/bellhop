@@ -494,6 +494,9 @@ def reconcile_rough_mapping(
     )
   }
 
+  pipe_acct = config.pipeline_account
+  pipe_secret = pipe_acct.upstream_password if pipe_acct is not None else ""
+
   for ch in lineup.channels:
     pinned_id = effective_pins.get(ch.chno)
     if pinned_id is None and ch.sd_chno is not None:
@@ -508,16 +511,16 @@ def reconcile_rough_mapping(
       val_status, prev_probe = prior_validation.get(
         mc.stream.stream_id, ("unvalidated", None)
       )
-      resolved_url = _resolve_stream_url(mc.stream, config)
+      resolved_url = (
+        mc.stream.direct_source
+        if config.xtream.server_url
+        else _resolve_stream_url(mc.stream, config, account=pipe_acct)
+      )
       slot_probe: ProbeResult | None = None
       if prev_probe is not None:
         clean_url = (
-          prev_probe.url.replace("***", config.xtream.password)
-          if (
-            prev_probe.url
-            and "***" in prev_probe.url
-            and config.xtream.password
-          )
+          prev_probe.url.replace("***", pipe_secret)
+          if (prev_probe.url and "***" in prev_probe.url and pipe_secret)
           else prev_probe.url
         )
         slot_probe = replace(

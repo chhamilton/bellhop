@@ -1,5 +1,5 @@
 /**
- * Pure, DOM-free channel filtering, EPG progress, URL state, and config helpers.
+ * Pure, DOM-free channel filtering, EPG progress, URL state, and polling helpers.
  *
  * Imported directly by both the browser UI (`app.ts`, `render.ts`, `settings.ts`)
  * and Node unit tests (`tests/frontend/guide.test.mjs`).
@@ -281,43 +281,6 @@ export const buildUrlQueryString = (opts) => {
         params.set("ch", String(opts.activeChno));
     }
     return params.toString();
-};
-export const parsePinnedStreamsText = (rawPins) => {
-    const trimmed = rawPins.trim();
-    const pinnedStreams = {};
-    if (!trimmed)
-        return pinnedStreams;
-    if (trimmed.startsWith("{")) {
-        const parsed = JSON.parse(trimmed);
-        for (const [k, v] of Object.entries(parsed)) {
-            pinnedStreams[String(k).trim()] = Number(v);
-        }
-        return pinnedStreams;
-    }
-    for (const line of trimmed.split(/\r?\n/)) {
-        const clean = line.trim();
-        if (!clean || clean.startsWith("#"))
-            continue;
-        const sep = clean.includes("=") ? "=" : ":";
-        const parts = clean.split(sep);
-        const left = parts[0];
-        const right = parts[1];
-        if (parts.length !== 2 || left === undefined || right === undefined) {
-            throw new Error(`Invalid pinned stream entry: "${clean}" (use chno=stream_id)`);
-        }
-        pinnedStreams[left.trim()] = Number(right.trim());
-    }
-    return pinnedStreams;
-};
-export const parseExcludedChannelsText = (rawExcl) => {
-    const trimmed = rawExcl.trim();
-    if (!trimmed)
-        return [];
-    return trimmed
-        .split(/[,\s]+/)
-        .map((t) => t.trim())
-        .filter(Boolean)
-        .map((t) => Number(t));
 };
 export const hasLineupUpdated = (knownUpdatedAt, nextUpdatedAt) => {
     if (knownUpdatedAt === null)

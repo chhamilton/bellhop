@@ -17,12 +17,13 @@ from bellhop.pipeline.runner import (
   parse_refresh_targets,
   resolve_active_phases,
 )
+from tests.conftest import TEST_PASSWORD_HASH
 
 
 def test_phase_and_refresh_parsing() -> None:
-  assert parse_phase_tokens(["export"]) == ["m3u8", "xtream"]
-  assert parse_phase_tokens(["epg"]) == ["xtream"]
-  assert parse_phase_tokens(["3,1", "6"]) == ["lineup", "match", "xtream"]
+  assert parse_phase_tokens(["export"]) == ["export"]
+  assert parse_phase_tokens(["epg"]) == ["export"]
+  assert parse_phase_tokens(["3,1", "5"]) == ["lineup", "match", "export"]
   assert parse_refresh_targets([]) == {"lineup", "catalog", "epg"}
   assert parse_refresh_targets(["lineup,epg"]) == {"lineup", "epg"}
 
@@ -70,8 +71,22 @@ channels:
     encoding="utf-8",
   )
 
+  creds_path = tmp_path / "credentials.yaml"
+  creds_path.write_text(
+    f"""\
+accounts:
+  alice:
+    email: "alice@example.com"
+    web_password_hash: "{TEST_PASSWORD_HASH}"
+    xtream_username: "alicex01"
+    xtream_password: "alicep01"
+    upstream_username: "alice"
+    upstream_password: "secret_password"
+""",
+    encoding="utf-8",
+  )
+
   state_dir = tmp_path / "state"
-  out_m3u8 = tmp_path / "output" / "lineup.m3u8"
   out_report = tmp_path / "output" / "report.json"
   out_xtream = tmp_path / "output" / "xtream"
 
@@ -79,19 +94,16 @@ channels:
   cfg_path = tmp_path / "config.yaml"
   cfg_path.write_text(
     f"""\
-credentials_file: "{tmp_path / "none.yaml"}"
+credentials_file: "{creds_path}"
 paths:
   cache_dir: "{cache_dir}"
   state_dir: "{state_dir}"
   lineup_file: "{mini_lineup}"
   seed_json: "{seed_catalog}"
-  m3u8_playlist_path: "{out_m3u8}"
-  m3u8_report_path: "{out_report}"
+  report_path: "{out_report}"
   xtream_output_dir: "{out_xtream}"
 upstream_xtream:
   server_url: "http://panel.example"
-  username: "alice"
-  password: "secret_password"
 pipeline:
   lineup:
     lineup_id: "CAN-BELLFIBE-MTL-X"
@@ -101,18 +113,16 @@ pipeline:
     only_changed: true
   epg:
     verify: false
-  output:
-    m3u8_enabled: true
-    xtream_enabled: true
 """,
     encoding="utf-8",
   )
 
   cfg = load_config(cfg_path)
   redacted = cfg.to_dict(redact_secrets=True)
-  assert redacted["xtream"]["password"] == "***"
+  assert redacted["accounts"]["alice"]["upstream_password"] == "***"
+  assert redacted["accounts"]["alice"]["xtream_password"] == "***"
   active, skipped = resolve_active_phases(cfg, skip_phases=["validate"])
-  assert active == ["lineup", "catalog", "match", "m3u8", "xtream"]
+  assert active == ["lineup", "catalog", "match", "export"]
   assert skipped == ["validate"]
 
   # 1. Dry-run computes match & validation queue without creating state/ or
@@ -124,7 +134,7 @@ pipeline:
   assert dry_res.validation_would_probe_slots == 1
   assert dry_res.validation_probed_streams == 0
   assert not (state_dir / "channel_mapping.json").exists()
-  assert not out_m3u8.exists()
+  assert not out_report.exists()
   assert not (out_xtream / "get_live_streams.json").exists()
 
   # 2. CLI `--phase lineup,catalog,match` persists mapping state only (no
@@ -134,14 +144,12 @@ pipeline:
   )
   assert rc1 == 0
   assert (state_dir / "channel_mapping.json").is_file()
-  assert not out_m3u8.exists()
+  assert not out_report.exists()
   assert not (out_xtream / "get_live_streams.json").exists()
 
-  # 3. CLI `--phase export` hydrates existing state and emits both M3U8 and
-  #    Xtream JSON
+  # 3. CLI `--phase export` hydrates state and emits report + Xtream JSON.
   rc2 = cli_main(["run", "-c", str(cfg_path), "--phase", "export", "--quiet"])
   assert rc2 == 0
-  assert out_m3u8.is_file()
   assert out_report.is_file()
   assert (out_xtream / "get_live_streams.json").is_file()
 
@@ -248,23 +256,35 @@ channels:
 """,
       encoding="utf-8",
     )
+    creds_path = tmp_path / "credentials.yaml"
+    creds_path.write_text(
+      f"""\
+accounts:
+  alice:
+    email: "alice@example.com"
+    web_password_hash: "{TEST_PASSWORD_HASH}"
+    xtream_username: "alicex01"
+    xtream_password: "alicep01"
+    upstream_username: "alice"
+    upstream_password: "secret"
+""",
+      encoding="utf-8",
+    )
     state_dir = tmp_path / "state"
-    out_m3u8 = tmp_path / "output" / "bellhop.m3u8"
+    out_report = tmp_path / "output" / "report.json"
     out_xtream = tmp_path / "output" / "xtream" / "get_live_streams.json"
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
       f"""\
+credentials_file: "{creds_path}"
 paths:
   state_dir: "{state_dir}"
   cache_dir: "{tmp_path / "cache"}"
   lineup_file: "{mini_lineup}"
-  m3u8_playlist_path: "{out_m3u8}"
-  m3u8_report_path: "{tmp_path / "output" / "report.json"}"
+  report_path: "{out_report}"
   xtream_output_dir: "{tmp_path / "output" / "xtream"}"
 upstream_xtream:
   server_url: "http://127.0.0.1:{port}"
-  username: "alice"
-  password: "secret"
 pipeline:
   lineup:
     lineup_id: "CAN-BELLFIBE-MTL-X"
@@ -272,9 +292,6 @@ pipeline:
     enabled: true
   epg:
     verify: false
-  output:
-    m3u8_enabled: true
-    xtream_enabled: true
 """,
       encoding="utf-8",
     )
@@ -290,10 +307,11 @@ pipeline:
     )
     assert "validate" in res_cached.skipped_phases
     assert "validate" not in res_cached.executed_phases
-    assert "m3u8" in res_cached.executed_phases
-    assert "xtream" in res_cached.executed_phases
-    assert out_m3u8.is_file() and "YTV" in out_m3u8.read_text(encoding="utf-8")
-    assert out_xtream.is_file()
+    assert "export" in res_cached.executed_phases
+    assert out_report.is_file()
+    assert out_xtream.is_file() and "YTV" in out_xtream.read_text(
+      encoding="utf-8"
+    )
 
     # Even with `--force-refresh catalog` while Expired, matching + exports
     # succeed
@@ -378,23 +396,34 @@ channels:
     "</tv>\n",
     encoding="utf-8",
   )
+  creds_path = tmp_path / "credentials.yaml"
+  creds_path.write_text(
+    f"""\
+accounts:
+  alice:
+    email: "alice@example.com"
+    web_password_hash: "{TEST_PASSWORD_HASH}"
+    xtream_username: "alicex01"
+    xtream_password: "alicep01"
+    upstream_username: "alice"
+    upstream_password: "secret_password"
+""",
+    encoding="utf-8",
+  )
   cfg_path = tmp_path / "config.yaml"
   cfg_path.write_text(
     f"""\
-credentials_file: "{tmp_path / "none.yaml"}"
+credentials_file: "{creds_path}"
 paths:
   cache_dir: "{tmp_path / "cache"}"
   state_dir: "{tmp_path / "state"}"
   lineup_file: "{mini_lineup}"
   seed_json: "{seed_catalog}"
-  m3u8_playlist_path: "{tmp_path / "output" / "bellhop.m3u8"}"
-  m3u8_report_path: "{tmp_path / "output" / "report.json"}"
+  report_path: "{tmp_path / "output" / "report.json"}"
   xtream_output_dir: "{tmp_path / "output" / "xtream"}"
   xmltv_file: "{xml_local}"
 upstream_xtream:
   server_url: "http://panel.example"
-  username: "alice"
-  password: "secret_password"
 pipeline:
   lineup:
     lineup_id: "CAN-BELLFIBE-MTL-X"
@@ -404,9 +433,6 @@ pipeline:
     enabled: true
   epg:
     verify: false
-  output:
-    m3u8_enabled: true
-    xtream_enabled: true
 """,
     encoding="utf-8",
   )
@@ -420,8 +446,8 @@ pipeline:
   assert "Dry-Run Mode" in dry_out
   assert "Bell Fibe TV (Montréal, QC)" in dry_out
 
-  # 2. Non-quiet `--skip validate --force-refresh epg` emits full SD+HD M3U8 +
-  #    Xtream + EPG sync panels
+  # 2. Non-quiet `--skip validate --force-refresh epg` emits full SD+HD
+  #    coverage, report, Xtream bundle & EPG sync panels
   buf.truncate(0)
   buf.seek(0)
   assert (
@@ -439,9 +465,9 @@ pipeline:
     == 0
   )
   export_out = buf.getvalue()
-  assert "Phase (5) — M3U8 & Diagnostics Generation" in export_out
+  assert "Phase (5) — Lineup Coverage & Diagnostics" in export_out
   assert "full SD + HD dial" in export_out
-  assert "Phase (6) — Official Xtream JSON & EPG Export" in export_out
+  assert "Phase (5) — Official Xtream JSON & EPG Export" in export_out
   assert "EPG Cache Sync:" in export_out
   assert "OK" in export_out
 
@@ -479,10 +505,26 @@ async def test_cli_serve_shared_and_split_banners_and_clean_cancellation(
 
   xt_dir = write_minimal_xtream_export(tmp_path / "output" / "xtream")
 
+  creds_serve = tmp_path / "credentials_serve.yaml"
+  creds_serve.write_text(
+    f"""\
+accounts:
+  web_admin:
+    email: "web_admin@example.com"
+    web_password_hash: "{TEST_PASSWORD_HASH}"
+    xtream_username: "xtuser01"
+    xtream_password: "xtpass01"
+    upstream_username: "up_user"
+    upstream_password: "up_pass"
+""",
+    encoding="utf-8",
+  )
+
   # Case A: Shared Web Guide + Xtream listener on ephemeral port 0
   cfg_shared = tmp_path / "config_shared.yaml"
   cfg_shared.write_text(
     f"""\
+credentials_file: "{creds_serve}"
 paths:
   cache_dir: "{tmp_path / "cache"}"
   state_dir: "{tmp_path / "state"}"
@@ -491,12 +533,8 @@ web_server:
   enabled: true
   host: "127.0.0.1"
   port: 0
-  username: "web_admin"
-  password: "web_secret"
 xtream_server:
   enabled: true
-  username: "xt_user"
-  password: "xt_secret"
 pipeline:
   epg:
     verify: false
@@ -517,8 +555,8 @@ pipeline:
   assert await serve_task == 0
   shared_banner = buf.getvalue()
   assert "shared Web Guide + Xtream API" in shared_banner
-  assert "web_admin" in shared_banner
-  assert "xt_user" in shared_banner
+  assert "web_admin@example.com" in shared_banner
+  assert "1 account(s)" in shared_banner
 
   # Case B: Split / Web-disabled Xtream-only listener (`web_server.enabled:
   # false`)
@@ -527,6 +565,7 @@ pipeline:
   cfg_split = tmp_path / "config_split.yaml"
   cfg_split.write_text(
     f"""\
+credentials_file: "{creds_serve}"
 paths:
   cache_dir: "{tmp_path / "cache"}"
   state_dir: "{tmp_path / "state"}"
@@ -555,4 +594,4 @@ pipeline:
   assert await split_task == 0
   split_banner = buf.getvalue()
   assert "Disabled (`web_server.enabled: false`)" in split_banner
-  assert "Auth Disabled" in split_banner
+  assert "1 account(s)" in split_banner

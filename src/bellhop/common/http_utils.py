@@ -56,12 +56,15 @@ __all__ = [
   "default_session_factory",
   "detect_device_ip",
   "extract_explicit_private_origins",
+  "format_advertised_base_url",
   "is_trusted_proxy_peer",
   "json_response",
   "open_upstream_url",
   "parse_trusted_proxy_networks",
+  "parse_validated_host_header",
   "redact_url_secrets",
   "redirect_response",
+  "resolve_advertised_host_port",
   "resolve_bind_host",
   "resolve_client_ip",
   "resolve_request_client_ip",
@@ -429,6 +432,104 @@ def build_access_urls(
     else bind_host
   )
   return [f"{protocol}://{formatted}:{port}"]
+
+
+_IPV6_HOST_HDR_RE = re.compile(r"^\[([^\]]+)\](?::(\d+))?$")
+_REGNAME_HOST_HDR_RE = re.compile(
+  r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?"
+)
+
+
+def parse_validated_host_header(raw_host: str) -> tuple[str, int | None] | None:
+  """Parse and validate an incoming HTTP `Host` header into `(host, port)`.
+
+  Rejects control chars, userinfo `@`, path separators, wildcards, and invalid
+  IPv6/port values so incoming `Host` headers cannot inject characters into
+  generated player or playlist URLs.
+  """
+  host_hdr = raw_host.strip()
+  if not host_hdr or any(ord(c) <= 0x20 or c in "/\\@?#*" for c in host_hdr):
+    return None
+  if host_hdr.startswith("["):
+    m_v6 = _IPV6_HOST_HDR_RE.match(host_hdr)
+    if not m_v6 or "%" in m_v6.group(1):
+      return None
+    try:
+      ipaddress.IPv6Address(m_v6.group(1))
+    except ipaddress.AddressValueError:
+      return None
+    if m_v6.group(2) is None:
+      return m_v6.group(1), None
+    v6_port = int(m_v6.group(2))
+    return (m_v6.group(1), v6_port) if 1 <= v6_port <= 65535 else None
+
+  host_part = host_hdr
+  port_num: int | None = None
+  if ":" in host_hdr:
+    h, p_str = host_hdr.rsplit(":", 1)
+    if not p_str.isdigit():
+      return None
+    port_num = int(p_str)
+    if not (1 <= port_num <= 65535):
+      return None
+    host_part = h
+  if (
+    not host_part
+    or ".." in host_part
+    or not _REGNAME_HOST_HDR_RE.fullmatch(host_part)
+  ):
+    return None
+  return host_part, port_num
+
+
+def resolve_advertised_host_port(
+  headers: Mapping[str, str],
+  *,
+  bind_host: str,
+  bound_port: int,
+  public_host: str | None = None,
+  public_port: int | None = None,
+  server_protocol: str = "http",
+) -> tuple[str, int]:
+  """Resolve `(host, port)` to advertise in client-facing player URLs."""
+  if public_host:
+    return public_host, (public_port or bound_port)
+
+  parsed_host = parse_validated_host_header(headers.get("host") or "")
+  if parsed_host is not None:
+    h, p = parsed_host
+    default_port = 443 if server_protocol == "https" else 80
+    return h, (public_port or p or default_port)
+
+  fallback_host = (
+    detect_device_ip() or "127.0.0.1"
+    if bind_host in ("0.0.0.0", "::", "")
+    else bind_host
+  )
+  return fallback_host, (public_port or bound_port)
+
+
+def format_advertised_base_url(
+  headers: Mapping[str, str],
+  *,
+  bind_host: str,
+  bound_port: int,
+  public_host: str | None = None,
+  public_port: int | None = None,
+  server_protocol: str = "http",
+) -> str:
+  """Format the scheme/host/port base URL for external IPTV players."""
+  adv_host, adv_port = resolve_advertised_host_port(
+    headers,
+    bind_host=bind_host,
+    bound_port=bound_port,
+    public_host=public_host,
+    public_port=public_port,
+    server_protocol=server_protocol,
+  )
+  host_clean = adv_host.strip("[]")
+  host_fmt = f"[{host_clean}]" if ":" in host_clean else host_clean
+  return f"{server_protocol}://{host_fmt}:{adv_port}"
 
 
 # -----------------------------------------------------------------------------

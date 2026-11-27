@@ -1,22 +1,19 @@
-"""Typed reader and hot-reload cache for Phase (6) `output/xtream/` bundles.
+"""Typed reader and hot-reload cache for Phase (5) `output/xtream/` bundles.
 
 Consumed by `bellhop.web.store.LineupGuideStore` (Web TV Guide UI),
 `bellhop.xtream.server.XtreamExportStore` (Passthrough Xtream Codes API server),
-and `bellhop.epg.sync` so bundle discovery, split-JSON/M3U8 fallbacks,
+and `bellhop.epg.sync` so bundle discovery, split-JSON fallbacks,
 category synthesis, and mtime caching live in one place.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
-M3U_ATTR_RE = re.compile(r'([a-zA-Z0-9_-]+)="([^"]*)"')
 
 BUNDLE_FILENAMES: tuple[str, str] = (
   "bellhop_xtream_playlist.json",
@@ -126,7 +123,7 @@ def build_epg_chains_from_pairs(
 
 @dataclass(slots=True)
 class ExportCategoryRecord:
-  """Normalized category parsed from an Xtream bundle or M3U8 fallback."""
+  """Normalized category parsed from an Xtream bundle."""
 
   category_id: str
   category_name: str
@@ -136,7 +133,7 @@ class ExportCategoryRecord:
 
 @dataclass(slots=True)
 class ExportStreamRecord:
-  """Normalized mapped channel record parsed from Phase (6) export artifacts."""
+  """Normalized mapped channel record parsed from Phase (5) export artifacts."""
 
   num: int
   sd_chno: int | None
@@ -161,6 +158,7 @@ class ExportStreamRecord:
   gracenote_station_id: str
   direct_source: str
   fallback_sources: tuple[str, ...] = ()
+  fallback_stream_ids: tuple[int, ...] = ()
 
 
 @dataclass(slots=True)
@@ -183,90 +181,32 @@ class ExportBundleData:
   loaded_at: float = 0.0
 
 
-def parse_m3u8_fallback(
-  m3u_path: Path,
-) -> tuple[list[dict[str, str]], list[dict[str, Any]], str]:
-  """Parse an Extended M3U8 playlist into raw category/stream dicts + XMLTV URL.
-
-  Args:
-    m3u_path: Path to an `.m3u` or `.m3u8` playlist file.
-
-  Returns:
-    Tuple of `(categories, streams, xmltv_url)`.
-  """
-  cats_by_name: dict[str, str] = {}
-  cats: list[dict[str, str]] = []
-  streams: list[dict[str, Any]] = []
-  xmltv_url = ""
-  pending_attrs: dict[str, str] | None = None
-  pending_name = ""
-
-  for raw_line in m3u_path.read_text(
-    encoding="utf-8", errors="replace"
-  ).splitlines():
-    line = raw_line.strip()
-    if not line:
-      continue
-    if line.startswith("#EXTM3U"):
-      hdr_attrs = dict(M3U_ATTR_RE.findall(line))
-      xmltv_url = (
-        hdr_attrs.get("url-tvg") or hdr_attrs.get("x-tvg-url") or ""
-      ).strip()
-      continue
-    if line.startswith("#EXTINF:"):
-      attrs = dict(M3U_ATTR_RE.findall(line))
-      comma_idx = line.rfind(",")
-      pending_name = (
-        line[comma_idx + 1 :].strip() if comma_idx >= 0 else "Channel"
-      )
-      pending_attrs = attrs
-    elif not line.startswith("#") and pending_attrs is not None:
-      grp = pending_attrs.get("group-title", "General")
-      if grp not in cats_by_name:
-        cid = str(len(cats) + 1)
-        cats_by_name[grp] = cid
-        cats.append({"category_id": cid, "category_name": grp})
-      chno_str = pending_attrs.get("tvg-chno") or str(len(streams) + 1)
-      try:
-        chno = int(chno_str)
-      except ValueError:
-        chno = len(streams) + 1
-      streams.append(
-        {
-          "num": chno,
-          "name": pending_name,
-          "stream_icon": pending_attrs.get("tvg-logo", ""),
-          "epg_channel_id": pending_attrs.get("tvg-id", ""),
-          "gracenote_station_id": pending_attrs.get("tvc-guide-stationid", ""),
-          "category_id": cats_by_name[grp],
-          "category_name": grp,
-          "direct_source": line,
-        }
-      )
-      pending_attrs = None
-  return cats, streams, xmltv_url
-
-
 class ExportBundleReader:
-  """Mtime-aware shared cache for `output/xtream/` export bundles.
-
-  Falls back to parsing M3U8 playlists when JSON exports are absent.
-  """
+  """Mtime-aware shared cache for `output/xtream/` export bundles."""
 
   def __init__(
     self,
     xtream_dir: Path,
     *,
-    m3u8_path: Path | None = None,
     fallback_xmltv_url: str = "",
+    fallback_xmltv_url_provider: Callable[[], str] | None = None,
     extra_watched_files: Sequence[Path] = (),
   ) -> None:
     self.xtream_dir = xtream_dir.resolve()
-    self.m3u8_path = m3u8_path.resolve() if m3u8_path is not None else None
     self.fallback_xmltv_url = fallback_xmltv_url.strip()
+    self._fallback_xmltv_url_provider = fallback_xmltv_url_provider
     self._extra_watched_files = tuple(p.resolve() for p in extra_watched_files)
     self._cached_sig: tuple[float, ...] = ()
     self._cached_bundle: ExportBundleData | None = None
+    self._cached_fallback: str = ""
+
+  def _resolve_fallback_xmltv_url(self, explicit: str = "") -> str:
+    direct = explicit.strip()
+    if direct:
+      return direct
+    if self._fallback_xmltv_url_provider is not None:
+      return self._fallback_xmltv_url_provider().strip()
+    return self.fallback_xmltv_url
 
   def read_cached(
     self,
@@ -276,17 +216,19 @@ class ExportBundleReader:
   ) -> tuple[tuple[float, ...], ExportBundleData]:
     """Return `(signature, bundle_data)`, reloading on mtime changes."""
     sig = self.compute_signature()
-    eff_fallback = fallback_xmltv_url.strip() or self.fallback_xmltv_url
+    eff_fallback = self._resolve_fallback_xmltv_url(fallback_xmltv_url)
     if (
       not force_reload
       and self._cached_bundle is not None
       and sig == self._cached_sig
+      and self._cached_fallback == eff_fallback
       and (not eff_fallback or bool(self._cached_bundle.xmltv_url))
     ):
       return sig, self._cached_bundle
     bundle = self.read(fallback_xmltv_url=eff_fallback)
     self._cached_sig = sig
     self._cached_bundle = bundle
+    self._cached_fallback = eff_fallback
     return sig, bundle
 
   def watched_files(self) -> list[Path]:
@@ -297,8 +239,6 @@ class ExportBundleReader:
       self.xtream_dir / "get_live_streams.json",
       self.xtream_dir / "get_live_categories.json",
     ]
-    if self.m3u8_path is not None:
-      files.append(self.m3u8_path)
     files.extend(self._extra_watched_files)
     return files
 
@@ -317,7 +257,7 @@ class ExportBundleReader:
     return tuple(sig)
 
   def read(self, *, fallback_xmltv_url: str = "") -> ExportBundleData:
-    """Load and normalize the Phase (6) export bundle from disk.
+    """Load and normalize the Phase (5) export bundle from disk.
 
     Args:
       fallback_xmltv_url: Default XMLTV URL used when the bundle omits one.
@@ -361,21 +301,8 @@ class ExportBundleReader:
         if isinstance(loaded_streams, list):
           raw_streams = loaded_streams
 
-    m3u_xmltv_url = ""
-    if (
-      not raw_streams
-      and self.m3u8_path is not None
-      and self.m3u8_path.is_file()
-    ):
-      raw_categories, raw_streams, m3u_xmltv_url = parse_m3u8_fallback(
-        self.m3u8_path
-      )
-
-    resolved_xmltv_url = (
-      bundle_xmltv_url
-      or fallback_xmltv_url.strip()
-      or self.fallback_xmltv_url
-      or m3u_xmltv_url
+    resolved_xmltv_url = bundle_xmltv_url or self._resolve_fallback_xmltv_url(
+      fallback_xmltv_url
     )
 
     if not raw_streams:
@@ -494,6 +421,20 @@ class ExportBundleReader:
       raw_stream_id = entry.get("stream_id")
       stream_id = int(raw_stream_id) if raw_stream_id is not None else 0
 
+      raw_fallback_ids = guide.get("fallback_stream_ids")
+      parsed_fallback_ids: list[int] = []
+      if isinstance(raw_fallback_ids, list):
+        for raw_fid in raw_fallback_ids:
+          if isinstance(raw_fid, bool):
+            continue
+          try:
+            fid = int(raw_fid)
+          except (TypeError, ValueError):
+            continue
+          if fid > 0 and fid not in parsed_fallback_ids:
+            parsed_fallback_ids.append(fid)
+      fallback_ids = tuple(parsed_fallback_ids)
+
       raw_cat_ids = entry.get("category_ids")
       if isinstance(raw_cat_ids, list) and raw_cat_ids:
         category_ids = tuple(int(x) for x in raw_cat_ids)
@@ -531,6 +472,7 @@ class ExportBundleReader:
           gracenote_station_id=gn_sid,
           direct_source=str(entry.get("direct_source") or "").strip(),
           fallback_sources=fallbacks,
+          fallback_stream_ids=fallback_ids,
         )
       )
 

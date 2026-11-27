@@ -15,9 +15,9 @@
     const form = document.getElementById("login-form");
     const errEl = document.getElementById("login-error");
     const btn = document.getElementById("login-submit");
-    const userInput = document.getElementById("username");
+    const emailInput = document.getElementById("email");
     const passInput = document.getElementById("password");
-    if (!form || !errEl || !btn || !userInput || !passInput)
+    if (!form || !errEl || !btn || !emailInput || !passInput)
         return;
     const nextInput = form.querySelector('input[name="next"]');
     const nextUrl = nextInput?.value || "/";
@@ -31,7 +31,7 @@
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    username: userInput.value,
+                    email: emailInput.value,
                     password: passInput.value,
                 }),
             });
@@ -39,7 +39,7 @@
                 .json()
                 .catch(() => ({})));
             if (!resp.ok) {
-                errEl.textContent = data.error || "Invalid username or password.";
+                errEl.textContent = data.error || "Invalid email or password.";
                 errEl.hidden = false;
                 btn.disabled = false;
                 btn.textContent = "Sign In";

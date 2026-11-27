@@ -106,7 +106,8 @@ interface HealthApiResponse {
 interface AuthStatusResponse {
   auth_required: boolean;
   authenticated: boolean;
-  username: string | null;
+  account_id: string | null;
+  email: string | null;
   expires_at: number | null;
 }
 
@@ -117,90 +118,22 @@ interface ChannelEpgResponse {
   programs: ProgramItem[];
 }
 
-interface UpstreamXtreamPublicConfig {
-  server_url: string;
-  stream_format: string;
-  request_timeout_sec: number;
-  refresh_hours: number;
+interface PlayerUrls {
+  xtream_server_url: string;
+  m3u_url: string;
+  m3u_hls_url: string;
+  xmltv_url: string;
 }
 
-interface IptvOrgPublicConfig {
-  enabled: boolean;
-  recheck_hours: number;
+interface AccountInfoResponse {
+  account_id: string;
+  email: string;
+  xtream_username: string;
+  xtream_password: string;
+  player_urls: PlayerUrls;
 }
 
-interface SchedulesDirectPublicConfig {
-  auto_add_lineup: boolean;
-}
-
-interface LineupPublicConfig {
-  backend: string;
-  lineup_id: string;
-  postal_code: string;
-  refresh_days: number;
-  numbering_mode: string;
-  collapse_sd_dupes: boolean;
-  exclude_audio: boolean;
-  pinned_streams: Record<string, number>;
-  excluded_channels: number[];
-  schedules_direct: SchedulesDirectPublicConfig;
-  iptv_org: IptvOrgPublicConfig;
-}
-
-interface MatchingPublicConfig {
-  upgrade_hysteresis_score: number;
-}
-
-interface ValidationPublicConfig {
-  enabled: boolean;
-  only_changed: boolean;
-  concurrency: number;
-  ignore_account_limit: boolean;
-  inter_probe_delay_sec: number;
-  http_timeout_sec: number;
-  min_bytes_to_read: number;
-  use_ffprobe: boolean;
-  ffprobe_timeout_sec: number;
-  detect_black_screen: boolean;
-  black_sample_sec: number;
-  check_audio_language: boolean;
-  max_candidates_per_channel: number;
-}
-
-interface EpgPublicConfig {
-  verify: boolean;
-  refresh_hours: number;
-}
-
-interface OutputPublicConfig {
-  m3u8_enabled: boolean;
-  xtream_enabled: boolean;
-  include_unmatched_comment: boolean;
-}
-
-interface PipelinePublicConfig {
-  lineup: LineupPublicConfig;
-  matching: MatchingPublicConfig;
-  validation: ValidationPublicConfig;
-  epg: EpgPublicConfig;
-  output: OutputPublicConfig;
-}
-
-interface PublicConfig {
-  upstream_xtream: UpstreamXtreamPublicConfig;
-  pipeline: PipelinePublicConfig;
-}
-
-interface PublicConfigResponse {
-  available: boolean;
-  config: PublicConfig | null;
-  config_file: string | null;
-}
-
-interface ConfigSaveResponse {
-  saved?: boolean;
-  restart_required?: boolean;
-  config_file?: string;
-  config?: PublicConfig;
-  error?: string;
+interface PasswordChangeResponse {
+  ok: boolean;
+  email: string;
 }

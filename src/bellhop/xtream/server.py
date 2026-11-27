@@ -30,7 +30,6 @@ Xtream Codes HTTP Contract & Wire Layouts
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import logging
 import re
@@ -45,7 +44,12 @@ from urllib.parse import quote, urlparse
 
 from aiohttp import web
 
-from bellhop.common.export_bundle import ExportBundleReader, as_str_dict
+from bellhop.common.accounts import (
+  UserAccount,
+  build_upstream_stream_url,
+  build_upstream_xmltv_url,
+)
+from bellhop.common.export_bundle import ExportBundleReader
 from bellhop.common.http_utils import (
   DEFAULT_TRUSTED_PROXY_IPS,
   IpNetwork,
@@ -55,9 +59,11 @@ from bellhop.common.http_utils import (
   constant_time_credential_match,
   create_web_app,
   detect_device_ip,
+  format_advertised_base_url,
   json_response,
   parse_trusted_proxy_networks,
   redirect_response,
+  resolve_advertised_host_port,
   resolve_bind_host,
   resolve_request_client_ip,
   start_site,
@@ -108,10 +114,6 @@ class PlayerApiStreamDict(TypedDict):
   tv_archive: int
   direct_source: str
   tv_archive_duration: int
-
-
-def _as_dict(val: object) -> dict[str, Any]:
-  return as_str_dict(val)
 
 
 def _rewrite_stream_extension(upstream_url: str, requested_ext: str) -> str:
@@ -170,6 +172,7 @@ class PassthroughStream:
   tv_archive_duration: int = 0
   language: str = ""
   gracenote_station_id: str = ""
+  m3u_plus_extinf: str = ""
 
   def to_player_api_dict(self) -> PlayerApiStreamDict:
     """Serialize public `player_api.php` stream without `upstream_url`."""
@@ -234,13 +237,12 @@ class XtreamExportSnapshot:
 
 
 class XtreamExportStore:
-  """Reads Phase (6) `output/xtream/` outputs with mtime hot reload."""
+  """Reads Phase (5) `output/xtream/` outputs with mtime hot reload."""
 
   def __init__(
     self,
     xtream_dir: Path,
     *,
-    m3u8_path: Path | None = None,
     fallback_xmltv_url: str = "",
     bundle_reader: ExportBundleReader | None = None,
   ) -> None:
@@ -248,7 +250,6 @@ class XtreamExportStore:
     self.fallback_xmltv_url = fallback_xmltv_url
     self._bundle_reader = bundle_reader or ExportBundleReader(
       self.xtream_dir,
-      m3u8_path=m3u8_path,
       fallback_xmltv_url=fallback_xmltv_url,
     )
     self._last_sig: tuple[float, ...] = ()
@@ -323,6 +324,22 @@ class XtreamExportStore:
 
     for rec in bundle_data.streams:
       stream_id = rec.stream_id or rec.num
+      attrs = [
+        f'tvg-chno="{rec.num}"',
+        f'channel-id="{rec.num}"',
+        f'tvg-id="{_escape_m3u_attr(rec.epg_channel_id)}"',
+        f'tvg-name="{_escape_m3u_attr(rec.name)}"',
+      ]
+      if rec.gracenote_station_id:
+        attrs.append(
+          f'tvc-guide-stationid="{_escape_m3u_attr(rec.gracenote_station_id)}"'
+        )
+      if rec.stream_icon:
+        attrs.append(f'tvg-logo="{_escape_m3u_attr(rec.stream_icon)}"')
+      attrs.append(f'group-title="{_escape_m3u_attr(rec.category_name)}"')
+      if rec.language:
+        attrs.append(f'tvg-language="{_escape_m3u_attr(rec.language)}"')
+      safe_name = rec.name.replace("\n", " ").strip()
       normalized = PassthroughStream(
         num=rec.num,
         name=rec.name,
@@ -341,6 +358,7 @@ class XtreamExportStore:
         language=rec.language,
         gracenote_station_id=rec.gracenote_station_id,
         upstream_url=rec.direct_source,
+        m3u_plus_extinf=f"#EXTINF:-1 {' '.join(attrs)},{safe_name}",
       )
       streams.append(normalized)
       stream_by_id.setdefault(stream_id, normalized)
@@ -377,8 +395,11 @@ class XtreamPassthroughServer:
     self,
     store: XtreamExportStore,
     *,
-    username: str,
-    password: str,
+    accounts: Sequence[UserAccount] = (),
+    accounts_provider: Callable[[], Sequence[UserAccount]] | None = None,
+    upstream_server_url: str = "",
+    upstream_stream_format: str = "ts",
+    upstream_config_provider: Callable[[], tuple[str, str]] | None = None,
     host: str = "0.0.0.0",
     port: int = 8081,
     public_host: str | None = None,
@@ -395,8 +416,11 @@ class XtreamPassthroughServer:
     | None = None,
   ) -> None:
     self.store = store
-    self.username = username
-    self.password = password
+    self._accounts: tuple[UserAccount, ...] = tuple(accounts)
+    self._accounts_provider = accounts_provider
+    self._upstream_server_url = upstream_server_url
+    self._upstream_stream_format = upstream_stream_format or "ts"
+    self._upstream_config_provider = upstream_config_provider
     self.bind_host = resolve_bind_host(host)
     self.port = port
     self.public_host = public_host
@@ -419,8 +443,9 @@ class XtreamPassthroughServer:
     store = XtreamExportStore(xtream_dir, fallback_xmltv_url=fallback_xmltv)
     return cls(
       store,
-      username=config.serve.username,
-      password=config.serve.password,
+      accounts=config.accounts,
+      upstream_server_url=config.xtream.server_url,
+      upstream_stream_format=config.xtream.stream_format,
       host=config.serve.xtream_host,
       port=config.serve.xtream_port,
       public_host=config.serve.public_host,
@@ -428,6 +453,20 @@ class XtreamPassthroughServer:
       server_protocol=config.serve.server_protocol,
       trust_proxy_headers=config.serve.trust_proxy_headers,
       trusted_proxy_ips=config.serve.trusted_proxy_ips,
+    )
+
+  def current_accounts(self) -> tuple[UserAccount, ...]:
+    """Return active configured user accounts."""
+    if self._accounts_provider is not None:
+      return tuple(self._accounts_provider())
+    return self._accounts
+
+  @property
+  def auth_configured(self) -> bool:
+    """Return `True` when at least one Bellhop Xtream credential exists."""
+    return any(
+      bool(a.xtream_username and a.xtream_password)
+      for a in self.current_accounts()
     )
 
   # ---------------------------------------------------------------------------
@@ -512,10 +551,14 @@ class XtreamPassthroughServer:
       params[key] = val
     return params
 
-  def _is_authorized(self, user: str, passwd: str) -> bool:
-    return constant_time_credential_match(
-      user, passwd, self.username, self.password
-    )
+  def _authenticate_account(self, user: str, passwd: str) -> UserAccount | None:
+    matched: UserAccount | None = None
+    for acct in self.current_accounts():
+      if constant_time_credential_match(
+        user, passwd, acct.xtream_username, acct.xtream_password
+      ):
+        matched = acct
+    return matched
 
   def _verify_request_auth(
     self,
@@ -524,8 +567,8 @@ class XtreamPassthroughServer:
     passwd: str,
     *,
     json_fail: bool = False,
-  ) -> web.Response | None:
-    """Return `None` when authorized, or `401`/`200 auth:0`/`429`."""
+  ) -> tuple[UserAccount | None, web.Response | None]:
+    """Authorize caller, returning `(account, None)` or `(None, error_resp)`."""
     client_ip = resolve_request_client_ip(
       request,
       trust_proxy_headers=self.trust_proxy_headers,
@@ -535,104 +578,93 @@ class XtreamPassthroughServer:
     if retry_after > 0:
       hdrs = {"Retry-After": str(retry_after)}
       if json_fail:
-        return json_response(
+        return None, json_response(
           {"user_info": {"auth": 0}, "error": "Too many failed attempts"},
           status=HTTPStatus.TOO_MANY_REQUESTS,
           headers=hdrs,
         )
-      return bytes_response(
+      return None, bytes_response(
         b"Too Many Requests",
         "text/plain",
         status=HTTPStatus.TOO_MANY_REQUESTS,
         headers=hdrs,
       )
-    if not self._is_authorized(user, passwd):
-      if self.username and self.password:
+    acct = self._authenticate_account(user, passwd)
+    if acct is None:
+      if self.auth_configured:
         self.login_limiter.record_failure(client_ip)
       if json_fail:
-        return json_response({"user_info": {"auth": 0}})
-      return self._unauthorized()
-    return None
-
-  @staticmethod
-  def _parse_validated_host_header(
-    raw_host: str,
-  ) -> tuple[str, int | None] | None:
-    host_hdr = raw_host.strip()
-    if not host_hdr or any(ord(c) <= 0x20 or c in "/\\@?#*" for c in host_hdr):
-      return None
-    if host_hdr.startswith("["):
-      m_v6 = re.match(r"^\[([^\]]+)\](?::(\d+))?$", host_hdr)
-      if not m_v6 or "%" in m_v6.group(1):
-        return None
-      try:
-        ipaddress.IPv6Address(m_v6.group(1))
-      except ipaddress.AddressValueError:
-        return None
-      if m_v6.group(2) is None:
-        return m_v6.group(1), None
-      v6_port = int(m_v6.group(2))
-      return (m_v6.group(1), v6_port) if 1 <= v6_port <= 65535 else None
-
-    host_part = host_hdr
-    port_num: int | None = None
-    if ":" in host_hdr:
-      h, p_str = host_hdr.rsplit(":", 1)
-      if not p_str.isdigit():
-        return None
-      port_num = int(p_str)
-      if not (1 <= port_num <= 65535):
-        return None
-      host_part = h
-    if (
-      not host_part
-      or ".." in host_part
-      or not re.fullmatch(
-        r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host_part
-      )
-    ):
-      return None
-    return host_part, port_num
+        return None, json_response({"user_info": {"auth": 0}})
+      return None, self._unauthorized()
+    return acct, None
 
   def _resolve_advertised_host_port(
     self, headers: Mapping[str, str]
   ) -> tuple[str, int]:
-    if self.public_host:
-      return self.public_host, (self.public_port or self.bound_port)
-
-    parsed_host = self._parse_validated_host_header(headers.get("host") or "")
-    if parsed_host is not None:
-      h, p = parsed_host
-      default_port = 443 if self.server_protocol == "https" else 80
-      return h, (self.public_port or p or default_port)
-
-    fallback_host = (
-      detect_device_ip() or "127.0.0.1"
-      if self.bind_host in ("0.0.0.0", "::", "")
-      else self.bind_host
+    return resolve_advertised_host_port(
+      headers,
+      bind_host=self.bind_host,
+      bound_port=self.bound_port,
+      public_host=self.public_host,
+      public_port=self.public_port,
+      server_protocol=self.server_protocol,
     )
-    return fallback_host, (self.public_port or self.bound_port)
 
-  def _format_base_url(self, headers: Mapping[str, str]) -> str:
-    adv_host, adv_port = self._resolve_advertised_host_port(headers)
-    host_clean = adv_host.strip("[]")
-    host_fmt = f"[{host_clean}]" if ":" in host_clean else host_clean
-    return f"{self.server_protocol}://{host_fmt}:{adv_port}"
+  def format_public_base_url(self, headers: Mapping[str, str]) -> str:
+    """Return advertised scheme/host/port base URL for this Xtream server."""
+    return format_advertised_base_url(
+      headers,
+      bind_host=self.bind_host,
+      bound_port=self.bound_port,
+      public_host=self.public_host,
+      public_port=self.public_port,
+      server_protocol=self.server_protocol,
+    )
 
   def _build_self_xmltv_url(
     self,
     headers: Mapping[str, str],
     *,
-    username: str | None = None,
-    password: str | None = None,
+    account: UserAccount,
   ) -> str:
-    base = self._format_base_url(headers)
-    user_q = quote(self.username if username is None else username, safe="")
-    pw_q = quote(self.password if password is None else password, safe="")
+    base = self.format_public_base_url(headers)
+    user_q = quote(account.xtream_username, safe="")
+    pw_q = quote(account.xtream_password, safe="")
     return f"{base}/xmltv.php?username={user_q}&password={pw_q}"
 
+  def _upstream_settings(self) -> tuple[str, str]:
+    if self._upstream_config_provider is not None:
+      return self._upstream_config_provider()
+    return self._upstream_server_url, self._upstream_stream_format
+
+  def _resolve_upstream_stream_url(
+    self,
+    item: PassthroughStream,
+    account: UserAccount,
+    *,
+    requested_ext: str = "",
+  ) -> str:
+    server_url, default_fmt = self._upstream_settings()
+    ext = requested_ext.strip().lstrip(".").lower()
+    fmt = ext if ext in {"ts", "m3u8"} else default_fmt
+    if server_url and account.upstream_username and account.upstream_password:
+      return build_upstream_stream_url(
+        server_url,
+        account.upstream_username,
+        account.upstream_password,
+        item.stream_id,
+        ext=fmt,
+      )
+    if item.upstream_url:
+      return _rewrite_stream_extension(item.upstream_url, requested_ext)
+    return ""
+
   def _resolve_upstream_xmltv_fallback(
-    self, request: web.Request, snap: XtreamExportSnapshot
+    self,
+    request: web.Request,
+    snap: XtreamExportSnapshot,
+    *,
+    account: UserAccount | None = None,
   ) -> str:
     """Return upstream XMLTV fallback URL, blocking self-redirect loops."""
     adv_host, adv_port = self._resolve_advertised_host_port(request.headers)
@@ -666,7 +698,20 @@ class XtreamPassthroughServer:
     if self.public_port is not None:
       self_ports.add(self.public_port)
 
-    for cand in (snap.xmltv_url, self.store.fallback_xmltv_url):
+    server_url, _ = self._upstream_settings()
+    per_acct_xmltv = (
+      build_upstream_xmltv_url(
+        server_url, account.upstream_username, account.upstream_password
+      )
+      if (
+        server_url
+        and account is not None
+        and account.upstream_username
+        and account.upstream_password
+      )
+      else ""
+    )
+    for cand in (per_acct_xmltv, snap.xmltv_url, self.store.fallback_xmltv_url):
       cleaned = cand.strip()
       if not cleaned:
         continue
@@ -687,14 +732,16 @@ class XtreamPassthroughServer:
     self,
     snap: XtreamExportSnapshot,
     headers: Mapping[str, str],
+    *,
+    account: UserAccount,
   ) -> tuple[dict[str, Any], dict[str, Any]]:
     now_epoch = int(time.time())
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     adv_host, adv_port = self._resolve_advertised_host_port(headers)
 
     user_info: dict[str, Any] = {
-      "username": self.username,
-      "password": self.password,
+      "username": account.xtream_username,
+      "password": account.xtream_password,
       "message": f"{snap.provider} ({snap.market}) [{snap.lineup_id}]",
       "auth": 1,
       "status": "Active",
@@ -715,7 +762,7 @@ class XtreamPassthroughServer:
       "timestamp_now": now_epoch,
       "time_now": now_iso,
       "process": True,
-      "xmltv_url": self._build_self_xmltv_url(headers),
+      "xmltv_url": self._build_self_xmltv_url(headers, account=account),
     }
     return user_info, server_info
 
@@ -742,7 +789,7 @@ class XtreamPassthroughServer:
     self, request: web.Request
   ) -> web.StreamResponse:
     params = await self._params(request)
-    denied = self._verify_request_auth(
+    acct, denied = self._verify_request_auth(
       request,
       params.get("username", ""),
       params.get("password", ""),
@@ -750,6 +797,7 @@ class XtreamPassthroughServer:
     )
     if denied is not None:
       return denied
+    assert acct is not None
 
     snap = await self.store.async_get_snapshot()
     action = params.get("action", "").strip().lower()
@@ -797,13 +845,13 @@ class XtreamPassthroughServer:
       return json_response({"epg_listings": []})
 
     user_info, server_info = self._build_user_and_server_info(
-      snap, request.headers
+      snap, request.headers, account=acct
     )
     return json_response({"user_info": user_info, "server_info": server_info})
 
   async def _handle_panel_api(self, request: web.Request) -> web.StreamResponse:
     params = await self._params(request)
-    denied = self._verify_request_auth(
+    acct, denied = self._verify_request_auth(
       request,
       params.get("username", ""),
       params.get("password", ""),
@@ -811,10 +859,11 @@ class XtreamPassthroughServer:
     )
     if denied is not None:
       return denied
+    assert acct is not None
 
     snap = await self.store.async_get_snapshot()
     user_info, server_info = self._build_user_and_server_info(
-      snap, request.headers
+      snap, request.headers, account=acct
     )
     return json_response(
       {
@@ -831,11 +880,12 @@ class XtreamPassthroughServer:
     self, request: web.Request
   ) -> web.StreamResponse:
     params = await self._params(request)
-    denied = self._verify_request_auth(
+    acct, denied = self._verify_request_auth(
       request, params.get("username", ""), params.get("password", "")
     )
     if denied is not None:
       return denied
+    assert acct is not None
 
     if self.epg_xmltv_chunks_provider is not None:
       chunk_iter = await self.epg_xmltv_chunks_provider()
@@ -865,7 +915,9 @@ class XtreamPassthroughServer:
             await asyncio.to_thread(close_iter)
 
     snap = await self.store.async_get_snapshot()
-    fallback_url = self._resolve_upstream_xmltv_fallback(request, snap)
+    fallback_url = self._resolve_upstream_xmltv_fallback(
+      request, snap, account=acct
+    )
     if not fallback_url:
       return json_response(
         {"error": "No upstream XMLTV passthrough URL configured."},
@@ -875,7 +927,7 @@ class XtreamPassthroughServer:
     return redirect_response(fallback_url)
 
   async def _handle_nonlive(self, request: web.Request) -> web.StreamResponse:
-    denied = self._verify_request_auth(
+    _acct, denied = self._verify_request_auth(
       request, request.match_info["user"], request.match_info["passwd"]
     )
     if denied is not None:
@@ -888,23 +940,30 @@ class XtreamPassthroughServer:
     self, request: web.Request
   ) -> web.StreamResponse:
     info = request.match_info
-    denied = self._verify_request_auth(request, info["user"], info["passwd"])
+    acct, denied = self._verify_request_auth(
+      request, info["user"], info["passwd"]
+    )
     if denied is not None:
       return denied
+    assert acct is not None
 
     stream_key = int(info["sid"])
     snap = await self.store.async_get_snapshot()
     item = snap.stream_by_id.get(stream_key) or snap.stream_by_num.get(
       stream_key
     )
-    if item is None or not item.upstream_url:
+    target_url = (
+      self._resolve_upstream_stream_url(
+        item, acct, requested_ext=info["ext"].lstrip(".")
+      )
+      if item is not None
+      else ""
+    )
+    if not target_url:
       return bytes_response(
         b"Stream not found", "text/plain", status=HTTPStatus.NOT_FOUND
       )
 
-    target_url = _rewrite_stream_extension(
-      item.upstream_url, info["ext"].lstrip(".")
-    )
     logger.debug("Passthrough redirect stream %s -> upstream", stream_key)
     return redirect_response(target_url)
 
@@ -914,15 +973,38 @@ class XtreamPassthroughServer:
 
     return _handler
 
+  @staticmethod
+  def _render_extinf_plus(stream: PassthroughStream) -> str:
+    if stream.m3u_plus_extinf:
+      return stream.m3u_plus_extinf
+    attrs = [
+      f'tvg-chno="{stream.num}"',
+      f'channel-id="{stream.num}"',
+      f'tvg-id="{_escape_m3u_attr(stream.epg_channel_id)}"',
+      f'tvg-name="{_escape_m3u_attr(stream.name)}"',
+    ]
+    if stream.gracenote_station_id:
+      attrs.append(
+        f'tvc-guide-stationid="{_escape_m3u_attr(stream.gracenote_station_id)}"'
+      )
+    if stream.stream_icon:
+      attrs.append(f'tvg-logo="{_escape_m3u_attr(stream.stream_icon)}"')
+    attrs.append(f'group-title="{_escape_m3u_attr(stream.category_name)}"')
+    if stream.language:
+      attrs.append(f'tvg-language="{_escape_m3u_attr(stream.language)}"')
+    safe_name = stream.name.replace("\n", " ").strip()
+    return f"#EXTINF:-1 {' '.join(attrs)},{safe_name}"
+
   async def _handle_get_m3u(
     self, request: web.Request, *, default_type: str
   ) -> web.StreamResponse:
     params = await self._params(request)
     user = params.get("username", "")
     passwd = params.get("password", "")
-    denied = self._verify_request_auth(request, user, passwd)
+    acct, denied = self._verify_request_auth(request, user, passwd)
     if denied is not None:
       return denied
+    assert acct is not None
 
     snap = await self.store.async_get_snapshot()
     raw_type = params.get("type", default_type).strip().lower()
@@ -951,12 +1033,10 @@ class XtreamPassthroughServer:
       else set()
     )
 
-    base = self._format_base_url(request.headers)
-    epg_url = self._build_self_xmltv_url(
-      request.headers, username=user, password=passwd
-    )
-    user_q = quote(user, safe="")
-    passwd_q = quote(passwd, safe="")
+    base = self.format_public_base_url(request.headers)
+    epg_url = self._build_self_xmltv_url(request.headers, account=acct)
+    user_q = quote(acct.xtream_username, safe="")
+    passwd_q = quote(acct.xtream_password, safe="")
 
     if is_plus:
       lines = [
@@ -969,26 +1049,11 @@ class XtreamPassthroughServer:
     for s in snap.streams:
       if allowed_cats and s.category_id not in allowed_cats:
         continue
-      safe_name = s.name.replace("\n", " ").strip()
       stream_url = f"{base}/live/{user_q}/{passwd_q}/{s.stream_id}.{ext}"
       if is_plus:
-        attrs = [
-          f'tvg-chno="{s.num}"',
-          f'channel-id="{s.num}"',
-          f'tvg-id="{_escape_m3u_attr(s.epg_channel_id)}"',
-          f'tvg-name="{_escape_m3u_attr(s.name)}"',
-        ]
-        if s.gracenote_station_id:
-          attrs.append(
-            f'tvc-guide-stationid="{_escape_m3u_attr(s.gracenote_station_id)}"'
-          )
-        if s.stream_icon:
-          attrs.append(f'tvg-logo="{_escape_m3u_attr(s.stream_icon)}"')
-        attrs.append(f'group-title="{_escape_m3u_attr(s.category_name)}"')
-        if s.language:
-          attrs.append(f'tvg-language="{_escape_m3u_attr(s.language)}"')
-        lines.append(f"#EXTINF:-1 {' '.join(attrs)},{safe_name}")
+        lines.append(self._render_extinf_plus(s))
       else:
+        safe_name = s.name.replace("\n", " ").strip()
         lines.append(f"#EXTINF:-1,{safe_name}")
       lines.append(stream_url)
 

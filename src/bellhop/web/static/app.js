@@ -239,19 +239,17 @@ export const initGuideApp = () => {
         syncUrlFromState,
         syncModeButtons,
     });
+    const elSettingsEmailBadge = document.getElementById("settings-email-badge");
     const settings = createSettingsController({
         elPlayerOverlay: elOverlay,
         elSettingsBtn,
         elSettingsOverlay,
         elSettingsBackdrop: document.getElementById("settings-backdrop"),
         elSettingsCloseBtn: document.getElementById("close-settings-btn"),
-        elSettingsFileBadge: document.getElementById("settings-file-badge"),
-        elSettingsTabs: document.getElementById("settings-tabs"),
-        elSettingsForm: document.getElementById("settings-form"),
+        elSettingsEmailBadge,
         elSettingsBody: document.getElementById("settings-body"),
         elSettingsStatus: document.getElementById("settings-status"),
         elSettingsReloadBtn: document.getElementById("settings-reload-btn"),
-        elSettingsSaveBtn: document.getElementById("settings-save-btn"),
         redirectToLogin,
     });
     const scheduleEpgCompletionPoll = () => {
@@ -285,6 +283,9 @@ export const initGuideApp = () => {
             const data = (await resp.json());
             if (elLogoutBtn) {
                 elLogoutBtn.hidden = !data.auth_required;
+            }
+            if (elSettingsEmailBadge && data.email) {
+                elSettingsEmailBadge.textContent = data.email;
             }
             if (data.auth_required && !data.authenticated) {
                 redirectToLogin();

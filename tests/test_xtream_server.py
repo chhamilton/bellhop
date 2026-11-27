@@ -9,6 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from bellhop.common.accounts import (
+  STREAM_CREDENTIAL_ALPHABET,
+  STREAM_CREDENTIAL_LENGTH,
+  hash_web_password,
+)
 from bellhop.config import load_config
 from bellhop.pipeline.runner import PipelineRunner, PipelineRunOptions
 from bellhop.serve import UnifiedServeServer
@@ -17,7 +22,11 @@ from bellhop.xtream import (
   XtreamPassthroughServer,
   fetch_xtream_catalog,
 )
-from tests.conftest import await_until, write_minimal_xtream_export
+from tests.conftest import (
+  await_until,
+  make_test_account,
+  write_minimal_xtream_export,
+)
 from tests.fake_xtream_server import (
   FakeProgram,
   FakeStreamDef,
@@ -103,30 +112,40 @@ async def test_bellhop_serve_xtream_contract_and_302_passthrough(
     lineup_file = tmp_path / "lineup.yaml"
     _write_mini_lineup(lineup_file)
 
+    creds_path = tmp_path / "credentials.yaml"
+    creds_path.write_text(
+      f"""\
+accounts:
+  primary:
+    email: "web_u@example.com"
+    web_password_hash: "{hash_web_password("web_p")}"
+    xtream_username: "client_alice"
+    xtream_password: "client_secret_42"
+    upstream_username: "{upstream.username}"
+    upstream_password: "{upstream.password}"
+    pipeline: true
+""",
+      encoding="utf-8",
+    )
+
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
       f"""\
+credentials_file: "{creds_path}"
 paths:
   cache_dir: "cache"
   state_dir: "state"
   lineup_file: "{lineup_file}"
-  m3u8_playlist_path: "output/lineup.m3u8"
-  m3u8_report_path: "output/report.json"
+  report_path: "output/report.json"
   xtream_output_dir: "output/xtream"
 web_server:
   host: "127.0.0.1"
   port: 0
-  username: "web_u"
-  password: "web_p"
 upstream_xtream:
   server_url: "{upstream.base_url}"
-  username: "{upstream.username}"
-  password: "{upstream.password}"
   stream_format: "ts"
 xtream_server:
   enabled: true
-  username: "client_alice"
-  password: "client_secret_42"
 pipeline:
   lineup:
     backend: "yaml"
@@ -139,17 +158,15 @@ pipeline:
     min_bytes_to_read: 4096
   epg:
     verify: true
-  output:
-    m3u8_enabled: true
-    xtream_enabled: true
 """,
       encoding="utf-8",
     )
 
     cfg = load_config(cfg_path)
     redacted = cfg.to_dict(redact_secrets=True)
-    assert redacted["serve"]["xtream"]["username"] == "client_alice"
-    assert redacted["serve"]["xtream"]["password"] == "***"
+    assert redacted["accounts"]["primary"]["xtream_username"] == "client_alice"
+    assert redacted["accounts"]["primary"]["xtream_password"] == "***"
+    assert redacted["accounts"]["primary"]["upstream_password"] == "***"
 
     # 1. Run pipeline to produce calculated lineup categories & streams
     run_res = await PipelineRunner(cfg).run(PipelineRunOptions())
@@ -183,7 +200,7 @@ pipeline:
         assert (await client.get("/api/lineup")).status_code == 401
         login_ok = await client.post(
           "/api/auth/login",
-          json={"username": "web_u", "password": "web_p"},
+          json={"email": "web_u@example.com", "password": "web_p"},
         )
         assert login_ok.status_code == 200
 
@@ -578,10 +595,12 @@ pipeline:
         # Round-trip with our own Xtream client (`fetch_xtream_catalog`)!
         cfg_client = load_config(cfg_path)
         cfg_client.xtream.server_url = serve_base
-        cfg_client.xtream.username = "client_alice"
-        cfg_client.xtream.password = "client_secret_42"
+        roundtrip_acct = make_test_account(
+          upstream_username="client_alice",
+          upstream_password="client_secret_42",
+        )
         roundtrip_cat = await fetch_xtream_catalog(
-          cfg_client, force_refresh=True
+          cfg_client, account=roundtrip_acct, force_refresh=True
         )
         assert roundtrip_cat.account.username == "client_alice"
         assert roundtrip_cat.categories == {
@@ -659,9 +678,26 @@ async def test_bellhop_serve_default_bind_config_and_unconfigured_xtream_auth(
     json.dumps(bundle), encoding="utf-8"
   )
 
+  base_creds_path = tmp_path / "credentials.yaml"
+  base_creds_path.write_text(
+    f"""\
+accounts:
+  primary:
+    email: "web_u@example.com"
+    web_password_hash: "{hash_web_password("web_p")}"
+    xtream_username: "xt_user"
+    xtream_password: "xt_pass"
+    upstream_username: "up_user"
+    upstream_password: "up_pass"
+    pipeline: true
+""",
+    encoding="utf-8",
+  )
+
   # Default config binds 0.0.0.0:8080
   cfg_default_path = tmp_path / "default_cfg.yaml"
   cfg_default_path.write_text(
+    f'credentials_file: "{base_creds_path}"\n'
     "upstream_xtream:\n  server_url: http://example.invalid\n",
     encoding="utf-8",
   )
@@ -669,10 +705,13 @@ async def test_bellhop_serve_default_bind_config_and_unconfigured_xtream_auth(
   assert cfg_default.serve.host == "0.0.0.0"
   assert cfg_default.serve.port == 8080
 
-  # Web Guide enabled WITHOUT credentials MUST fail fast with ValueError
+  # Empty accounts in credentials.yaml MUST fail fast with ValueError
+  empty_creds_path = tmp_path / "empty_credentials.yaml"
+  empty_creds_path.write_text("accounts: {}\n", encoding="utf-8")
   cfg_no_web_creds_path = tmp_path / "no_web_creds.yaml"
   cfg_no_web_creds_path.write_text(
     f"""\
+credentials_file: "{empty_creds_path}"
 paths:
   xtream_output_dir: "{xt_dir}"
 web_server:
@@ -682,21 +721,23 @@ web_server:
 """,
     encoding="utf-8",
   )
-  with pytest.raises(ValueError, match="Web Guide login cannot be disabled"):
-    UnifiedServeServer.from_config(load_config(cfg_no_web_creds_path))
+  with pytest.raises(ValueError, match="accounts"):
+    load_config(cfg_no_web_creds_path)
 
-  # Custom bind address/port with Web Guide credentials only: Web Guide works,
-  # Xtream API stays locked
+  # Custom bind address/port with xtream_server disabled: Web Guide works,
+  # Xtream API disabled
   cfg_custom_path = tmp_path / "custom_cfg.yaml"
   cfg_custom_path.write_text(
     f"""\
+credentials_file: "{base_creds_path}"
 paths:
+  cache_dir: "{tmp_path / "cache"}"
   xtream_output_dir: "{xt_dir}"
 web_server:
   host: "127.0.0.1"
   port: 0
-  username: "web_u"
-  password: "web_p"
+xtream_server:
+  enabled: false
 """,
     encoding="utf-8",
   )
@@ -716,17 +757,32 @@ web_server:
       assert (
         await client.post(
           "/api/auth/login",
-          json={"username": "web_u", "password": "web_p"},
+          json={"email": "web_u@example.com", "password": "web_p"},
         )
       ).status_code == 200
       assert (await client.get("/")).status_code == 200
       assert (await client.get("/api/lineup")).status_code == 200
-      assert (await client.get("/player_api.php")).json() == {
-        "user_info": {"auth": 0}
-      }
-      assert (await client.get("/xmltv.php")).status_code == 401
+      assert (await client.get("/player_api.php")).status_code == 404
+      assert (await client.get("/xmltv.php")).status_code == 404
   finally:
     await srv.stop()
+
+  # XtreamPassthroughServer with zero accounts locks all Xtream routes.
+  locked_xt = XtreamPassthroughServer(
+    XtreamExportStore(xt_dir), accounts=(), host="127.0.0.1", port=0
+  )
+  await locked_xt.start()
+  try:
+    async with TestHttpClient(
+      base_url=f"http://127.0.0.1:{locked_xt.bound_port}",
+      timeout=5.0,
+    ) as xt_cli:
+      assert (await xt_cli.get("/player_api.php")).json() == {
+        "user_info": {"auth": 0}
+      }
+      assert (await xt_cli.get("/xmltv.php")).status_code == 401
+  finally:
+    await locked_xt.stop()
 
 
 @pytest.mark.asyncio
@@ -778,22 +834,36 @@ async def test_bellhop_serve_separate_ports_mode(tmp_path: Path) -> None:
   while xt_p == web_p:
     xt_p = _free_port()
 
+  creds_path = tmp_path / "split_creds.yaml"
+  creds_path.write_text(
+    f"""\
+accounts:
+  split_acct:
+    email: "web_u@example.com"
+    web_password_hash: "{hash_web_password("web_p")}"
+    xtream_username: "split_user"
+    xtream_password: "split_password"
+    upstream_username: "u"
+    upstream_password: "p"
+    pipeline: true
+""",
+    encoding="utf-8",
+  )
+
   cfg_path = tmp_path / "split_cfg.yaml"
   cfg_path.write_text(
     f"""\
+credentials_file: "{creds_path}"
 paths:
+  cache_dir: "{tmp_path / "cache"}"
   xtream_output_dir: "{xt_dir}"
 web_server:
   enabled: true
   host: "127.0.0.1"
   port: {web_p}
-  username: "web_u"
-  password: "web_p"
 xtream_server:
   enabled: true
   port: {xt_p}
-  username: "split_user"
-  password: "split_password"
 """,
     encoding="utf-8",
   )
@@ -820,7 +890,7 @@ xtream_server:
       assert (
         await client.post(
           f"{web_base}/api/auth/login",
-          json={"username": "web_u", "password": "web_p"},
+          json={"email": "web_u@example.com", "password": "web_p"},
         )
       ).status_code == 200
       assert (await client.get(f"{web_base}/")).status_code == 200
@@ -908,9 +978,26 @@ async def test_unified_serve_distinct_web_login_and_xtream_credentials(
     json.dumps(bundle), encoding="utf-8"
   )
 
+  creds_path = tmp_path / "auth_creds.yaml"
+  creds_path.write_text(
+    f"""\
+accounts:
+  web_admin:
+    email: "web_admin@example.com"
+    web_password_hash: "{hash_web_password("web_secret_password")}"
+    xtream_username: "xt_player"
+    xtream_password: "xt_secret_password"
+    upstream_username: "u"
+    upstream_password: "p"
+    pipeline: true
+""",
+    encoding="utf-8",
+  )
+
   cfg_path = tmp_path / "auth_cfg.yaml"
   cfg_path.write_text(
     f"""\
+credentials_file: "{creds_path}"
 paths:
   cache_dir: "{tmp_path / "cache"}"
   xtream_output_dir: "{xt_dir}"
@@ -918,22 +1005,18 @@ web_server:
   enabled: true
   host: "127.0.0.1"
   port: 0
-  username: "web_admin"
-  password: "web_secret_password"
   session_ttl_hours: 24.0
 xtream_server:
   enabled: true
-  username: "xt_player"
-  password: "xt_secret_password"
 """,
     encoding="utf-8",
   )
   cfg = load_config(cfg_path)
   redacted = cfg.to_dict(redact_secrets=True)
-  assert redacted["serve"]["web"]["username"] == "web_admin"
-  assert redacted["serve"]["web"]["password"] == "***"
-  assert redacted["serve"]["xtream"]["username"] == "xt_player"
-  assert redacted["serve"]["xtream"]["password"] == "***"
+  assert redacted["accounts"]["web_admin"]["email"] == "web_admin@example.com"
+  assert redacted["accounts"]["web_admin"]["web_password_hash"] == "***"
+  assert redacted["accounts"]["web_admin"]["xtream_username"] == "xt_player"
+  assert redacted["accounts"]["web_admin"]["xtream_password"] == "***"
 
   srv = UnifiedServeServer.from_config(cfg)
   await srv.start()
@@ -968,17 +1051,25 @@ xtream_server:
       # 2. Xtream credentials MUST NOT work for Web Guide login
       wrong_login = await client.post(
         "/api/auth/login",
-        json={"username": "xt_player", "password": "xt_secret_password"},
+        json={
+          "email": "xt_player@example.com",
+          "password": "xt_secret_password",
+        },
       )
       assert wrong_login.status_code == 401
 
       # 3. Valid Web Guide login sets HttpOnly SameSite=Lax session cookie
       ok_login = await client.post(
         "/api/auth/login",
-        json={"username": "web_admin", "password": "web_secret_password"},
+        json={
+          "email": "web_admin@example.com",
+          "password": "web_secret_password",
+        },
       )
       assert ok_login.status_code == 200
       assert ok_login.json()["authenticated"] is True
+      assert ok_login.json()["account_id"] == "web_admin"
+      assert ok_login.json()["email"] == "web_admin@example.com"
       set_cookie = ok_login.headers.get("set-cookie", "")
       assert "bellhop_session=" in set_cookie
       assert "HttpOnly" in set_cookie
@@ -992,13 +1083,17 @@ xtream_server:
       assert (await client.get("/api/lineup")).status_code == 200
       st_auth = (await client.get("/api/auth/status")).json()
       assert st_auth["authenticated"] is True
-      assert st_auth["username"] == "web_admin"
+      assert st_auth["account_id"] == "web_admin"
+      assert st_auth["email"] == "web_admin@example.com"
 
       # 4. On the same port, Xtream API enforces its own distinct credentials
       assert (
         await client.get(
           "/player_api.php",
-          params={"username": "web_admin", "password": "web_secret_password"},
+          params={
+            "username": "web_admin@example.com",
+            "password": "web_secret_password",
+          },
         )
       ).json() == {"user_info": {"auth": 0}}
       xt_ok = (
@@ -1042,7 +1137,7 @@ xtream_server:
       r_post = await bad_client.post(
         "/api/auth/login",
         data={
-          "username": "web_admin",
+          "email": "web_admin@example.com",
           "password": "web_secret_password",
           "next": deep_target,
         },
@@ -1063,7 +1158,7 @@ xtream_server:
 
 
 @pytest.mark.asyncio
-async def test_settings_api_inspect_update_and_strict_credential_exclusion(
+async def test_account_api_credential_rotation_preserves_comments_and_isolates_accounts(
   tmp_path: Path,
 ) -> None:
   xt_dir = tmp_path / "output" / "xtream"
@@ -1087,7 +1182,7 @@ async def test_settings_api_inspect_update_and_strict_credential_exclusion(
         "epg_channel_id": "RDS.ca",
         "category_id": "1",
         "category_name": "Sports",
-        "direct_source": "http://upstream.example/live/u/p/410108.ts",
+        "direct_source": "",
         "guide": {"language": "fr"},
       }
     ],
@@ -1099,10 +1194,39 @@ async def test_settings_api_inspect_update_and_strict_credential_exclusion(
   cache_dir = tmp_path / "cache"
   state_dir = tmp_path / "state"
   mapping_path = state_dir / "channel_mapping.json"
+  creds_path = tmp_path / "credentials.yaml"
+  creds_path.write_text(
+    f"""\
+# Account credentials header comment
+accounts:
+  web_admin:
+    email: "web_admin@example.com"
+    web_password_hash: "{hash_web_password("web_secret_pass")}"
+    xtream_username: "xt_user"  # custom user comment
+    xtream_password: "xt_secret_pass"
+    upstream_username: "upstream_secret_user"
+    upstream_password: "upstream_secret_pass"
+    pipeline: true
+  bob:
+    email: "bob@example.com"
+    web_password_hash: "{hash_web_password("bob_secret_pass")}"
+    xtream_username: "bobxt001"
+    xtream_password: "bobxtpw1"
+    upstream_username: "bob_upstream"
+    upstream_password: "bob_upstream_pw"
+    pipeline: false
+
+schedules_direct:
+  username: "sd_secret_user"
+  password: "sd_secret_pass"
+""",
+    encoding="utf-8",
+  )
+
   cfg_path = tmp_path / "config.yaml"
   cfg_path.write_text(
     f"""\
-# Tier-1 infrastructure settings (must survive PUT /api/config)
+credentials_file: "{creds_path}"
 paths:
   cache_dir: "{cache_dir}"
   state_dir: "{state_dir}"
@@ -1115,19 +1239,14 @@ web_server:
   port: 0
   settle_ms: 180
   session_ttl_hours: 168.0
-  username: "web_admin"
-  password: "web_secret_pass"
   trust_proxy_headers: true
   trusted_proxy_ips:
     - "127.0.0.1"
     - "172.16.0.0/12"
 
-# Tier-2 operational settings
 upstream_xtream:
   server_url: "http://upstream.example"
-  username: "upstream_secret_user"
-  password: "upstream_secret_pass"
-  stream_format: "ts"  # inline format comment
+  stream_format: "ts"
   request_timeout_sec: 30.0
   refresh_hours: 24.0
 
@@ -1135,30 +1254,7 @@ xtream_server:
   enabled: true
   host: null
   port: null
-  username: "xt_user"
-  password: "xt_secret_pass"
   server_protocol: "http"
-
-pipeline:
-  lineup:
-    backend: "yaml"
-    lineup_id: "CAN-BELLFIBE-MTL-X"
-    collapse_sd_dupes: true
-    schedules_direct:
-      username: "sd_secret_user"
-      password: "sd_secret_pass"
-  matching:
-    upgrade_hysteresis_score: 5.0
-  validation:
-    enabled: true
-    max_candidates_per_channel: 5
-  epg:
-    verify: true
-    refresh_hours: 6.0
-  output:
-    m3u8_enabled: true
-    xtream_enabled: true
-    include_unmatched_comment: false
 """,
     encoding="utf-8",
   )
@@ -1168,239 +1264,146 @@ pipeline:
   await srv.start()
   base = f"http://127.0.0.1:{srv.bound_port}"
 
-  def _collect_keys(obj: object) -> set[str]:
-    keys: set[str] = set()
-    if isinstance(obj, dict):
-      for k, v in obj.items():
-        keys.add(str(k))
-        keys.update(_collect_keys(v))
-    elif isinstance(obj, list):
-      for item in obj:
-        keys.update(_collect_keys(item))
-    return keys
-
   try:
     async with TestHttpClient(base_url=base, timeout=5.0) as client:
-      # 1. Unauthenticated /api/config is blocked with 401
+      # 1. Removed /api/config requires auth (401) and 404s when signed in.
+      assert (await client.get("/api/account")).status_code == 401
       assert (await client.get("/api/config")).status_code == 401
-      assert (await client.put("/api/config", json={})).status_code == 401
 
-      # Sign in to Web Guide
       login_resp = await client.post(
         "/api/auth/login",
-        json={"username": "web_admin", "password": "web_secret_pass"},
+        json={"email": "web_admin@example.com", "password": "web_secret_pass"},
       )
       assert login_resp.status_code == 200
+      assert (await client.get("/api/config")).status_code == 404
 
-      # 2. GET /api/config exposes ONLY upstream_xtream, xtream_server, and
-      #    pipeline
-      # with ZERO credentials, ZERO web_server settings, and ZERO filesystem
-      # paths/directories
-      get_resp = await client.get("/api/config")
+      # 2. GET /api/account exposes ONLY current account info + player URLs,
+      #    NEVER upstream creds, SD creds, sibling accounts, or paths
+      get_resp = await client.get("/api/account")
       assert get_resp.status_code == 200
       raw_text = get_resp.text
-      for secret in (
+      for hidden in (
         "upstream_secret_user",
         "upstream_secret_pass",
         "sd_secret_user",
         "sd_secret_pass",
-        "web_admin",
         "web_secret_pass",
-        "xt_user",
-        "xt_secret_pass",
+        "bob@example.com",
+        "bobxt001",
+        "bob_upstream_pw",
         str(cache_dir),
         str(state_dir),
         str(xt_dir),
       ):
-        assert secret not in raw_text
+        assert hidden not in raw_text
 
-      payload = get_resp.json()
-      assert payload["available"] is True
-      assert set(payload["config"].keys()) == {
-        "upstream_xtream",
-        "pipeline",
-      }
+      acct_payload = get_resp.json()
+      assert acct_payload["account_id"] == "web_admin"
+      assert acct_payload["email"] == "web_admin@example.com"
+      assert acct_payload["xtream_username"] == "xt_user"
+      assert acct_payload["xtream_password"] == "xt_secret_pass"
+      assert "xt_user" in acct_payload["player_urls"]["m3u_url"]
 
-      all_keys = _collect_keys(payload["config"])
-      forbidden_keys = {
-        "username",
-        "password",
-        "session_secret",
-        "web_server",
-        "xtream_server",
-        "public_host",
-        "public_port",
-        "server_protocol",
-        "paths",
-        "serve",
-        "web",
-        "settle_ms",
-        "session_ttl_hours",
-        "trust_proxy_headers",
-        "trusted_proxy_ips",
-        "cache_dir",
-        "state_dir",
-        "mapping_path",
-        "file",
-        "lineup_file",
-        "playlist_path",
-        "report_path",
-        "dir",
-        "xtream_output_dir",
-        "seed_json",
-        "xmltv_file",
-      }
-      assert forbidden_keys.isdisjoint(all_keys)
+      # 3. Regenerate Bellhop stream creds updates live Xtream server & disk
+      #    while keeping sibling account intact and preserving YAML comments!
+      regen_resp = await client.post(
+        "/api/account/stream-credentials/regenerate", json={}
+      )
+      assert regen_resp.status_code == 200
+      regen_data = regen_resp.json()
+      new_xt_u = regen_data["xtream_username"]
+      new_xt_p = regen_data["xtream_password"]
+      assert new_xt_u != "xt_user"
+      assert new_xt_p != "xt_secret_pass"
+      assert len(new_xt_u) == STREAM_CREDENTIAL_LENGTH
+      assert len(new_xt_p) == STREAM_CREDENTIAL_LENGTH
+      assert all(c in STREAM_CREDENTIAL_ALPHABET for c in (new_xt_u + new_xt_p))
 
-      # 3. PUT /api/config updates operational fields and ignores any injected
-      #    web_server, xtream_server, paths, directory, or credential mutations
-      put_resp = await client.put(
-        "/api/config",
-        json={
-          "web_server": {
-            "host": "9.9.9.9",
-            "port": 9999,
-            "settle_ms": 999,
-            "session_ttl_hours": 1.0,
-            "username": "HACKED",
-            "password": "HACKED",
-            "trust_proxy_headers": False,
-            "trusted_proxy_ips": ["0.0.0.0/0"],
-          },
-          "paths": {
-            "cache_dir": "/tmp/hacked_cache",
-            "state_dir": "/tmp/hacked_state",
-            "xtream_output_dir": "/tmp/hacked_xtream",
-          },
-          "upstream_xtream": {
-            "stream_format": "m3u8",
-            "refresh_hours": 12.0,
-            "cache_dir": "/tmp/hacked",
-            "username": "HACKED",
-            "password": "HACKED",
-          },
-          "xtream_server": {
-            "public_host": "tv.local",
-            "server_protocol": "https",
-            "username": "HACKED",
-            "password": "HACKED",
-          },
-          "pipeline": {
-            "lineup": {
-              "collapse_sd_dupes": False,
-              "exclude_audio": True,
-              "file": "/tmp/hacked.yaml",
-              "pinned_streams": {"1108": 410108},
-              "excluded_channels": [1107, 1424],
-              "schedules_direct": {
-                "auto_add_lineup": True,
-                "password": "HACKED",
-              },
-            },
-            "matching": {"upgrade_hysteresis_score": 7.5},
-            "validation": {"max_candidates_per_channel": 8},
-            "epg": {"refresh_hours": 12.0, "xmltv_file": "/tmp/hacked.xml"},
-            "output": {
-              "m3u8_enabled": False,
-              "include_unmatched_comment": True,
-            },
-          },
-        },
-      )
-      assert put_resp.status_code == 200
-      put_data = put_resp.json()
-      assert put_data["saved"] is True
-      assert put_data["restart_required"] is False
-      assert "xtream_server" not in put_data["config"]
-      assert put_data["config"]["upstream_xtream"]["stream_format"] == "m3u8"
+      # Live Xtream server rejects old creds and accepts new creds + Bob's creds
       assert (
-        put_data["config"]["pipeline"]["lineup"]["collapse_sd_dupes"] is False
-      )
-      assert put_data["config"]["pipeline"]["lineup"]["pinned_streams"] == {
-        "1108": 410108
-      }
-      assert put_data["config"]["pipeline"]["lineup"]["excluded_channels"] == [
-        1107,
-        1424,
-      ]
+        await client.get(
+          "/player_api.php",
+          params={"username": "xt_user", "password": "xt_secret_pass"},
+        )
+      ).json() == {"user_info": {"auth": 0}}
       assert (
-        put_data["config"]["pipeline"]["matching"]["upgrade_hysteresis_score"]
-        == 7.5
-      )
+        await client.get(
+          "/player_api.php",
+          params={"username": new_xt_u, "password": new_xt_p},
+        )
+      ).json()["user_info"]["auth"] == 1
       assert (
-        put_data["config"]["pipeline"]["validation"][
-          "max_candidates_per_channel"
-        ]
-        == 8
-      )
-      assert put_data["config"]["pipeline"]["output"]["m3u8_enabled"] is False
-      assert (
-        put_data["config"]["pipeline"]["output"]["include_unmatched_comment"]
-        is True
-      )
+        await client.get(
+          "/player_api.php",
+          params={"username": "bobxt001", "password": "bobxtpw1"},
+        )
+      ).json()["user_info"]["auth"] == 1
 
-      # Live runtime operational knobs applied immediately; server
-      # bind/xtream_server untouched
       assert srv.web_app is not None
-      assert srv.web_app.tuner.settle_sec == pytest.approx(0.18)
-      assert srv.web_app.epg_refresher is not None
-      assert srv.web_app.epg_refresher.config.refresh_hours == pytest.approx(
-        12.0
+      assert srv.web_app.tuner_for("web_admin").settle_sec == pytest.approx(
+        0.18
       )
-      assert srv.xtream_app.public_host is None
-      assert srv.xtream_app.server_protocol == "http"
 
-      # Reload from disk: ALL credentials, web_server settings, paths, AND
-      # comments were preserved!
-      saved_yaml = cfg_path.read_text(encoding="utf-8")
-      assert (
-        "# Tier-1 infrastructure settings (must survive PUT /api/config)"
-        in saved_yaml
-      )
-      assert "# Tier-2 operational settings" in saved_yaml
-      assert "# inline format comment" in saved_yaml
-      reloaded = load_config(cfg_path)
-      assert reloaded.serve.web_host == "127.0.0.1"
-      assert reloaded.serve.web_port == 0
-      assert reloaded.serve.web.settle_ms == 180
-      assert reloaded.serve.web.session_ttl_hours == pytest.approx(168.0)
-      assert reloaded.xtream.cache_dir == cache_dir
-      assert reloaded.state.state_dir == state_dir
-      assert reloaded.state.mapping_path == mapping_path
-      assert reloaded.output.xtream_dir == xt_dir
-      assert reloaded.xtream.username == "upstream_secret_user"
-      assert reloaded.xtream.password == "upstream_secret_pass"
-      assert reloaded.lineup.schedules_direct.username == "sd_secret_user"
-      assert reloaded.lineup.schedules_direct.password == "sd_secret_pass"
-      assert reloaded.serve.web.username == "web_admin"
-      assert reloaded.serve.web.password == "web_secret_pass"
-      assert reloaded.serve.web.trust_proxy_headers is True
-      assert reloaded.serve.web.trusted_proxy_ips == [
-        "127.0.0.1",
-        "172.16.0.0/12",
-      ]
-      assert reloaded.serve.xtream.username == "xt_user"
-      assert reloaded.serve.xtream.password == "xt_secret_pass"
-      assert reloaded.serve.xtream.public_host is None
-      assert reloaded.serve.xtream.server_protocol == "http"
+      saved_creds = creds_path.read_text(encoding="utf-8")
+      assert "# Account credentials header comment" in saved_creds
 
-      # 4. Non-JSON Content-Type on PUT /api/config is rejected with 415
-      wrong_ct = await client.put(
-        "/api/config",
-        data=b'{"upstream_xtream": {"stream_format": "ts"}}',
+      # 4. Non-JSON Content-Type -> 415, wrong current password -> 403, short
+      #    password -> 400, valid update -> 200
+      wrong_ct = await client.post(
+        "/api/account/password",
+        data=b"{}",
         headers={"Content-Type": "text/plain"},
       )
       assert wrong_ct.status_code == 415
 
-      # 5. Invalid operational config values return 400 and leave config.yaml
-      #    valid
-      bad_resp = await client.put(
-        "/api/config",
-        json={"upstream_xtream": {"stream_format": "flv"}},
+      wrong_pw = await client.post(
+        "/api/account/password",
+        json={
+          "current_password": "wrong_current",
+          "new_password": "new_valid_password",
+        },
       )
-      assert bad_resp.status_code == 400
-      assert "stream_format" in bad_resp.json()["error"]
-      assert load_config(cfg_path).xtream.stream_format == "m3u8"
+      assert wrong_pw.status_code == 403
+
+      short_pw = await client.post(
+        "/api/account/password",
+        json={
+          "current_password": "web_secret_pass",
+          "new_password": "tiny",
+        },
+      )
+      assert short_pw.status_code == 400
+
+      ok_pw = await client.post(
+        "/api/account/password",
+        json={
+          "current_password": "web_secret_pass",
+          "new_password": "brand_new_web_password",
+        },
+      )
+      assert ok_pw.status_code == 200
+      assert ok_pw.json() == {"ok": True, "email": "web_admin@example.com"}
+
+    # Verify new password authenticates cleanly in fresh session
+    async with TestHttpClient(base_url=base, timeout=5.0) as fresh:
+      assert (
+        await fresh.post(
+          "/api/auth/login",
+          json={
+            "email": "web_admin@example.com",
+            "password": "web_secret_pass",
+          },
+        )
+      ).status_code == 401
+      assert (
+        await fresh.post(
+          "/api/auth/login",
+          json={
+            "email": "web_admin@example.com",
+            "password": "brand_new_web_password",
+          },
+        )
+      ).status_code == 200
   finally:
     await srv.stop()
 
@@ -1437,8 +1440,7 @@ async def test_short_epg_limit_clamping_and_unknown_stream_ids(
 
   srv = XtreamPassthroughServer(
     XtreamExportStore(xt_dir),
-    username="u",
-    password="p",
+    accounts=(make_test_account(xtream_username="u", xtream_password="p"),),
     host="127.0.0.1",
     port=0,
     epg_short_provider=_fake_short_provider,
@@ -1546,8 +1548,9 @@ async def test_xmltv_head_and_small_chunk_streaming_and_xtream_only_health(
 
   xt_srv = XtreamPassthroughServer(
     XtreamExportStore(xt_dir),
-    username="xt_u",
-    password="xt_p",
+    accounts=(
+      make_test_account(xtream_username="xt_u", xtream_password="xt_p"),
+    ),
     host="127.0.0.1",
     port=0,
     epg_xmltv_chunks_provider=_tiny_chunks_provider,
@@ -1588,10 +1591,16 @@ async def test_xmltv_head_and_small_chunk_streaming_and_xtream_only_health(
   #    cleanly
   cfg_xt_only = AppConfig(
     project_root=tmp_path,
+    accounts=(
+      make_test_account(
+        xtream_username="xt_u",
+        xtream_password="xt_p",
+        upstream_username="up",
+        upstream_password="pw",
+      ),
+    ),
     xtream=XtreamConfig(
       server_url="http://panel.example",
-      username="up",
-      password="pw",
       cache_dir=Path("cache"),
     ),
     epg=EpgConfig(verify=False, refresh_hours=6.0),
@@ -1602,8 +1611,6 @@ async def test_xmltv_head_and_small_chunk_streaming_and_xtream_only_health(
         enabled=True,
         host="127.0.0.1",
         port=0,
-        username="xt_u",
-        password="xt_p",
       ),
     ),
   )
@@ -1641,8 +1648,9 @@ async def test_xmltv_fallback_blocks_self_redirect_loop(
   xt_dir = write_minimal_xtream_export(tmp_path / "output" / "xtream")
   srv = XtreamPassthroughServer(
     XtreamExportStore(xt_dir),
-    username="xt_u",
-    password="xt_p",
+    accounts=(
+      make_test_account(xtream_username="xt_u", xtream_password="xt_p"),
+    ),
     host="127.0.0.1",
     port=0,
   )
@@ -1665,3 +1673,185 @@ async def test_xmltv_fallback_blocks_self_redirect_loop(
       assert resp.status_code == 404
   finally:
     await srv.stop()
+
+
+@pytest.mark.asyncio
+async def test_multi_credential_xtream_passthrough_routing_and_concurrency(
+  tmp_path: Path,
+) -> None:
+  """Verify multi-account Xtream routing, dynamic M3U8, & concurrency."""
+  upstream = FakeXtreamServer(
+    username="up_a",
+    password="up_pw_a",
+    extra_accounts={"up_b": "up_pw_b"},
+    max_connections=1,
+    enforce_max_connections=True,
+    ts_chunks_per_stream=2,
+    ts_chunk_interval_sec=0.05,
+    categories=[
+      {"category_id": "1", "category_name": "General", "parent_id": 0}
+    ],
+    streams=[
+      FakeStreamDef(
+        stream_id=410101,
+        name="ICI",
+        category_id="1",
+        epg_channel_id="CBFT.ca",
+        marker_byte=0xA1,
+      ),
+      FakeStreamDef(
+        stream_id=410108,
+        name="RDS",
+        category_id="1",
+        epg_channel_id="RDS.ca",
+        marker_byte=0xB8,
+      ),
+    ],
+  )
+  async with upstream:
+    xt_dir = tmp_path / "output" / "xtream"
+    xt_dir.mkdir(parents=True)
+    (xt_dir / "bellhop_xtream_playlist.json").write_text(
+      json.dumps(
+        {
+          "lineup_info": {"lineup_id": "TEST", "provider": "Bell Fibe TV"},
+          "server_info": {"timezone": "UTC", "xmltv_url": ""},
+          "live_categories": [
+            {"category_id": "1", "category_name": "General", "parent_id": 0}
+          ],
+          "live_streams": [
+            {
+              "num": 1101,
+              "name": "ICI",
+              "stream_type": "live",
+              "stream_id": 410101,
+              "epg_channel_id": "CBFT.ca",
+              "category_id": "1",
+              "category_name": "General",
+              "direct_source": "",
+            },
+            {
+              "num": 1108,
+              "name": "RDS",
+              "stream_type": "live",
+              "stream_id": 410108,
+              "epg_channel_id": "RDS.ca",
+              "category_id": "1",
+              "category_name": "General",
+              "direct_source": "",
+            },
+          ],
+        }
+      ),
+      encoding="utf-8",
+    )
+
+    acct_a = make_test_account(
+      account_id="alice",
+      email="alice@example.com",
+      xtream_username="xt_a",
+      xtream_password="pw_a",
+      upstream_username="up_a",
+      upstream_password="up_pw_a",
+      pipeline=True,
+    )
+    acct_b = make_test_account(
+      account_id="bob",
+      email="bob@example.com",
+      xtream_username="xt_b",
+      xtream_password="pw_b",
+      upstream_username="up_b",
+      upstream_password="up_pw_b",
+      pipeline=False,
+    )
+    srv = XtreamPassthroughServer(
+      XtreamExportStore(xt_dir),
+      accounts=(acct_a, acct_b),
+      upstream_server_url=upstream.base_url,
+      upstream_stream_format="ts",
+      host="127.0.0.1",
+      port=0,
+    )
+    await srv.start()
+    base_url = f"http://127.0.0.1:{srv.bound_port}"
+    try:
+      async with TestHttpClient(
+        base_url=base_url, timeout=10.0, follow_redirects=False
+      ) as client:
+        # 1. /player_api.php scopes user_info + xmltv_url to each caller
+        pa_a = (
+          await client.get(
+            "/player_api.php", params={"username": "xt_a", "password": "pw_a"}
+          )
+        ).json()
+        assert pa_a["user_info"]["auth"] == 1
+        assert pa_a["user_info"]["username"] == "xt_a"
+        assert "username=xt_a&password=pw_a" in pa_a["server_info"]["xmltv_url"]
+
+        pa_b = (
+          await client.get(
+            "/player_api.php", params={"username": "xt_b", "password": "pw_b"}
+          )
+        ).json()
+        assert pa_b["user_info"]["auth"] == 1
+        assert pa_b["user_info"]["username"] == "xt_b"
+        assert "username=xt_b&password=pw_b" in pa_b["server_info"]["xmltv_url"]
+
+        # Cross-account password mismatch fails
+        assert (
+          await client.get(
+            "/player_api.php", params={"username": "xt_a", "password": "pw_b"}
+          )
+        ).json() == {"user_info": {"auth": 0}}
+        assert (
+          await client.get("/live/xt_a/pw_b/410101.ts")
+        ).status_code == 401
+
+        # 2. /get.php embeds ONLY caller's Bellhop Xtream credentials
+        m3u_a = await client.get(
+          "/get.php",
+          params={"username": "xt_a", "password": "pw_a", "type": "m3u_plus"},
+        )
+        assert m3u_a.status_code == 200
+        assert "/live/xt_a/pw_a/410101.ts" in m3u_a.text
+        assert "xt_b" not in m3u_a.text
+
+        m3u_b = await client.get(
+          "/get.php",
+          params={"username": "xt_b", "password": "pw_b", "type": "m3u_plus"},
+        )
+        assert m3u_b.status_code == 200
+        assert "/live/xt_b/pw_b/410108.ts" in m3u_b.text
+        assert "xt_a" not in m3u_b.text
+
+        # 3. 302 redirects route each account to its own upstream credentials
+        r_a = await client.get("/live/xt_a/pw_a/410101.ts")
+        assert r_a.status_code == 302
+        assert r_a.headers["location"].endswith("/live/up_a/up_pw_a/410101.ts")
+        r_b = await client.get("/live/xt_b/pw_b/410108.ts")
+        assert r_b.status_code == 302
+        assert r_b.headers["location"].endswith("/live/up_b/up_pw_b/410108.ts")
+
+      # 4. Concurrent streaming honors per-account tuners (0 violations).
+      async with (
+        TestHttpClient(
+          base_url=base_url, timeout=10.0, follow_redirects=True
+        ) as cli_a,
+        TestHttpClient(
+          base_url=base_url, timeout=10.0, follow_redirects=True
+        ) as cli_b,
+      ):
+        res_a, res_b = await asyncio.gather(
+          cli_a.get("/live/xt_a/pw_a/410101.ts"),
+          cli_b.get("/live/xt_b/pw_b/410108.ts"),
+        )
+        assert res_a.status_code == 200
+        assert res_b.status_code == 200
+        assert res_a.content[0] == 0x47 and res_a.content[4] == 0xA1
+        assert res_b.content[0] == 0x47 and res_b.content[4] == 0xB8
+
+      assert upstream.connection_limit_violations == 0
+      assert ("up_a", 410101) in upstream.stream_requests_by_user
+      assert ("up_b", 410108) in upstream.stream_requests_by_user
+    finally:
+      await srv.stop()

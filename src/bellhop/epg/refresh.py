@@ -126,6 +126,7 @@ class EpgRefreshConfig:
   refresh_hours: float = 6.0
   request_timeout_sec: float = 90.0
   xmltv_url: str = ""
+  xmltv_url_provider: Callable[[], str] | None = None
   xmltv_file: Path | None = None
   cache_file: Path = DEFAULT_EPG_DB_FILE
   check_interval_sec: float = 900.0
@@ -188,6 +189,8 @@ class EpgRefreshService:
         return snap.xmltv_url
     except (OSError, ValueError) as exc:
       logger.debug("Could not read XMLTV URL from snapshot: %s", exc)
+    if self.config.xmltv_url_provider is not None:
+      return self.config.xmltv_url_provider().strip()
     return self.config.xmltv_url
 
   @property

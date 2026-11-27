@@ -10,18 +10,20 @@ import pytest
 
 from bellhop.common.api_contracts import (
   API_CONTRACT_TYPES,
+  AccountInfoResponseDict,
   AuthStatusResponseDict,
   ChannelEpgResponseDict,
-  ConfigSaveResponseDict,
   HealthApiResponseDict,
   LineupApiResponseDict,
-  PublicConfigResponseDict,
+  PasswordChangeResponseDict,
+  PlayerUrlsDict,
   build_api_json_schemas,
   validate_typed_dict_payload,
 )
 from bellhop.config import load_config
 from bellhop.serve import UnifiedServeServer
 from bellhop.web.store import ProgramItem
+from tests.conftest import TEST_PASSWORD_HASH, TEST_WEB_PASSWORD
 from tests.http_mock import TestHttpClient
 
 
@@ -41,10 +43,20 @@ def test_json_schema_generation_and_validator_negative_cases() -> None:
     {
       "auth_required": True,
       "authenticated": False,
-      "username": None,
+      "account_id": None,
+      "email": None,
       "expires_at": None,
     },
     AuthStatusResponseDict,
+  )
+  validate_typed_dict_payload(
+    {
+      "xtream_server_url": "http://127.0.0.1:8080",
+      "m3u_url": "http://127.0.0.1:8080/get.php?u=a&p=b",
+      "m3u_hls_url": "http://127.0.0.1:8080/get.php?u=a&p=b&output=hls",
+      "xmltv_url": "http://127.0.0.1:8080/xmltv.php?u=a&p=b",
+    },
+    PlayerUrlsDict,
   )
 
   # Bool rejected where int/float expected
@@ -53,7 +65,8 @@ def test_json_schema_generation_and_validator_negative_cases() -> None:
       {
         "auth_required": True,
         "authenticated": True,
-        "username": "admin",
+        "account_id": "admin",
+        "email": "admin@example.com",
         "expires_at": True,
       },
       AuthStatusResponseDict,
@@ -65,7 +78,8 @@ def test_json_schema_generation_and_validator_negative_cases() -> None:
       {
         "auth_required": False,
         "authenticated": True,
-        "username": None,
+        "account_id": None,
+        "email": None,
         "expires_at": None,
         "surprise": 1,
       },
@@ -118,9 +132,25 @@ async def test_live_http_endpoints_conform_to_generated_ts_contracts(
     encoding="utf-8",
   )
 
+  creds_path = tmp_path / "credentials.yaml"
+  creds_path.write_text(
+    f"""\
+accounts:
+  contract_admin:
+    email: "contract@example.com"
+    web_password_hash: "{TEST_PASSWORD_HASH}"
+    xtream_username: "xtuser01"
+    xtream_password: "xtpass01"
+    upstream_username: "up_user"
+    upstream_password: "up_pass"
+""",
+    encoding="utf-8",
+  )
+
   cfg_path = tmp_path / "config.yaml"
   cfg_path.write_text(
     f"""\
+credentials_file: "{creds_path}"
 paths:
   cache_dir: "{tmp_path / "cache"}"
   xtream_output_dir: "{xt_dir}"
@@ -128,15 +158,11 @@ web_server:
   enabled: true
   host: "127.0.0.1"
   port: 0
-  username: "contract_admin"
-  password: "contract_pw"
 upstream_xtream:
   server_url: "http://upstream.example"
   stream_format: "ts"
 xtream_server:
   enabled: true
-  username: "xt_u"
-  password: "xt_p"
 """,
     encoding="utf-8",
   )
@@ -175,7 +201,7 @@ xtream_server:
 
       login_r = await client.post(
         "/api/auth/login",
-        json={"username": "contract_admin", "password": "contract_pw"},
+        json={"email": "contract@example.com", "password": TEST_WEB_PASSWORD},
       )
       assert login_r.status_code == 200
 
@@ -191,15 +217,22 @@ xtream_server:
       assert epg_r.status_code == 200
       validate_typed_dict_payload(epg_r.json(), ChannelEpgResponseDict)
 
-      cfg_get_r = await client.get("/api/config")
-      assert cfg_get_r.status_code == 200
-      validate_typed_dict_payload(cfg_get_r.json(), PublicConfigResponseDict)
+      acct_r = await client.get("/api/account")
+      assert acct_r.status_code == 200
+      validate_typed_dict_payload(acct_r.json(), AccountInfoResponseDict)
 
-      cfg_put_r = await client.put(
-        "/api/config",
-        json={"upstream_xtream": {"stream_format": "m3u8"}},
+      regen_r = await client.post("/api/account/stream-credentials/regenerate")
+      assert regen_r.status_code == 200
+      validate_typed_dict_payload(regen_r.json(), AccountInfoResponseDict)
+
+      pw_r = await client.post(
+        "/api/account/password",
+        json={
+          "current_password": TEST_WEB_PASSWORD,
+          "new_password": "new_contract_password",
+        },
       )
-      assert cfg_put_r.status_code == 200
-      validate_typed_dict_payload(cfg_put_r.json(), ConfigSaveResponseDict)
+      assert pw_r.status_code == 200
+      validate_typed_dict_payload(pw_r.json(), PasswordChangeResponseDict)
   finally:
     await srv.stop()
